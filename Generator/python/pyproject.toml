@@ -1,0 +1,16 @@
+[project]
+name = "mora-generator-ml"
+version = "0.1.0"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "demucs>=4.0.1",
+  "numpy>=2.0",
+  "pyannote.audio>=4.0",
+  "soundfile>=0.13",
+  "torch>=2.7",
+  "whisperx>=3.4",
+  "yt-dlp>=2025.1"
+]
+
+[project.optional-dependencies]
+apple = ["mlx-whisper>=0.4"]

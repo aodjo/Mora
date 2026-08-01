@@ -1,0 +1,10 @@
+BOOTSTRAP_TOKEN=replace-with-a-long-random-secret
+# 32 random bytes, base64 encoded (openssl rand -base64 32)
+SECRET_ENCRYPTION_KEY=replace-with-base64-32-byte-key
+# RSA PKCS#8 PEM private key. Use literal newlines with wrangler secret put in production.
+ARTIFACT_PRIVATE_KEY=replace-with-pkcs8-private-key
+
+# 아래 값은 선택 사항이며 Admin Dashboard의 서버 런타임 환경에서 덮어쓸 수 있습니다.
+# ADMIN_RP_ID=localhost
+# ADMIN_ORIGIN=http://localhost:8787
+# DUMP_URL=https://example.invalid/mora-public.sqlite

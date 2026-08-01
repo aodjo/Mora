@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+*.sqlite*
+*.log
+.git
+.dev.vars
+.wrangler
+.wrangler-dist
+.DS_Store

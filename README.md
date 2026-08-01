@@ -1,221 +1,146 @@
-# SERVICE word-timing layer
+# Mora
 
-가사 원문을 저장하거나 배포하지 않고, 클라이언트가 보유한 텍스트에 단어 단위 타이밍을 얹는 서비스입니다.
-
-## 배포 구조
+Mora는 클라이언트가 이미 가진 가사에 단어·줄·익명 발화자 타이밍을 얹는 시스템입니다. 공개 Server와 덤프에는 가사 문자가 없고 숫자 지문과 활성 타이밍만 들어갑니다.
 
 ```text
-데이터 생성 환경 (어디서든 실행)
-  forced aligner의 타이밍 + 보유한 가사
-       ↓
-  Generator (Node.js 또는 Docker)
-  - unilab-v1 토큰화
-  - 지문·text_hash 생성
-  - 시간 범위 검증
-  - 가사를 제거한 contribution 생성
-       ↓ HTTPS /v1/contribute
-Cloudflare Worker
-  - 공개 정렬 API
-  - contribution 인증
-       ↓ D1 binding
-Cloudflare D1
-  - 지문과 숫자 타이밍만 저장
+Collector → Admin Control Plane → Queue → Generator
+                ↑                         │
+                └──── 후보·스템·상태 ─────┘
+                │
+                └──── 승인/품질 게이트 → Public Server
 ```
 
-두 실행 환경은 완전히 분리됩니다.
+## 앱 구성
 
-- **Serving plane**: Cloudflare Worker + D1. 플레이어 요청 처리와 공개 데이터 배포를 담당합니다.
-- **Generation plane**: 상태 없는 Node.js 서버. 노트북, NAS, VM, 컨테이너 어디서든 실행하며 생성 결과를 Worker에 업로드합니다.
-- **Shared core**: 토크나이저, 지문, 매칭, 신뢰도, 보간 코드는 두 환경이 공유합니다.
+- `Admin/`: React + Vite + TailwindCSS Control Plane. 작업, 워커, 검수, 타이밍 편집, 권한, 감사 로그를 관리합니다.
+- `Collector/`: KR/US/JP 인기곡·신곡을 찾고 MusicBrainz로 ISRC를 보강하며, 내장 SongTitle 라우터의 모든 provider 원문과 YouTube Music 오디오 후보를 제출합니다.
+- `Generator/`: Cloudflare Queue pull consumer. `yt-dlp`, `htdemucs_ft`, Whisper large-v3-turbo, forced alignment, diarization과 speaker stem 생성을 실행합니다.
+- `Server/`: Cloudflare Worker. Admin API/asset과 가사 없는 Public API를 함께 서빙합니다.
+- `packages/`: API 계약, 전처리, 토큰화, 지문, 정렬, 포맷 변환과 `songtitle` 가사 provider 라우터를 공유합니다.
 
-Generator에는 Demucs·WhisperX·MFA·NeMo 자체를 아직 포함하지 않습니다. 현재 경계는 외부 forced aligner가 만든 `line_spans`와 `word_spans`를 받아 검증·지문화·업로드하는 단계입니다. 음원별 ML 실행기는 이 앞에 어댑터로 연결합니다.
+## 데이터 경계
 
-## 구현 범위
+| 저장소 | 내용 |
+|---|---|
+| `PUBLIC_DB` | 활성 recording, 지문, 줄/단어 timing, 익명 speaker index |
+| `ADMIN_DB` | 원문·전처리 가사 리비전, 작업, 후보, provenance, RBAC, 감사 로그 |
+| `ADMIN_ARTIFACTS` | 원본과 모든 stem의 파일별 청크 암호문 |
+| 주간 SQLite 덤프 | `PUBLIC_DB` 활성본만 |
 
-- `unilab-v1`: NFC, 길이 보존 폴딩, 괄호 마스킹, 섹션 헤더 제외, 어절 토큰화
-- 원문 유니코드 코드포인트 좌표로 되돌리는 NFC 오프셋 매핑
-- 정준형 SHA-256 16자리 해시와 길이·타입 지문
-- 줄/토큰 2단계 Needleman–Wunsch 정렬
-- `word` / `word-approx` / `line` 폴백과 미매칭 토큰 보간
-- D1 BLOB에 숫자 배열만 저장하는 마이그레이션
-- Worker API: align, fingerprint align, tokenize, contribute, dump redirect
-- Generator API: build, publish, tokenize
-- LRC-A2, Lyricsfile, TTML, WebVTT 숫자 오버레이 뷰
+Generator는 파일별 256-bit 데이터 키로 4 MiB AES-GCM 청크를 만들고 RSA-OAEP 관리 키로 데이터 키를 감쌉니다. Admin Worker는 권한 검사 후 필요한 청크만 복호화해 HTTP Range로 스트리밍합니다. 비밀값과 서비스 키는 발급/교체할 수 있지만 다시 조회할 수 없습니다.
 
-## Cloudflare Worker + D1
+## 개발 환경
 
-Node.js 22.5 이상과 Cloudflare 계정이 필요합니다.
-
-### 로컬 실행
+Node.js 24, pnpm 11, Python 3.11~3.13, ffmpeg가 필요합니다.
 
 ```bash
-npm install
+corepack pnpm install
 cp Server/.dev.vars.example Server/.dev.vars
-npm run worker:types
-npm run d1:migrate:local
-npm run dev:worker
+corepack pnpm d1:migrate:local
+corepack pnpm build
+corepack pnpm dev:worker
 ```
 
-로컬 Worker는 기본적으로 `http://127.0.0.1:8787`에서 실행됩니다. `Server/.dev.vars`의 `CONTRIBUTE_TOKEN`이 기여 API 인증에 사용됩니다.
+Dashboard는 `http://localhost:8787/admin/`입니다. 첫 접속에서는 `.dev.vars`의 `BOOTSTRAP_TOKEN`으로 최초 관리자 패스키를 등록합니다.
 
-### Cloudflare 배포
-
-먼저 D1을 만들고 출력된 ID로 [`Server/wrangler.jsonc`](./Server/wrangler.jsonc)의 `database_id`를 교체합니다.
+검증 명령:
 
 ```bash
-npx wrangler d1 create service-word-timing --location=apac
-npm run worker:types
-npm run d1:migrate:remote
-npx wrangler secret put CONTRIBUTE_TOKEN --config Server/wrangler.jsonc
-npx wrangler secret put DUMP_URL --config Server/wrangler.jsonc
-npm run worker:deploy
+corepack pnpm check
+corepack pnpm test
+corepack pnpm worker:build
+python3 -m py_compile Generator/python/mora_ml_daemon.py
 ```
 
-`DUMP_URL`은 정기적으로 게시한 SQLite 덤프의 주소입니다. `GET /v1/dump`는 이 주소로 리다이렉트합니다.
-
-Worker 런타임의 최신 D1에서 직접 SQLite 파일을 덤프하는 API는 제공되지 않습니다. 주간 배포 작업은 `wrangler d1 export --remote`로 SQL을 내보내고 SQLite 파일로 변환한 뒤 R2나 다른 정적 스토리지에 올려야 합니다.
+## Cloudflare 배포 준비
 
 ```bash
-npx wrangler d1 export service-word-timing --remote --output=service.sql --config Server/wrangler.jsonc
-sqlite3 service.sqlite < service.sql
+corepack pnpm infra:login
+corepack pnpm infra:provision
 ```
 
-`npm run worker:build`는 실제 배포 없이 Worker 번들만 검증합니다.
+프로비저닝 명령은 다음 작업을 멱등적으로 수행합니다.
 
-## 데이터 Generator
+- APAC D1 `mora-public`, `mora-admin` 생성 및 실제 ID 바인딩
+- R2 `mora-admin-artifacts`, `mora-public-dumps` 생성
+- `mora-generation` Queue와 HTTP pull consumer 생성
+- 원격 D1 migration, Admin/Worker 빌드 및 배포
+- Bootstrap token, 설정 암호화 키, artifact RSA 키 생성 및 Cloudflare Secret 등록
+- 빈 카탈로그를 포함한 최초 공개 SQLite dump 게시
 
-Generator는 DB를 갖지 않으며 입력 가사는 요청 처리 메모리에서만 사용합니다.
+최초 관리자 등록에 필요한 값은 권한 `0600`의 `Server/.mora-infra-secrets.json`에 한 번 생성됩니다. 이 파일을 암호 관리자로 옮긴 뒤 로컬 사본의 보관 여부를 결정하세요. Generator용 공개 키는 `Generator/artifact-public.pem`에 생성됩니다. 두 파일은 Git에서 제외됩니다.
 
-### 로컬 실행
+배포 후 Cloudflare에서 Account/Queues Edit 권한의 전용 API token을 만들고 Queue ID와 함께 Generator에 제공합니다. YouTube 쿠키, Hugging Face token, Cloudflare token은 Queue 메시지·작업 JSON·로그에 넣지 않습니다.
+
+### Dashboard 환경 설정
+
+Admin의 `권한·설정 → 서버 런타임 환경`에서 외부 dump URL, WebAuthn RP/origin, 자동 승격과 품질 임계치, Webhook timeout·서명키를 관리합니다. 일반 값은 즉시 반영되고 비밀값은 암호화된 write-only 값으로 저장됩니다. D1/R2/Queue binding과 `BOOTSTRAP_TOKEN`, `SECRET_ENCRYPTION_KEY`, `ARTIFACT_PRIVATE_KEY`는 Worker 부팅과 복호화의 신뢰 루트이므로 Dashboard에서는 상태만 표시하며 Cloudflare 배포 도구로만 교체합니다.
+
+## Generator 실행
+
+Apple Silicon:
 
 ```bash
-npm run build
-GENERATOR_HOST=127.0.0.1 \
-GENERATOR_PORT=3100 \
-SERVICE_PUBLISH_URL=https://your-worker.example \
-SERVICE_PUBLISH_TOKEN=replace-me \
-npm start
+cd Generator/python
+uv sync --extra apple
+cd ../..
+corepack pnpm build:services
+
+MORA_PYTHON=Generator/python/.venv/bin/python \
+MORA_ADMIN_URL=https://mora.example \
+MORA_GENERATOR_TOKEN=mora_... \
+MORA_WORKER_ID=... \
+MORA_ARTIFACT_PUBLIC_KEY="$(cat artifact-public.pem)" \
+CF_ACCOUNT_ID=... CF_QUEUE_ID=... CF_API_TOKEN=... \
+YTDLP_COOKIE_FILE=/secure/path/cookies.txt \
+node dist/Generator/src/worker-cli.js
 ```
 
-| 환경 변수 | 기본값 | 설명 |
-|---|---:|---|
-| `GENERATOR_HOST` | `127.0.0.1` | Generator 리슨 주소 |
-| `GENERATOR_PORT` | `3100` | Generator 포트 |
-| `SERVICE_PUBLISH_URL` | 없음 | 업로드할 Worker base URL |
-| `SERVICE_PUBLISH_TOKEN` | 없음 | Worker의 `CONTRIBUTE_TOKEN`과 같은 값 |
+새 워커는 Admin에서 일회용 등록 token을 만든 뒤 `MORA_ENROLLMENT_TOKEN`으로 한 번 실행합니다. 자격증명은 `.mora-worker.json`에 mode `0600`으로 기록됩니다. self-test에서 GPU backend, yt-dlp, ffmpeg, Demucs, ASR, aligner를 모두 통과한 워커만 production 작업을 받습니다. diarization은 best-effort입니다.
 
-### Docker 실행
+Linux CUDA용 `Generator/Dockerfile`도 제공됩니다. XPU/ROCm은 같은 backend adapter와 self-test 계약을 사용하며, 해당 PyTorch 런타임 이미지에서 실행합니다.
+
+## Collector 연결
+
+`~/Documents/SongTitle`의 소스는 `packages/songtitle` 워크스페이스 패키지로 포함되어 있습니다. Collector는 별도 adapter 설정 없이 Melon, Bugs, Genie, FLO, Vibe, Genius, LyricFind, Shazam에서 성공한 원문을 모두 Admin에 제출합니다.
 
 ```bash
-docker build -f Generator/Dockerfile -t service-generator .
-docker run --rm -p 3100:3100 \
-  -e SERVICE_PUBLISH_URL=https://your-worker.example \
-  -e SERVICE_PUBLISH_TOKEN=replace-me \
-  service-generator
+MORA_ADMIN_URL=https://mora.example \
+MORA_COLLECTOR_TOKEN=mora_... \
+COLLECTOR_DAILY_BUDGET=300 \
+corepack pnpm dev:collector
 ```
 
-### contribution 만들기
+`SONGTITLE_PROVIDERS=melon,bugs,genie`, `SONGTITLE_TIMEOUT_MS=12000`으로 범위와 타임아웃을 조절합니다. `SONGTITLE_BROWSER=1`은 Chromium 폴백을 켜고 `SONGTITLE_HEADFUL=1`은 디버깅용 창을 표시합니다. Genius API와 LyricFind는 각각 `GENIUS_ACCESS_TOKEN`, `LYRICFIND_API_KEY`를 사용합니다. 브라우저를 쓰려면 한 번 `corepack pnpm --filter @mora/songtitle exec playwright install chromium`을 실행합니다.
 
-`POST /v1/build`는 원문과 forced-alignment 결과를 받아 가사가 없는 업로드 payload를 반환합니다.
+다른 라이브러리를 쓰려면 `packages/contracts`의 `LyricsProvider`를 default 또는 `provider`로 export하고 `LYRICS_LIBRARY_MODULE=/absolute/path/to/provider.js`를 지정하면 내장 SongTitle 대신 사용됩니다.
+
+Collector는 뮤직비디오·live·cover·karaoke·instrumental·sped-up 결과를 자동 후보에서 제외합니다. 공식/Topic 오디오이면서 점수 0.90 이상인 경우에만 자동 선택합니다. ISRC나 소스가 모호하면 Generator 작업을 만들지 않고 Admin 검수함으로 보냅니다.
+
+## Public API
+
+`POST /v1/align`은 ISRC, MBID 또는 `artist + title + duration_ms`와 클라이언트 가사를 받습니다. 메타데이터 조회가 모호하면 409를 반환합니다.
 
 ```json
 {
   "isrc": "KRA382400123",
-  "text": "나는 오늘 밤에\n너를 기다렸어",
+  "text": "클라이언트가 이미 가진 가사",
   "duration_ms": 214000,
-  "line_spans": [[12000, 13400], [13600, 14600]],
-  "word_spans": [
-    [0, 12000, 12350],
-    [1, 12350, 12800],
-    [2, 12800, 13400],
-    [3, 13600, 14000],
-    [4, 14000, 14600]
-  ],
-  "source": "forced-align"
+  "language": "ko"
 }
 ```
 
-응답에는 `text`가 없고 `text_hash`, `fingerprint`, 타이밍만 남습니다. 같은 본문을 `POST /v1/publish`에 보내면 설정된 Worker의 `/v1/contribute`로 바로 업로드합니다.
+응답 tier는 `word ≥ .90`, `word-approx ≥ .60`, `line ≥ .30`, 그 미만 `none`입니다. `spans`의 마지막 숫자는 실제 정렬 `0`, 글자 수 비례 보간 `1`입니다. 응답에는 원문, provider, YouTube ID, 모델명, 과거 리비전이 없습니다.
 
-## Worker API
+그 밖에 `/v1/align/fingerprint`, `/v1/tokenize`, `/v1/dump`와 `?format=spans|lrc-a2|lyricsfile|ttml|webvtt`를 지원합니다.
 
-| 경로 | 설명 |
-|---|---|
-| `POST /v1/align` | 클라이언트 텍스트를 D1 정렬본과 매칭하여 코드포인트 오프셋 반환 |
-| `POST /v1/align/fingerprint` | 텍스트 대신 지문으로 매칭하여 토큰 인덱스 반환 |
-| `POST /v1/tokenize` | `[start, end, 원문 줄 번호]` 반환 |
-| `POST /v1/contribute` | Generator payload를 D1에 upsert. Bearer 토큰 필수 |
-| `GET /v1/dump` | `DUMP_URL`로 리다이렉트 |
-| `GET /health` | 상태 확인 |
+## 운영 정책
 
-### 텍스트 정렬 예시
+- 초기 100개 승인 결과는 사람이 교정합니다. 100번째 승인 후 품질 threshold를 통과한 후보의 자동 승격이 활성화됩니다.
+- 복구 가능한 작업은 최대 3번 재시도하며 고비용 산출물은 R2 체크포인트로 재사용합니다.
+- 수정은 새 입력/후보/공개 리비전으로만 이루어지며 공개본은 철회·롤백할 수 있습니다.
+- 감사 로그는 무기한, request body가 없는 진단 로그는 30일 정책입니다.
+- 범용 Webhook과 Discord Webhook을 지원합니다. URL은 암호화된 write-only secret입니다.
+- `corepack pnpm dump:publish`는 활성 공개 데이터만 SQLite로 만들어 R2에 업로드합니다. GitHub Actions 주간 workflow도 포함됩니다.
 
-```bash
-curl -X POST https://your-worker.example/v1/align \
-  -H 'content-type: application/json' \
-  -d '{"isrc":"KRA382400123","text":"나는 오늘 밤에 (oh)\n너를 기다렸어","duration_ms":214000}'
-```
-
-```json
-{
-  "tier": "word",
-  "confidence": 1,
-  "tokenizer": "unilab-v1",
-  "offset_unit": "codepoint",
-  "alignment_id": 1,
-  "lines": [[0, 13, 12000, 13400], [14, 21, 13600, 14600]],
-  "spans": [[0, 2, 12000, 12350], [3, 5, 12350, 12800]]
-}
-```
-
-오프셋은 요청 원문의 유니코드 코드포인트 기준이며 끝 오프셋은 exclusive입니다. 등록 길이와 요청 `duration_ms`가 모두 있으면 `max(5초, 등록 길이의 2%)` 이내인 정렬본만 후보로 사용합니다.
-
-`?format=spans|lrc-a2|lyricsfile|ttml|webvtt`를 지원합니다. 텍스트 전제 포맷에는 가사 대신 코드포인트 범위를 싣기 때문에 기존 플레이어용 완성 가사 파일이 아닌 숫자 오버레이입니다.
-
-## 프라이버시 불변조건
-
-- D1과 로컬 테스트 스키마에는 가사 컬럼이 없습니다.
-- 지문·타이밍 배열은 D1 `BLOB`으로 저장됩니다.
-- Generator와 Worker는 요청 본문, 예외 객체, 스택을 로깅하지 않습니다.
-- 정준형과 토큰 문자열은 요청 처리 메모리 안에서만 존재합니다.
-- 가사를 받는 응답에는 `Cache-Control: no-store`가 붙습니다.
-- Generator가 Worker로 보내는 요청에는 원문이 포함되지 않습니다.
-
-Cloudflare Logpush, Workers Observability 또는 외부 APM을 켤 때도 request body와 예외 로컬 변수 캡처를 비활성화해야 합니다.
-
-## 프로젝트 구조
-
-```text
-Server/
-  src/                      Cloudflare Worker와 D1 저장소
-  migrations/               D1 스키마 마이그레이션
-  wrangler.jsonc            Worker와 D1 binding 설정
-Generator/
-  src/                      휴대 가능한 생성·업로드 서버
-  Dockerfile                Generator 컨테이너
-packages/core/src/
-  alignment/                NW 정렬, 신뢰도, 투영·보간
-  tokenization/             unilab-v1, 지문, 해시
-  storage/                  공통 저장소 계약과 기여 검증
-  shared/                   공통 타입, 오류, 입력 검증
-test/                       단위·통합·프라이버시 테스트
-```
-
-## 검증
-
-```bash
-npm run check
-npm test
-npm run worker:build
-```
-
-테스트는 토크나이저, 지문 매칭, 폴백, 보간, Generator의 원문 제거와 업로드, 저장소의 원문 비포함을 다룹니다. 로컬 D1 종단 간 검증은 `d1:migrate:local` 후 Generator `/v1/publish` → Worker `/v1/align` 순서로 수행할 수 있습니다.
-
-## 아직 남은 범위
-
-- Demucs/WhisperX/MFA/NeMo 실행 어댑터와 작업 큐
-- `{artist, title, duration_ms}` 퍼지 탐색
-- 기여자 계정·평판·스팸 방지
-- D1 export → SQLite 변환 → R2 게시 자동화
-- 실제 곡 데이터 기반 임계치와 토큰 경계 튜닝
-# Mora
+원본과 stem의 장기 보관 및 `yt-dlp` 사용은 운영자가 권리와 이용약관을 별도로 검토해야 합니다.

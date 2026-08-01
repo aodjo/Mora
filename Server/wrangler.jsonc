@@ -1,0 +1,62 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "mora",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "d1_databases": [
+    {
+      "binding": "PUBLIC_DB",
+      "database_name": "mora-public",
+      "database_id": "ca056e93-4604-4183-9caf-432a5ca327a3",
+      "migrations_dir": "migrations/public"
+    },
+    {
+      "binding": "ADMIN_DB",
+      "database_name": "mora-admin",
+      "database_id": "06b72e02-7d7b-45b2-baf9-3cfef730810c",
+      "migrations_dir": "migrations/admin"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ADMIN_ARTIFACTS",
+      "bucket_name": "mora-admin-artifacts"
+    },
+    {
+      "binding": "PUBLIC_DUMPS",
+      "bucket_name": "mora-public-dumps"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "GENERATION_QUEUE",
+        "queue": "mora-generation"
+      }
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ADMIN_EVENTS",
+        "class_name": "AdminEventHub"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "AdminEventHub"
+      ]
+    }
+  ],
+  "assets": {
+    "directory": "../Admin/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  }
+}

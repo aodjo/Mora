@@ -1,0 +1,11 @@
+export { matchFingerprints, tierForConfidence } from "./alignment/matcher.js";
+export { projectFingerprintAlignment, projectTextAlignment } from "./alignment/project.js";
+export { serializeOutput } from "./api/formats.js";
+export { AlignmentService } from "./service.js";
+export { ServiceError } from "./shared/errors.js";
+export * from "./shared/types.js";
+export { AlignmentStore } from "./storage/store.js";
+export type { AlignmentRepository, Contribution, RecordingIdentifier } from "./storage/repository.js";
+export { fingerprint, fingerprintHash, textHash, validateFingerprint } from "./tokenization/fingerprint.js";
+export { activeLines, publicTokens, tokenize } from "./tokenization/tokenizer.js";
+export { tokenizeV2 } from "./tokenization/tokenizer-v2.js";

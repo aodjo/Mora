@@ -1,0 +1,105 @@
+import { serializeOutput } from "../../packages/core/src/api/formats.js";
+import { AlignmentService } from "../../packages/core/src/service.js";
+import { ServiceError } from "../../packages/core/src/shared/errors.js";
+import { handleAdmin } from "./admin/api.js";
+import { AdminEventHub } from "./admin/events.js";
+import { runtimeValue } from "./admin/runtime-config.js";
+import { D1AlignmentStore } from "./d1-store.js";
+import type { WorkerEnv } from "./env.js";
+
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const securityHeaders = {
+  "Cache-Control": "no-store",
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+  "Permissions-Policy": "camera=(), geolocation=(), microphone=()",
+} as const;
+
+const publicCors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "content-type",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+} as const;
+
+function json(value: unknown, status = 200, cors = false): Response {
+  return Response.json(value, { status, headers: { ...securityHeaders, ...(cors ? publicCors : {}) } });
+}
+
+async function readJson(request: Request): Promise<unknown> {
+  const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim();
+  if (contentType !== null && contentType !== undefined && contentType !== "application/json") throw new ServiceError(400, "INVALID_REQUEST");
+  const declaredLength = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) throw new ServiceError(413, "PAYLOAD_TOO_LARGE");
+  const body = await request.text();
+  if (new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES) throw new ServiceError(413, "PAYLOAD_TOO_LARGE");
+  try { return JSON.parse(body) as unknown; }
+  catch { throw new ServiceError(400, "BAD_JSON"); }
+}
+
+async function publicRoute(request: Request, env: WorkerEnv): Promise<Response> {
+  const url = new URL(request.url);
+  const service = new AlignmentService(new D1AlignmentStore(env.PUBLIC_DB));
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: publicCors });
+  if (request.method === "GET" && url.pathname === "/health") return json({ status: "ok" }, 200, true);
+  if (request.method === "GET" && url.pathname === "/v1/dump") {
+    const external = await runtimeValue(env, "server.dump_url");
+    if (external !== undefined) return Response.redirect(external, 302);
+    if (env.DUMP_URL !== undefined) return Response.redirect(env.DUMP_URL, 302);
+    const object = await env.PUBLIC_DUMPS.get("mora-public.sqlite");
+    if (object === null) throw new ServiceError(503, "DUMP_NOT_READY");
+    const headers = new Headers({
+      ...securityHeaders,
+      ...publicCors,
+      "Content-Disposition": "attachment; filename=mora-public.sqlite",
+      "Content-Length": String(object.size),
+      "Content-Type": "application/vnd.sqlite3",
+      ETag: object.httpEtag,
+    });
+    object.writeHttpMetadata(headers);
+    return new Response(object.body, { headers });
+  }
+  if (request.method !== "POST") throw new ServiceError(404, "NOT_FOUND");
+  if (url.pathname === "/v1/align") {
+    const result = await service.align(await readJson(request));
+    const output = serializeOutput(result, url.searchParams.get("format"));
+    return new Response(output.body, { status: 200, headers: { ...securityHeaders, ...publicCors, "Content-Type": output.contentType } });
+  }
+  if (url.pathname === "/v1/align/fingerprint") return json(await service.alignFingerprint(await readJson(request)), 200, true);
+  if (url.pathname === "/v1/tokenize") return json(service.tokenize(await readJson(request)), 200, true);
+  throw new ServiceError(404, "NOT_FOUND");
+}
+
+async function adminAsset(request: Request, env: WorkerEnv): Promise<Response> {
+  const url = new URL(request.url);
+  const assetPath = url.pathname.slice("/admin".length);
+  url.pathname = assetPath.length === 0 || assetPath === "/" ? "/" : assetPath;
+  const response = await env.ASSETS.fetch(new Request(url, request));
+  const headers = new Headers(response.headers);
+  headers.set("Content-Security-Policy", "frame-ancestors 'none'");
+  headers.set("Permissions-Policy", "camera=(), geolocation=(), microphone=(), publickey-credentials-create=(self), publickey-credentials-get=(self)");
+  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("X-Frame-Options", "DENY");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+async function route(request: Request, env: WorkerEnv): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.pathname.startsWith("/admin/api/")) return handleAdmin(request, env);
+  if (url.pathname === "/admin") return Response.redirect(`${url.origin}/admin/`, 308);
+  if (url.pathname.startsWith("/admin/")) return adminAsset(request, env);
+  return publicRoute(request, env);
+}
+
+export { AdminEventHub };
+
+export default {
+  async fetch(request: Request, env: WorkerEnv): Promise<Response> {
+    try { return await route(request, env); }
+    catch (error) {
+      // Never log request bodies, caught values, or stacks: they can retain lyrics or credentials.
+      if (error instanceof ServiceError) return json({ error: error.code }, error.status, new URL(request.url).pathname.startsWith("/v1/"));
+      return json({ error: "INTERNAL" }, 500, new URL(request.url).pathname.startsWith("/v1/"));
+    }
+  },
+} satisfies ExportedHandler<WorkerEnv>;
