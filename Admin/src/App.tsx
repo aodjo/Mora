@@ -18,7 +18,7 @@ const descriptions: Record<Page, string> = {
   jobs: "수집 및 생성 작업의 진행 상태를 관리합니다.",
   workers: "연결된 Generator 워커의 상태를 확인합니다.",
   recordings: "곡과 정렬 리비전을 조회합니다.",
-  review: "생성된 타이밍을 검수하고 수정합니다.",
+  review: "음원 소스를 확정하고 생성된 타이밍을 검수합니다.",
   connections: "Collector와 Generator의 10자리 PIN 연결을 승인합니다.",
   audit: "관리 작업과 보안 이벤트를 추적합니다.",
   settings: "런타임 설정과 서비스 자격증명을 관리합니다."
@@ -56,7 +56,7 @@ export default function App() {
   useEffect(refreshAuth, [refreshAuth]);
   const refresh = useCallback(() => {
     if (auth?.actor === null || auth === null) return;
-    const path = page === "review" ? "/candidates" : page === "settings" || page === "connections" ? "/overview" : `/${page}`;
+    const path = page === "review" ? "/reviews" : page === "settings" || page === "connections" ? "/overview" : `/${page}`;
     void api<Record<string, unknown>>(path).then(setData);
   }, [auth, page]);
   useEffect(refresh, [refresh]);
@@ -65,6 +65,8 @@ export default function App() {
   if (auth === null) return <div className="loading-screen"><span className="brand-mark">M</span><div><span>{authError ? "Admin에 연결하지 못했습니다." : "Mora를 불러오는 중…"}</span>{authError&&<><code>{authError}</code><button onClick={refreshAuth} className="secondary-button"><RefreshCw size={14}/>다시 시도</button></>}</div></div>;
   if (auth.actor === null) return <Auth status={auth} onAuthenticated={refreshAuth} theme={theme} onToggleTheme={toggleTheme}/>;
   const items = Array.isArray(data.items) ? data.items as Array<Record<string, unknown>> : [];
+  const sourceItems = Array.isArray(data.source_items) ? data.source_items as Array<Record<string, unknown>> : [];
+  const candidateItems = Array.isArray(data.candidate_items) ? data.candidate_items as Array<Record<string, unknown>> : [];
   const activeLabel = pages.find(([id]) => id === page)?.[1];
   return <div className="app-shell">
     <aside className="sidebar">
@@ -83,7 +85,7 @@ export default function App() {
           : page==="workers" ? <WorkersView items={items}/>
           : page==="recordings" ? <RecordingsView items={items}/>
           : page==="review" && selected!==null ? <Editor candidateId={selected}/>
-          : page==="review" ? <ReviewView items={items} onSelect={setSelected}/>
+          : page==="review" ? <ReviewView sourceItems={sourceItems} candidateItems={candidateItems} onSelect={setSelected} refresh={refresh}/>
           : page==="audit" ? <AuditView items={items}/>
           : page==="connections" ? <ConnectionsPanel/>
           : <SettingsPanel/>}

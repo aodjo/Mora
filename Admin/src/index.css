@@ -213,6 +213,48 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .recording-body footer span { display: inline-flex; align-items: center; gap: 5px; }
 
 /* Review: quality is the primary axis; editing is a deliberate trailing action. */
+.review-workspace { display: grid; gap: 14px; }
+.review-tabs { display: flex; width: fit-content; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.review-tabs button { display: flex; min-height: 36px; align-items: center; gap: 7px; border: 0; border-right: 1px solid var(--border); background: transparent; padding: 0 11px; color: var(--muted); font-size: 12px; }
+.review-tabs button:last-child { border-right: 0; }
+.review-tabs button:hover { background: var(--surface-hover); color: var(--text); }
+.review-tabs button.active { background: var(--primary); color: var(--on-primary); }
+.review-tabs b { min-width: 18px; border-radius: 9999px; background: var(--surface-muted); padding: 1px 5px; color: var(--muted); font-family: "Geist Mono Variable", ui-monospace, monospace; font-size: 9px; font-weight: 500; }
+.review-tabs button.active b { background: color-mix(in srgb, var(--on-primary) 15%, transparent); color: var(--on-primary); }
+.source-review-section { display: grid; gap: 12px; }
+.source-review-summary { display: grid; grid-template-columns: 130px 180px minmax(240px, 1fr); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.source-review-summary > div { border-right: 1px solid var(--border); padding: 16px 20px; }
+.source-review-summary strong, .source-review-summary span { display: block; }
+.source-review-summary strong { font-size: 20px; font-weight: 600; line-height: 26px; }
+.source-review-summary span { color: var(--faint); font-size: 10px; line-height: 15px; }
+.source-review-summary p { align-self: center; margin: 0; padding: 16px 20px; color: var(--muted); font-size: 11px; line-height: 17px; text-align: right; }
+.source-review-list { display: grid; gap: 10px; }
+.source-review-card { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.source-review-card > header { display: flex; align-items: center; gap: 11px; padding: 16px 18px; }
+.source-review-icon { display: grid; width: 34px; height: 34px; flex: none; place-items: center; border-radius: 6px; background: var(--surface-muted); color: var(--muted); }
+.source-review-card > header > div { min-width: 0; }
+.source-review-card h2 { overflow: hidden; margin: 0; font-size: 14px; font-weight: 600; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
+.source-review-card header p { overflow: hidden; margin: 1px 0 0; color: var(--muted); font-size: 11px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+.source-review-card header .state-badge { margin-left: auto; }
+.source-review-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--surface-muted); padding: 9px 18px; color: var(--muted); font-size: 10px; }
+.source-review-meta code { color: var(--text); font-family: "Geist Mono Variable", ui-monospace, monospace; }
+.source-review-meta time { margin-left: auto; }
+.source-blocker { display: flex; align-items: flex-start; gap: 7px; border-bottom: 1px solid color-mix(in srgb, var(--red) 16%, var(--border)); background: var(--red-soft); padding: 9px 18px; color: var(--red); font-size: 11px; line-height: 16px; }
+.source-blocker svg { flex: none; margin-top: 1px; }
+.source-options { padding: 8px 18px 0; }
+.source-option { display: grid; grid-template-columns: minmax(0, 1fr) 44px 40px 62px; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding: 9px 0; }
+.source-option strong, .source-option a { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-option strong { font-size: 12px; font-weight: 500; line-height: 17px; }
+.source-option a { color: var(--faint); font-size: 9px; line-height: 14px; text-decoration: none; }
+.source-option a svg { display: inline; margin-left: 4px; vertical-align: -2px; }
+.source-score { color: var(--muted); font-family: "Geist Mono Variable", ui-monospace, monospace; font-size: 10px; text-align: right; }
+.source-official { color: var(--link); font-size: 10px; text-align: center; }
+.source-option button { display: flex; min-height: 28px; align-items: center; justify-content: center; gap: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 0 7px; font-size: 11px; font-weight: 500; }
+.source-option button:hover { border-color: var(--border-strong); }
+.source-option button:disabled { cursor: not-allowed; opacity: .4; }
+.manual-source { display: flex; gap: 8px; padding: 12px 18px 16px; }
+.manual-source .form-control { min-width: 0; flex: 1; }
+.manual-source button:disabled { cursor: not-allowed; opacity: .4; }
 .review-list { display: grid; gap: 12px; }
 .review-card { display: grid; grid-template-columns: 88px minmax(0, 1fr) 48px; align-items: stretch; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
 .quality-dial { --quality: 0deg; position: relative; display: grid; width: 62px; height: 62px; place-items: center; align-content: center; align-self: center; justify-self: center; border-radius: 50%; background: conic-gradient(var(--link) var(--quality), var(--surface-muted) 0); }
@@ -355,6 +397,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .review-card { grid-template-columns: 74px minmax(0, 1fr) 42px; }
   .review-main { padding: 14px; }
   .review-main footer time { width: 100%; margin-left: 0; }
+  .source-review-summary { grid-template-columns: 1fr 1fr; }
+  .source-review-summary > div:nth-child(2) { border-right: 0; }
+  .source-review-summary p { grid-column: 1 / -1; border-top: 1px solid var(--border); text-align: left; }
 }
 @media (max-width: 639px) {
   .toast-region { right: 16px; bottom: 16px; left: 16px; width: auto; }
@@ -370,6 +415,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .audit-list { padding-right: 14px; padding-left: 14px; }
   .audit-copy > div:first-child { display: block; }
   .audit-copy time { display: block; margin-top: 2px; }
+  .source-review-card > header { align-items: flex-start; }
+  .source-review-card header .state-badge { max-width: 88px; white-space: nowrap; }
+  .source-review-meta time { width: 100%; margin-left: 0; }
+  .source-option { grid-template-columns: minmax(0, 1fr) 40px 58px; }
+  .source-option .source-official { display: none; }
+  .manual-source { display: grid; }
+  .manual-source button { justify-content: center; }
 }
 @media (min-width: 1024px) {
   .sidebar { display: block; }

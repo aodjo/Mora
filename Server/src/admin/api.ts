@@ -20,6 +20,7 @@ import {
   webhookSignature,
 } from "./runtime-config.js";
 import { openSecret, sealSecret } from "./secrets.js";
+import { youtubeVideoId } from "./source-review.js";
 
 const jsonHeaders = { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff" } as const;
 
@@ -200,6 +201,42 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
   await audit(env, actor, "collector.submit", "input_revision", inputId, { recording_id: targetRecordingId, job_id: jobId, lyric_count: lyrics.length });
   await event(env, "collector.submitted", { recording_id: targetRecordingId, input_revision_id: inputId, job_id: jobId });
   return json({ recording_id: targetRecordingId, input_revision_id: inputId, job_id: jobId, state: jobId === null ? "review_required" : "queued" }, 201);
+}
+
+interface SourceReviewItem {
+  input_revision_id:string;recording_id:string;artist:string;title:string;album:string|null;isrc:string|null;duration_ms:number;language:string;created_at:number;lyrics_count:number;
+  sources:Array<{id:string;url:string;video_id:string;rank:number;official:boolean;source_type:string;score:number;metadata:Record<string,unknown>}>;
+}
+
+async function reviewQueues(env:WorkerEnv,actor:Actor):Promise<Response>{
+  requirePermission(actor,"recordings.read");requirePermission(actor,"candidates.read");
+  const [rows,candidates]=await Promise.all([
+    env.ADMIN_DB.prepare(`SELECT i.id input_revision_id,i.created_at,r.id recording_id,r.artist,r.title,r.album,r.isrc,r.duration_ms,r.language,
+      (SELECT COUNT(*) FROM lyric_revisions l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count,
+      s.id source_id,s.url,s.video_id,s.rank,s.official,s.source_type,s.score,s.metadata
+      FROM input_revisions i JOIN recordings r ON r.id=i.recording_id LEFT JOIN media_sources s ON s.recording_id=r.id
+      WHERE i.state='draft' AND i.source_id IS NULL AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.input_revision_id=i.id)
+      ORDER BY CASE WHEN s.id IS NULL THEN 1 ELSE 0 END,i.created_at DESC,s.rank LIMIT 1000`).all<Record<string,unknown>>(),
+    env.ADMIN_DB.prepare("SELECT id,job_id,input_revision_id,variant_id,status,tokenizer,text_hash,quality,quality_score,pipeline_version,backend,hardware,created_at FROM alignment_candidates ORDER BY created_at DESC LIMIT 200").all<Record<string,unknown>>(),
+  ]);
+  const grouped=new Map<string,SourceReviewItem>();
+  for(const row of rows.results){const inputId=String(row.input_revision_id);let item=grouped.get(inputId);if(item===undefined){item={input_revision_id:inputId,recording_id:String(row.recording_id),artist:String(row.artist),title:String(row.title),album:typeof row.album==="string"?row.album:null,isrc:typeof row.isrc==="string"?row.isrc:null,duration_ms:Number(row.duration_ms),language:String(row.language),created_at:Number(row.created_at),lyrics_count:Number(row.lyrics_count),sources:[]};grouped.set(inputId,item);}if(typeof row.source_id==="string")item.sources.push({id:row.source_id,url:String(row.url),video_id:String(row.video_id),rank:Number(row.rank),official:row.official===1,source_type:String(row.source_type),score:Number(row.score),metadata:typeof row.metadata==="string"?JSON.parse(row.metadata) as Record<string,unknown>:{}});}
+  return json({source_items:[...grouped.values()],candidate_items:candidates.results});
+}
+
+async function selectSourceReview(env:WorkerEnv,actor:Actor,inputId:string,value:Record<string,unknown>):Promise<Response>{
+  requirePermission(actor,"jobs.manage");
+  const input=await env.ADMIN_DB.prepare(`SELECT i.id,i.recording_id,i.state,r.isrc,(SELECT COUNT(*) FROM lyric_revisions l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count FROM input_revisions i JOIN recordings r ON r.id=i.recording_id WHERE i.id=?1`).bind(inputId).first<{id:string;recording_id:string;state:string;isrc:string|null;lyrics_count:number}>();
+  if(input===null)throw new ServiceError(404,"NOT_FOUND");if(input.state!=="draft")throw new ServiceError(409,"CONFLICT");if(input.isrc===null||input.lyrics_count<1)throw new ServiceError(409,"AMBIGUOUS_RECORDING");
+  let sourceId=typeof value.source_id==="string"?value.source_id:null;
+  if(sourceId===null){const url=requiredString(value.url,4096);const videoId=youtubeVideoId(url);const existing=await env.ADMIN_DB.prepare("SELECT id FROM media_sources WHERE recording_id=?1 AND video_id=?2").bind(input.recording_id,videoId).first<{id:string}>();sourceId=existing?.id??crypto.randomUUID();if(existing===null)await env.ADMIN_DB.prepare(`INSERT INTO media_sources (id,recording_id,url,video_id,rank,official,source_type,score,selected,metadata,created_at) VALUES (?1,?2,?3,?4,1,0,'unofficial',1,0,?5,?6)`).bind(sourceId,input.recording_id,url,videoId,JSON.stringify({manual:true,created_by:actor.id}),Date.now()).run();}
+  const source=await env.ADMIN_DB.prepare("SELECT id FROM media_sources WHERE id=?1 AND recording_id=?2").bind(sourceId,input.recording_id).first<{id:string}>();if(source===null)throw new ServiceError(404,"NOT_FOUND");
+  const existingJob=await env.ADMIN_DB.prepare("SELECT id,state FROM jobs WHERE input_revision_id=?1").bind(inputId).first<{id:string;state:string}>();if(existingJob!==null)return json({job_id:existingJob.id,state:existingJob.state,deduplicated:true});
+  const jobId=crypto.randomUUID();const now=Date.now();await env.ADMIN_DB.batch([
+    env.ADMIN_DB.prepare("UPDATE media_sources SET selected=CASE WHEN id=?1 THEN 1 ELSE 0 END WHERE recording_id=?2").bind(sourceId,input.recording_id),
+    env.ADMIN_DB.prepare("UPDATE input_revisions SET source_id=?1,state='ready' WHERE id=?2 AND state='draft'").bind(sourceId,inputId),
+    env.ADMIN_DB.prepare("INSERT INTO jobs (id,input_revision_id,state,priority,available_at,created_at,updated_at) VALUES (?1,?2,'queued',0,?3,?3,?3)").bind(jobId,inputId,now),
+  ]);await audit(env,actor,"source.approve","input_revision",inputId,{source_id:sourceId,job_id:jobId});await event(env,"collector.source_approved",{input_revision_id:inputId,job_id:jobId});return json({job_id:jobId,state:"queued"},201);
 }
 
 async function generatorActorWorker(env: WorkerEnv, actor: Actor): Promise<{ id: string; production_ready: number; desired_state: string }> {
@@ -528,6 +565,7 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
       SELECT r.*,
         (SELECT COUNT(*) FROM input_revisions i WHERE i.recording_id=r.id) revision_count,
         (SELECT COUNT(*) FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id WHERE i.recording_id=r.id) alignment_count,
+        (SELECT COUNT(*) FROM media_sources s WHERE s.recording_id=r.id) source_count,
         (SELECT j.state FROM jobs j JOIN input_revisions i ON i.id=j.input_revision_id WHERE i.recording_id=r.id ORDER BY j.created_at DESC LIMIT 1) job_state,
         (SELECT j.current_stage FROM jobs j JOIN input_revisions i ON i.id=j.input_revision_id WHERE i.recording_id=r.id ORDER BY j.created_at DESC LIMIT 1) current_stage,
         EXISTS(SELECT 1 FROM releases x WHERE x.recording_id=r.id AND x.state='active') published
@@ -535,6 +573,7 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
     `) });
   }
   if (request.method === "GET" && url.pathname === "/admin/api/candidates") { requirePermission(actor, "candidates.read"); return json({ items: await list(env.ADMIN_DB, "SELECT id,job_id,input_revision_id,variant_id,status,tokenizer,text_hash,quality,quality_score,pipeline_version,backend,hardware,created_at FROM alignment_candidates ORDER BY created_at DESC LIMIT 200") }); }
+  if(request.method==="GET"&&url.pathname==="/admin/api/reviews")return reviewQueues(env,actor);
   if (request.method === "GET" && url.pathname === "/admin/api/audit") { requirePermission(actor, "audit.read"); return json({ items: await list(env.ADMIN_DB, "SELECT * FROM audit_log ORDER BY id DESC LIMIT 500") }); }
   if (request.method === "GET" && url.pathname === "/admin/api/releases") { requirePermission(actor, "releases.read"); return json({items:await list(env.ADMIN_DB,"SELECT * FROM releases ORDER BY created_at DESC LIMIT 500")}); }
   if (request.method === "GET" && url.pathname === "/admin/api/roles") { requirePermission(actor,"roles.read");return json({items:await list(env.ADMIN_DB,"SELECT id,name,permissions,system,created_at FROM roles ORDER BY name")}); }
@@ -575,6 +614,7 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   match=url.pathname.match(/^\/admin\/api\/settings\/([^/]+)$/u);
   if(request.method==="PUT"&&match?.[1]!==undefined)return putRuntimeConfig(env,actor,decodeURIComponent(match[1]),await body(request));
   if(request.method==="DELETE"&&match?.[1]!==undefined)return deleteRuntimeConfig(env,actor,decodeURIComponent(match[1]));
+  match=url.pathname.match(/^\/admin\/api\/source-reviews\/([^/]+)\/select$/u);if(request.method==="POST"&&match?.[1]!==undefined)return selectSourceReview(env,actor,match[1],await body(request,16*1024));
   match=url.pathname.match(/^\/admin\/api\/releases\/([^/]+)\/withdraw$/u);if(request.method==="POST"&&match?.[1]!==undefined)return withdrawRelease(env,actor,match[1]);
   throw new ServiceError(404, "NOT_FOUND");
 }

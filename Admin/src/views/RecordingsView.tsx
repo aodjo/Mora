@@ -44,5 +44,6 @@ function lifecycle(item: AdminItem): Lifecycle {
   if (item.job_state === "failed" || item.job_state === "cancelled") return { group: "pending", label: "처리 실패", tone: "bad" };
   if (item.job_state === "review_required") return { group: "pending", label: "검수 대기", tone: "warn" };
   if (item.job_state === "queued") return { group: "pending", label: "생성 대기", tone: "warn" };
+  if (number(item.source_count) < 1) return { group: "pending", label: "소스 없음", tone: "bad" };
   return { group: "pending", label: "소스 검수 대기", tone: "warn" };
 }
