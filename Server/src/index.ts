@@ -73,8 +73,11 @@ async function adminAsset(request: Request, env: WorkerEnv): Promise<Response> {
   const url = new URL(request.url);
   const assetPath = url.pathname.slice("/admin".length);
   url.pathname = assetPath.length === 0 || assetPath === "/" ? "/" : assetPath;
+  const htmlRoute=url.pathname==="/"||!/\.[^/]+$/u.test(url.pathname);
+  if(htmlRoute)url.searchParams.set("__mora_html",String(Date.now()));
   const response = await env.ASSETS.fetch(new Request(url, request));
   const headers = new Headers(response.headers);
+  if(response.headers.get("content-type")?.includes("text/html")===true)headers.set("Cache-Control","no-store");
   headers.set("Content-Security-Policy", "frame-ancestors 'none'");
   headers.set("Permissions-Policy", "camera=(), geolocation=(), microphone=(), publickey-credentials-create=(self), publickey-credentials-get=(self)");
   headers.set("Referrer-Policy", "no-referrer");
