@@ -1,4 +1,4 @@
-import type { LyricsProviderResult } from "../../packages/contracts/src/index.js";
+import type { LyricsProvider, LyricsProviderResult } from "../../packages/contracts/src/index.js";
 import { ListenBrainzClient } from "./listenbrainz.js";
 import { MusicBrainzClient } from "./musicbrainz.js";
 import type { CollectorConfig, RecordingSeed, YoutubeCandidate } from "./types.js";
@@ -25,11 +25,11 @@ export class CollectorService {
     for(const [index,seed] of ranked.entries()){
       this.config.onProgress?.({stage:"processing",current:index+1,total:ranked.length,song:`${seed.artist} - ${seed.title}`});
       try{
-        const identified=await this.#musicbrainz.identify(seed);if(identified.isrc)report.identified++;
+        const identified=await this.#musicbrainz.identify(seed).catch(()=>seed);if(identified.isrc)report.identified++;
         const sources=await (this.config.youtubeSearch??searchYoutubeMusic)(identified);
         const durationMs=resolveDurationMs(identified,sources);if(durationMs===undefined)throw new Error("DURATION_UNAVAILABLE");
         const recording={...identified,duration_ms:durationMs};
-        const lyrics:LyricsProviderResult[]=identified.isrc?await this.config.lyricsProvider.search({isrc:identified.isrc,...identified.mbid?{mbid:identified.mbid}:{},artist:identified.artist,title:identified.title,...identified.album?{album:identified.album}:{}}):[];
+        const lyrics:LyricsProviderResult[]=await this.config.lyricsProvider.search(lyricsSearchInput(identified));
         const selected=sources[0]?.official===true&&sources[0].score>=.9;
         const response=await this.#fetch(`${this.config.adminUrl.replace(/\/$/u,"")}/admin/api/collector/recordings`,{method:"POST",headers:{authorization:`Bearer ${this.config.adminToken}`,"content-type":"application/json"},body:JSON.stringify({recording,sources:sources.map((source,index)=>({...source,rank:index+1,selected:selected&&index===0})),lyrics,priority:identified.popularity*.65+identified.freshness*.35})});
         if(!response.ok)throw new Error(await adminErrorCode(response));const result=await response.json() as {job_id?:string|null;deduplicated?:boolean};if(result.job_id)report.submitted++;else report.review++;
@@ -38,6 +38,10 @@ export class CollectorService {
     }
     return report;
   }
+}
+
+export function lyricsSearchInput(seed:RecordingSeed):Parameters<LyricsProvider["search"]>[0] {
+  return {...seed.isrc?{isrc:seed.isrc}:{},...seed.mbid?{mbid:seed.mbid}:{},artist:seed.artist,title:seed.title,...seed.album?{album:seed.album}:{}};
 }
 
 export function resolveDurationMs(seed:RecordingSeed,sources:YoutubeCandidate[]):number|undefined {

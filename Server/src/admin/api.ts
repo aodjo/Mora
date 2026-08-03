@@ -137,14 +137,18 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
   if (typeof recordingValue !== "object" || recordingValue === null || Array.isArray(recordingValue)) throw new ServiceError(400, "INVALID_REQUEST");
   const recording = recordingValue as Record<string, unknown>;
   const isrc = typeof recording.isrc === "string" && recording.isrc.length > 0 ? recording.isrc.replaceAll("-", "").toUpperCase() : null;
+  const mbid = typeof recording.mbid === "string" && recording.mbid.length > 0 ? recording.mbid : null;
   const recordingId = crypto.randomUUID();
   const now = Date.now();
-  const existing = isrc === null ? null : await env.ADMIN_DB.prepare("SELECT id FROM recordings WHERE isrc=?1").bind(isrc).first<{ id: string }>();
+  const existing = isrc===null&&mbid===null?null:await env.ADMIN_DB.prepare("SELECT id,isrc FROM recordings WHERE (?1 IS NOT NULL AND isrc=?1) OR (?2 IS NOT NULL AND mbid=?2) ORDER BY CASE WHEN isrc=?1 THEN 0 ELSE 1 END LIMIT 1").bind(isrc,mbid).first<{id:string;isrc:string|null}>();
   const targetRecordingId = existing?.id ?? recordingId;
   if (existing === null) {
     if (typeof recording.duration_ms !== "number" || !Number.isFinite(recording.duration_ms) || recording.duration_ms < 1 || recording.duration_ms > 900_000) throw new ServiceError(400, "DURATION_REQUIRED");
     await env.ADMIN_DB.prepare(`INSERT INTO recordings (id,isrc,mbid,artist,title,album,duration_ms,language,identification_state,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)`)
-      .bind(targetRecordingId, isrc, typeof recording.mbid === "string" ? recording.mbid : null, requiredString(recording.artist, 500), requiredString(recording.title, 500), typeof recording.album === "string" ? recording.album : null, numberValue(recording.duration_ms, 1, 900_000), typeof recording.language === "string" ? recording.language : "und", isrc === null ? "pending" : "verified", now).run();
+      .bind(targetRecordingId, isrc, mbid, requiredString(recording.artist, 500), requiredString(recording.title, 500), typeof recording.album === "string" ? recording.album : null, numberValue(recording.duration_ms, 1, 900_000), typeof recording.language === "string" ? recording.language : "und", isrc === null ? "pending" : "verified", now).run();
+  } else {
+    await env.ADMIN_DB.prepare("UPDATE recordings SET isrc=COALESCE(isrc,?1),mbid=COALESCE(mbid,?2),artist=?3,title=?4,album=COALESCE(?5,album),duration_ms=?6,language=CASE WHEN ?7='und' THEN language ELSE ?7 END,identification_state=CASE WHEN COALESCE(isrc,?1) IS NULL THEN identification_state ELSE 'verified' END,updated_at=?8 WHERE id=?9")
+      .bind(isrc,mbid,requiredString(recording.artist,500),requiredString(recording.title,500),typeof recording.album==="string"?recording.album:null,numberValue(recording.duration_ms,1,900_000),typeof recording.language==="string"?recording.language:"und",now,targetRecordingId).run();
   }
 
   const sources = Array.isArray(value.sources) ? value.sources : [];

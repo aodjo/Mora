@@ -143,7 +143,7 @@ export interface LyricsProviderResult {
 
 export interface LyricsProvider {
   search(input: {
-    isrc: string;
+    isrc?: string;
     mbid?: string;
     artist: string;
     title: string;
