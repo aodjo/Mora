@@ -1,10 +1,8 @@
-import type { QueueJobMessage } from "../../packages/contracts/src/index.js";
 import { isQueueJobMessage } from "../../packages/contracts/src/index.js";
+import type { GeneratorQueue, LeasedMessage } from "./queue.js";
 
 interface PullMessage {id:string;body:unknown;attempts:number;lease_id:string;metadata?:Record<string,string>}
-export interface LeasedMessage {id:string;body:QueueJobMessage;attempts:number;leaseId:string}
-
-export class CloudflarePullQueue {
+export class CloudflarePullQueue implements GeneratorQueue {
   readonly #url:string;
   constructor(accountId:string,queueId:string,private readonly token:string,private readonly fetcher:typeof fetch=fetch){this.#url=`https://api.cloudflare.com/client/v4/accounts/${accountId}/queues/${queueId}/messages`;}
   async pull(visibilityTimeoutMs=12*60*60_000):Promise<LeasedMessage|null>{

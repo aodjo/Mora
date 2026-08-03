@@ -1,21 +1,28 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
+import { useToast } from "./Toast";
 
 type Span = [number, number];
 interface Detail { id: string; lyric_text: string; line_spans: Span[]; word_spans: Array<[number, number, number]>; artifacts: Array<{ id: string; kind: string; speaker_id: number | null }> }
 
 export function Editor({ candidateId }: { candidateId: string }) {
+  const { showToast } = useToast();
   const [detail, setDetail] = useState<Detail | null>(null);
   const [dirty, setDirty] = useState(false);
   const [message, setMessage] = useState("");
-  useEffect(() => { void api<Detail>(`/candidates/${candidateId}`).then(setDetail); void api(`/candidates/${candidateId}/lease`, { method: "POST", body: "{}" }); }, [candidateId]);
+  useEffect(() => {
+    void api<Detail>(`/candidates/${candidateId}`).then(setDetail).catch((reason: unknown) => showToast(reason instanceof Error ? reason.message : "편집기를 불러오지 못했습니다.", { variant: "error" }));
+    void api(`/candidates/${candidateId}/lease`, { method: "POST", body: "{}" }).catch((reason: unknown) => showToast(reason instanceof Error ? reason.message : "편집 권한을 얻지 못했습니다.", { variant: "error" }));
+  }, [candidateId, showToast]);
   useEffect(() => {
     if (!dirty || detail === null) return;
     const timer = window.setTimeout(() => {
-      void api(`/candidates/${candidateId}/draft`, { method: "PUT", body: JSON.stringify({ line_spans: detail.line_spans, word_spans: detail.word_spans }) }).then(() => { setDirty(false); setMessage("초안 저장됨"); });
+      void api(`/candidates/${candidateId}/draft`, { method: "PUT", body: JSON.stringify({ line_spans: detail.line_spans, word_spans: detail.word_spans }) })
+        .then(() => { setDirty(false); setMessage("초안 저장됨"); showToast("타이밍 초안을 자동 저장했습니다."); })
+        .catch((reason: unknown) => showToast(reason instanceof Error ? reason.message : "타이밍 초안 저장 실패", { variant: "error" }));
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [candidateId, detail, dirty]);
+  }, [candidateId, detail, dirty, showToast]);
   const duration = useMemo(() => Math.max(1, ...(detail?.line_spans.map((span) => span[1]) ?? [1])), [detail]);
   if (detail === null) return <p className="loading-copy">편집기를 불러오는 중…</p>;
   function change(index: number, field: 1 | 2, value: number): void {
@@ -28,6 +35,14 @@ export function Editor({ candidateId }: { candidateId: string }) {
       <div className="timeline">{detail.word_spans.map((span, index) => <div key={index} className="timeline-span" style={{ left: `${span[1] / duration * 100}%`, width: `${Math.max(.15, (span[2] - span[1]) / duration * 100)}%` }} title={`token ${span[0]}: ${span[1]}–${span[2]}ms`} />)}</div>
     </div>
     <div className="editor-table-wrap"><table className="editor-table"><thead><tr><th>Token</th><th>Start ms</th><th>End ms</th></tr></thead><tbody>{detail.word_spans.map((span, index) => <tr key={index}><td>{span[0]}</td><td><input type="number" value={span[1]} onChange={(e) => change(index, 1, Number(e.target.value))} className="timing-input" /></td><td><input type="number" value={span[2]} onChange={(e) => change(index, 2, Number(e.target.value))} className="timing-input" /></td></tr>)}</tbody></table></div>
-    <button onClick={() => void api(`/candidates/${candidateId}/submit-draft`, { method: "POST", body: "{}" }).then(() => setMessage("새 후보 리비전 제출됨"))} className="primary-button">검수 리비전 제출</button>
+    <button onClick={() => void submitDraft()} className="primary-button">검수 리비전 제출</button>
   </div>;
+
+  async function submitDraft(): Promise<void> {
+    try {
+      await api(`/candidates/${candidateId}/submit-draft`, { method: "POST", body: "{}" });
+      setMessage("새 후보 리비전 제출됨");
+      showToast("검수 리비전을 제출했습니다.");
+    } catch (reason) { showToast(reason instanceof Error ? reason.message : "검수 리비전 제출 실패", { variant: "error" }); }
+  }
 }

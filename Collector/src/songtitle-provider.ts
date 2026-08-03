@@ -19,6 +19,7 @@ export interface SongTitleProviderOptions {
   providers?: string[];
   timeoutMs?: number;
   browser?: boolean | BrowserOptions;
+  keys?: Record<string, string | undefined>;
 }
 
 function providerReference(result: LyricsResult): string | undefined {
@@ -73,6 +74,7 @@ export function createSongTitleProvider(options: SongTitleProviderOptions = {}):
     ...(providers === undefined ? {} : { providers: providers.filter((item) => item !== undefined) }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     ...(options.browser === undefined ? {} : { browser: options.browser }),
+    ...(options.keys === undefined ? {} : { keys: options.keys }),
   }));
 }
 
@@ -96,5 +98,10 @@ export function createSongTitleProviderFromEnv(env: NodeJS.ProcessEnv = process.
     ...(providers === undefined ? {} : { providers }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     browser,
+    keys: {
+      GENIUS_ACCESS_TOKEN: env.GENIUS_ACCESS_TOKEN,
+      LYRICFIND_API_KEY: env.LYRICFIND_API_KEY,
+      LYRICFIND_TERRITORY: env.LYRICFIND_TERRITORY,
+    },
   });
 }

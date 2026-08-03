@@ -2,7 +2,13 @@ export interface Actor { type: "user" | "service"; id: string; permissions: stri
 export interface AuthStatus { bootstrapped: boolean; actor: Actor | null }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/admin/api${path}`, { credentials: "include", ...init, headers: { ...(init.body === undefined ? {} : { "content-type": "application/json" }), ...init.headers } });
+  const response = await fetch(`/admin/api${path}`, {
+    credentials: "include",
+    ...init,
+    cache: init.cache ?? "no-store",
+    signal: init.signal ?? AbortSignal.timeout(15_000),
+    headers: { ...(init.body === undefined ? {} : { "content-type": "application/json" }), ...init.headers },
+  });
   const data = await response.json().catch(() => ({ error: "BAD_RESPONSE" })) as T & { error?: string };
   if (!response.ok) throw new Error(data.error ?? `HTTP_${response.status}`);
   return data;

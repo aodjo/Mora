@@ -34,4 +34,12 @@ export interface CollectorConfig {
   lyricsProvider: LyricsProvider;
   fetch?: typeof globalThis.fetch;
   youtubeSearch?: (seed: RecordingSeed) => Promise<YoutubeCandidate[]>;
+  onProgress?: (progress: CollectorProgress) => void;
 }
+
+export type CollectorProgress =
+  | { stage: "discovering"; markets: Array<"KR" | "US" | "JP"> }
+  | { stage: "selected"; total: number }
+  | { stage: "processing"; current: number; total: number; song: string }
+  | { stage: "delivered"; current: number; total: number; song: string; destination: "generator" | "review"; jobId?: string; deduplicated: boolean }
+  | { stage: "failed"; current: number; total: number; song: string; code: string };

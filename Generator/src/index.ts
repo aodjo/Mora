@@ -3,5 +3,7 @@ export { createGeneratorHttpServer } from "./http.js";
 export { GeneratorService } from "./service.js";
 export { AdminClient } from "./admin-client.js";
 export { CloudflarePullQueue } from "./cloudflare-queue.js";
+export { AdminJobQueue } from "./admin-queue.js";
+export type { GeneratorQueue, LeasedMessage } from "./queue.js";
 export { MlDaemon } from "./ml-daemon.js";
 export { GeneratorWorker } from "./worker.js";

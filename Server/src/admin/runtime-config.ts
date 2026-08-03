@@ -3,7 +3,8 @@ import type { WorkerEnv } from "../env.js";
 import { audit, requirePermission, type Actor } from "./auth.js";
 import { openSecret, sealSecret } from "./secrets.js";
 
-export type RuntimeValueType = "boolean" | "number" | "origin" | "rp-id" | "secret" | "url";
+export type RuntimeValueType = "boolean" | "number" | "origin" | "rp-id" | "secret" | "string" | "url";
+export type RuntimeComponent = "server" | "collector";
 
 export interface RuntimeConfigDefinition {
   key: string;
@@ -11,9 +12,13 @@ export interface RuntimeConfigDefinition {
   description: string;
   type: RuntimeValueType;
   secret: boolean;
+  component: RuntimeComponent;
+  environmentName?: string;
   defaultValue?: string;
   min?: number;
   max?: number;
+  normalize?: (value: string) => string;
+  validate?: (value: string) => boolean;
 }
 
 export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
@@ -23,6 +28,7 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
     description: "비워두면 PUBLIC_DUMPS R2의 mora-public.sqlite를 Worker가 직접 제공합니다.",
     type: "url",
     secret: false,
+    component: "server",
   },
   {
     key: "server.admin_rp_id",
@@ -30,6 +36,7 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
     description: "커스텀 도메인을 사용할 때의 호스트 이름입니다. 비워두면 요청 호스트를 사용합니다.",
     type: "rp-id",
     secret: false,
+    component: "server",
   },
   {
     key: "server.admin_origin",
@@ -37,6 +44,7 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
     description: "패스키 검증에 사용할 정확한 HTTPS origin입니다. 비워두면 현재 요청 origin을 사용합니다.",
     type: "origin",
     secret: false,
+    component: "server",
   },
   {
     key: "quality_threshold",
@@ -44,6 +52,7 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
     description: "캘리브레이션 완료 후 자동 공개할 최소 품질 점수입니다.",
     type: "number",
     secret: false,
+    component: "server",
     defaultValue: "0.92",
     min: 0.5,
     max: 1,
@@ -54,6 +63,7 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
     description: "품질 게이트를 통과한 후보의 자동 공개 여부입니다.",
     type: "boolean",
     secret: false,
+    component: "server",
     defaultValue: "false",
   },
   {
@@ -62,6 +72,7 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
     description: "Discord 및 범용 Webhook 한 건의 최대 전송 시간입니다.",
     type: "number",
     secret: false,
+    component: "server",
     defaultValue: "5000",
     min: 1000,
     max: 30000,
@@ -72,6 +83,147 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
     description: "범용 Webhook의 X-Mora-Signature HMAC-SHA256 서명에 사용됩니다.",
     type: "secret",
     secret: true,
+    component: "server",
+  },
+  {
+    key: "collector.user_agent",
+    label: "MusicBrainz User-Agent",
+    description: "Collector가 MusicBrainz 요청에 사용하는 서비스명과 연락처입니다.",
+    type: "string",
+    secret: false,
+    component: "collector",
+    environmentName: "MORA_USER_AGENT",
+    defaultValue: "Mora/0.1 (contact@example.com)",
+    max: 500,
+  },
+  {
+    key: "collector.daily_budget",
+    label: "일일 수집 한도",
+    description: "한 번의 수집 주기에서 처리할 최대 곡 수입니다.",
+    type: "number",
+    secret: false,
+    component: "collector",
+    environmentName: "COLLECTOR_DAILY_BUDGET",
+    defaultValue: "300",
+    min: 1,
+    max: 5000,
+  },
+  {
+    key: "collector.interval_ms",
+    label: "수집 주기",
+    description: "반복 실행 간격(ms)입니다. 최소 60초입니다.",
+    type: "number",
+    secret: false,
+    component: "collector",
+    environmentName: "COLLECTOR_INTERVAL_MS",
+    defaultValue: "86400000",
+    min: 60000,
+    max: 604800000,
+  },
+  {
+    key: "collector.once",
+    label: "한 번만 실행",
+    description: "활성화하면 한 번 수집한 뒤 Collector 프로세스를 종료합니다.",
+    type: "boolean",
+    secret: false,
+    component: "collector",
+    environmentName: "COLLECTOR_ONCE",
+    defaultValue: "false",
+  },
+  {
+    key: "collector.markets",
+    label: "수집 국가",
+    description: "쉼표로 구분한 KR, US, JP 목록입니다.",
+    type: "string",
+    secret: false,
+    component: "collector",
+    environmentName: "COLLECTOR_MARKETS",
+    defaultValue: "KR,US,JP",
+    normalize: (value) => value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean).join(","),
+    validate: (value) => value.length > 0 && value.split(",").every((item) => ["KR", "US", "JP"].includes(item)),
+  },
+  {
+    key: "collector.songtitle_providers",
+    label: "가사 Provider",
+    description: "쉼표로 구분합니다. 기본값은 등록된 모든 SongTitle provider입니다.",
+    type: "string",
+    secret: false,
+    component: "collector",
+    environmentName: "SONGTITLE_PROVIDERS",
+    normalize: (value) => value.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean).join(","),
+    validate: (value) => value.length > 0 && value.split(",").every((item) => /^(?:melon|bugs|genie|flo|vibe|genius|shazam|lyricfind)$/u.test(item)),
+  },
+  {
+    key: "collector.songtitle_timeout_ms",
+    label: "Provider 제한 시간",
+    description: "가사 provider 한 곳의 최대 요청 시간(ms)입니다.",
+    type: "number",
+    secret: false,
+    component: "collector",
+    environmentName: "SONGTITLE_TIMEOUT_MS",
+    defaultValue: "12000",
+    min: 1000,
+    max: 60000,
+  },
+  {
+    key: "collector.songtitle_browser",
+    label: "브라우저 폴백",
+    description: "HTTP 조회 실패 시 설치된 Chromium으로 브라우저 수집을 시도합니다.",
+    type: "boolean",
+    secret: false,
+    component: "collector",
+    environmentName: "SONGTITLE_BROWSER",
+    defaultValue: "false",
+  },
+  {
+    key: "collector.songtitle_headful",
+    label: "브라우저 창 표시",
+    description: "브라우저 폴백을 디버깅할 때 Chromium 창을 표시합니다.",
+    type: "boolean",
+    secret: false,
+    component: "collector",
+    environmentName: "SONGTITLE_HEADFUL",
+    defaultValue: "false",
+  },
+  {
+    key: "collector.genius_access_token",
+    label: "Genius Access Token",
+    description: "Genius API 접근 토큰입니다. Collector에만 복호화되어 전달됩니다.",
+    type: "secret",
+    secret: true,
+    component: "collector",
+    environmentName: "GENIUS_ACCESS_TOKEN",
+  },
+  {
+    key: "collector.lyricfind_api_key",
+    label: "LyricFind API Key",
+    description: "LyricFind API 키입니다. Collector에만 복호화되어 전달됩니다.",
+    type: "secret",
+    secret: true,
+    component: "collector",
+    environmentName: "LYRICFIND_API_KEY",
+  },
+  {
+    key: "collector.lyricfind_territory",
+    label: "LyricFind Territory",
+    description: "LyricFind 요청에 사용할 2자리 국가 코드입니다.",
+    type: "string",
+    secret: false,
+    component: "collector",
+    environmentName: "LYRICFIND_TERRITORY",
+    defaultValue: "KR",
+    normalize: (value) => value.toUpperCase(),
+    validate: (value) => /^[A-Z]{2}$/u.test(value),
+  },
+  {
+    key: "collector.lyrics_library_module",
+    label: "외부 LyricsProvider 모듈",
+    description: "내장 SongTitle을 완전히 교체할 때 Collector 호스트의 절대 모듈 경로를 입력합니다.",
+    type: "string",
+    secret: false,
+    component: "collector",
+    environmentName: "LYRICS_LIBRARY_MODULE",
+    validate: (value) => value.startsWith("/"),
   },
 ] as const;
 
@@ -114,7 +266,12 @@ export function normalizeRuntimeValue(definition: RuntimeConfigDefinition, raw: 
   } else if (definition.type === "rp-id" && !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/iu.test(value)) {
     throw new ServiceError(400, "INVALID_SETTING_VALUE");
   }
-  return value;
+  const normalized = definition.normalize?.(value) ?? value;
+  if ((definition.max !== undefined && definition.type === "string" && normalized.length > definition.max)
+    || (definition.validate !== undefined && !definition.validate(normalized))) {
+    throw new ServiceError(400, "INVALID_SETTING_VALUE");
+  }
+  return normalized;
 }
 
 export async function runtimeValue(env: WorkerEnv, key: string): Promise<string | undefined> {
@@ -142,6 +299,7 @@ export async function listRuntimeConfig(env: WorkerEnv, actor: Actor): Promise<R
       description: definition.description,
       type: definition.type,
       secret: definition.secret,
+      component: definition.component,
       configured: row !== undefined,
       source: row === undefined ? "default" : "database",
       ...(definition.secret ? {} : { value: row?.value ?? definition.defaultValue ?? "" }),
@@ -160,6 +318,14 @@ export async function listRuntimeConfig(env: WorkerEnv, actor: Actor): Promise<R
     { key: "ARTIFACT_PRIVATE_KEY", kind: "Cloudflare secret", configured: env.ARTIFACT_PRIVATE_KEY !== undefined },
   ];
   return Response.json({ items, bindings }, { headers: { "Cache-Control": "no-store" } });
+}
+
+export async function collectorRuntimeConfig(env: WorkerEnv, actor: Actor): Promise<Response> {
+  requirePermission(actor, "collector.config.read");
+  const collectorDefinitions = runtimeConfigDefinitions.filter((definition) => definition.component === "collector" && definition.environmentName !== undefined);
+  const entries = await Promise.all(collectorDefinitions.map(async (definition) => [definition.environmentName as string, await runtimeValue(env, definition.key)] as const));
+  const values = Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => entry[1] !== undefined));
+  return Response.json({ schema_version: 1, values }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function putRuntimeConfig(env: WorkerEnv, actor: Actor, key: string, body: Record<string, unknown>): Promise<Response> {

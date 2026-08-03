@@ -21,6 +21,12 @@ async function rp(request: Request, env: WorkerEnv): Promise<{ id: string; origi
   };
 }
 
+function requireBootstrapAuthorization(request: Request, env: WorkerEnv): void {
+  if (env.BOOTSTRAP_TOKEN === undefined || request.headers.get("authorization") !== `Bearer ${env.BOOTSTRAP_TOKEN}`) {
+    throw new ServiceError(401, "UNAUTHORIZED");
+  }
+}
+
 function bytes(value: ArrayBuffer | number[]): Uint8Array<ArrayBuffer> {
   const source = Array.isArray(value) ? Uint8Array.from(value) : new Uint8Array(value);
   const output = new Uint8Array(new ArrayBuffer(source.byteLength));
@@ -29,7 +35,7 @@ function bytes(value: ArrayBuffer | number[]): Uint8Array<ArrayBuffer> {
 }
 
 export async function bootstrapOptions(request: Request, env: WorkerEnv, body: Record<string, unknown>): Promise<unknown> {
-  if (env.BOOTSTRAP_TOKEN === undefined || request.headers.get("authorization") !== `Bearer ${env.BOOTSTRAP_TOKEN}`) throw new ServiceError(401, "UNAUTHORIZED");
+  requireBootstrapAuthorization(request, env);
   const count = await env.ADMIN_DB.prepare("SELECT COUNT(*) count FROM webauthn_credentials").first<{ count: number }>();
   if ((count?.count ?? 0) > 0) throw new ServiceError(409, "CONFLICT");
   if (typeof body.email !== "string" || typeof body.display_name !== "string" || body.email.length > 320 || body.display_name.length > 100) throw new ServiceError(400, "INVALID_REQUEST");
@@ -59,7 +65,7 @@ export async function bootstrapVerify(request: Request, env: WorkerEnv, body: Re
   const challenge = await env.ADMIN_DB.prepare(`
     SELECT challenge,pending_user_id,pending_email,pending_display_name
     FROM auth_challenges
-    WHERE id=?1 AND kind='registration' AND expires_at>?2
+    WHERE id=?1 AND kind='registration' AND user_id IS NULL AND expires_at>?2
   `).bind(body.challenge_id, Date.now()).first<{
     challenge: string;
     pending_user_id: string;
@@ -84,6 +90,66 @@ export async function bootstrapVerify(request: Request, env: WorkerEnv, body: Re
   ]);
   const session = await createSession(env.ADMIN_DB, challenge.pending_user_id);
   return { user_id: challenge.pending_user_id, cookie: session.cookie };
+}
+
+export async function credentialOptions(request: Request, env: WorkerEnv, body: Record<string, unknown>): Promise<unknown> {
+  requireBootstrapAuthorization(request, env);
+  if (typeof body.email !== "string" || body.email.length === 0 || body.email.length > 320) throw new ServiceError(400, "INVALID_REQUEST");
+  const user = await env.ADMIN_DB.prepare("SELECT id,email,display_name FROM users WHERE email=?1 AND status='active'")
+    .bind(body.email.toLowerCase())
+    .first<{ id: string; email: string; display_name: string }>();
+  if (user === null) throw new ServiceError(401, "UNAUTHORIZED");
+  const credentials = await env.ADMIN_DB.prepare("SELECT id,transports FROM webauthn_credentials WHERE user_id=?1")
+    .bind(user.id)
+    .all<{ id: string; transports: string }>();
+  const relyingParty = await rp(request, env);
+  const options = await generateRegistrationOptions({
+    rpName: "Mora Admin",
+    rpID: relyingParty.id,
+    userName: user.email,
+    userDisplayName: user.display_name,
+    userID: new TextEncoder().encode(user.id),
+    attestationType: "none",
+    authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
+    excludeCredentials: credentials.results.map((credential) => ({
+      id: credential.id,
+      transports: JSON.parse(credential.transports) as AuthenticatorTransport[],
+    })),
+  });
+  const challengeId = crypto.randomUUID();
+  await env.ADMIN_DB.prepare("INSERT INTO auth_challenges (id,kind,user_id,challenge,expires_at) VALUES (?1,'registration',?2,?3,?4)")
+    .bind(challengeId, user.id, options.challenge, Date.now() + 5 * 60_000)
+    .run();
+  return { challenge_id: challengeId, options };
+}
+
+export async function credentialVerify(request: Request, env: WorkerEnv, body: Record<string, unknown>): Promise<{ user_id: string; cookie: string }> {
+  requireBootstrapAuthorization(request, env);
+  if (typeof body.challenge_id !== "string" || typeof body.response !== "object" || body.response === null) throw new ServiceError(400, "INVALID_REQUEST");
+  const challenge = await env.ADMIN_DB.prepare(`
+    SELECT c.user_id,c.challenge
+    FROM auth_challenges c
+    JOIN users u ON u.id=c.user_id
+    WHERE c.id=?1 AND c.kind='registration' AND c.user_id IS NOT NULL AND c.expires_at>?2 AND u.status='active'
+  `).bind(body.challenge_id, Date.now()).first<{ user_id: string; challenge: string }>();
+  if (challenge === null) throw new ServiceError(400, "INVALID_CHALLENGE");
+  const relyingParty = await rp(request, env);
+  const verification = await verifyRegistrationResponse({
+    response: body.response as Parameters<typeof verifyRegistrationResponse>[0]["response"],
+    expectedChallenge: challenge.challenge,
+    expectedOrigin: relyingParty.origin,
+    expectedRPID: relyingParty.id,
+    requireUserVerification: true,
+  });
+  if (!verification.verified || verification.registrationInfo === undefined) throw new ServiceError(401, "VERIFICATION_FAILED");
+  const credential = verification.registrationInfo.credential;
+  await env.ADMIN_DB.batch([
+    env.ADMIN_DB.prepare("INSERT INTO webauthn_credentials (id,user_id,public_key,counter,transports,created_at) VALUES (?1,?2,?3,?4,?5,?6)")
+      .bind(credential.id, challenge.user_id, credential.publicKey, credential.counter, JSON.stringify(credential.transports ?? []), Date.now()),
+    env.ADMIN_DB.prepare("DELETE FROM auth_challenges WHERE id=?1").bind(body.challenge_id),
+  ]);
+  const session = await createSession(env.ADMIN_DB, challenge.user_id);
+  return { user_id: challenge.user_id, cookie: session.cookie };
 }
 
 export async function loginOptions(request: Request, env: WorkerEnv, body: Record<string, unknown>): Promise<unknown> {

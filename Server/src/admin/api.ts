@@ -7,9 +7,12 @@ import { JOB_SCHEMA_VERSION } from "../../../packages/contracts/src/index.js";
 import type { WorkerEnv } from "../env.js";
 import { audit, authenticate, requirePermission, sha256, type Actor } from "./auth.js";
 import { publishAdminEvent } from "./events.js";
-import { bootstrapOptions, bootstrapVerify, loginOptions, loginVerify, logout } from "./webauthn.js";
+import { bootstrapOptions, bootstrapVerify, credentialOptions, credentialVerify, loginOptions, loginVerify, logout } from "./webauthn.js";
 import { serveArtifact } from "./artifacts.js";
+import { approveCollectorPairing, pollCollectorPairing, startCollectorPairing } from "./collector-pairing.js";
+import { approveGeneratorPairing, pollGeneratorPairing, startGeneratorPairing } from "./generator-pairing.js";
 import {
+  collectorRuntimeConfig,
   deleteRuntimeConfig,
   listRuntimeConfig,
   putRuntimeConfig,
@@ -138,6 +141,7 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
   const existing = isrc === null ? null : await env.ADMIN_DB.prepare("SELECT id FROM recordings WHERE isrc=?1").bind(isrc).first<{ id: string }>();
   const targetRecordingId = existing?.id ?? recordingId;
   if (existing === null) {
+    if (typeof recording.duration_ms !== "number" || !Number.isFinite(recording.duration_ms) || recording.duration_ms < 1 || recording.duration_ms > 900_000) throw new ServiceError(400, "DURATION_REQUIRED");
     await env.ADMIN_DB.prepare(`INSERT INTO recordings (id,isrc,mbid,artist,title,album,duration_ms,language,identification_state,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)`)
       .bind(targetRecordingId, isrc, typeof recording.mbid === "string" ? recording.mbid : null, requiredString(recording.artist, 500), requiredString(recording.title, 500), typeof recording.album === "string" ? recording.album : null, numberValue(recording.duration_ms, 1, 900_000), typeof recording.language === "string" ? recording.language : "und", isrc === null ? "pending" : "verified", now).run();
   }
@@ -192,25 +196,87 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
   if (isrc !== null && selectedSourceId !== null) {
     jobId = crypto.randomUUID();
     await env.ADMIN_DB.prepare("INSERT INTO jobs (id,input_revision_id,state,priority,available_at,created_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4,?4)").bind(jobId, inputId, numberValue(value.priority ?? 0, -1_000_000, 1_000_000), now).run();
-    await env.GENERATION_QUEUE.send(JSON.stringify({ schema_version: JOB_SCHEMA_VERSION, job_id: jobId, input_revision_id: inputId }), { contentType: "text" });
   }
   await audit(env, actor, "collector.submit", "input_revision", inputId, { recording_id: targetRecordingId, job_id: jobId, lyric_count: lyrics.length });
   await event(env, "collector.submitted", { recording_id: targetRecordingId, input_revision_id: inputId, job_id: jobId });
   return json({ recording_id: targetRecordingId, input_revision_id: inputId, job_id: jobId, state: jobId === null ? "review_required" : "queued" }, 201);
 }
 
+async function generatorActorWorker(env: WorkerEnv, actor: Actor): Promise<{ id: string; production_ready: number; desired_state: string }> {
+  if (actor.type !== "service") throw new ServiceError(403, "FORBIDDEN");
+  const worker = await env.ADMIN_DB.prepare(`
+    SELECT w.id,w.production_ready,w.desired_state
+    FROM service_keys k JOIN workers w ON k.name='worker:' || w.id
+    WHERE k.id=?1 AND k.revoked_at IS NULL
+  `).bind(actor.id).first<{ id: string; production_ready: number; desired_state: string }>();
+  if (worker === null) throw new ServiceError(403, "FORBIDDEN");
+  return worker;
+}
+
+async function generatorQueuePull(env: WorkerEnv, actor: Actor): Promise<Response> {
+  requirePermission(actor, "generator.jobs.read");
+  const worker = await generatorActorWorker(env, actor);
+  if (worker.production_ready !== 1 || worker.desired_state !== "active") throw new ServiceError(409, "CONFLICT");
+  const now = Date.now();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const job = await env.ADMIN_DB.prepare(`
+      SELECT id,input_revision_id,attempt_count
+      FROM jobs
+      WHERE state IN ('queued','failed') AND cancel_requested=0 AND available_at<=?1 AND attempt_count<max_attempts
+      ORDER BY priority DESC,available_at ASC,created_at ASC LIMIT 1
+    `).bind(now).first<{ id: string; input_revision_id: string; attempt_count: number }>();
+    if (job === null) return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+    const claimed = await env.ADMIN_DB.prepare(`
+      UPDATE jobs SET state='claimed',worker_id=?1,updated_at=?2
+      WHERE id=?3 AND state IN ('queued','failed') AND cancel_requested=0 AND available_at<=?2 AND attempt_count<max_attempts
+    `).bind(worker.id, now, job.id).run();
+    if ((claimed.meta.changes ?? 0) === 1) {
+      return json({
+        id: job.id,
+        body: { schema_version: JOB_SCHEMA_VERSION, job_id: job.id, input_revision_id: job.input_revision_id },
+        attempts: job.attempt_count + 1,
+        leaseId: job.id,
+      });
+    }
+  }
+  return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+}
+
+async function generatorQueueAction(env: WorkerEnv, actor: Actor, action: "ack" | "retry", value: Record<string, unknown>): Promise<Response> {
+  requirePermission(actor, "generator.jobs.read");
+  const worker = await generatorActorWorker(env, actor);
+  const jobId = requiredString(value.lease_id, 64);
+  const job = await env.ADMIN_DB.prepare("SELECT state,worker_id FROM jobs WHERE id=?1").bind(jobId).first<{ state: string; worker_id: string | null }>();
+  if (job === null || job.worker_id !== worker.id) throw new ServiceError(409, "CONFLICT");
+  const now = Date.now();
+  if (action === "retry") {
+    const delaySeconds = numberValue(value.delay_seconds ?? 30, 0, 300);
+    if (!["claimed", "running", "failed"].includes(job.state)) throw new ServiceError(409, "CONFLICT");
+    await env.ADMIN_DB.batch([
+      env.ADMIN_DB.prepare("UPDATE job_attempts SET state='failed',finished_at=COALESCE(finished_at,?1) WHERE job_id=?2 AND state='running'").bind(now, jobId),
+      env.ADMIN_DB.prepare("UPDATE jobs SET state='queued',worker_id=NULL,available_at=?1,updated_at=?2 WHERE id=?3 AND worker_id=?4").bind(now + delaySeconds * 1000, now, jobId, worker.id),
+    ]);
+  } else {
+    if (!["candidate_ready", "published", "review_required", "failed", "cancelled"].includes(job.state)) throw new ServiceError(409, "CONFLICT");
+    await env.ADMIN_DB.prepare("UPDATE job_attempts SET state=?1,finished_at=COALESCE(finished_at,?2) WHERE job_id=?3 AND state='running'")
+      .bind(job.state === "failed" || job.state === "cancelled" ? "failed" : "completed", now, jobId).run();
+  }
+  return json({ accepted: true });
+}
+
 async function generatorJob(env: WorkerEnv, actor: Actor, jobId: string): Promise<Response> {
   requirePermission(actor, "generator.jobs.read");
-  const row = await env.ADMIN_DB.prepare(`SELECT j.id job_id,j.input_revision_id,j.attempt_count,j.cancel_requested,r.*,s.url FROM jobs j JOIN input_revisions i ON i.id=j.input_revision_id JOIN recordings r ON r.id=i.recording_id JOIN media_sources s ON s.id=i.source_id WHERE j.id=?1`).bind(jobId).first<Record<string, unknown>>();
+  const worker = await generatorActorWorker(env, actor);
+  const row = await env.ADMIN_DB.prepare(`SELECT j.id job_id,j.input_revision_id,j.attempt_count,j.cancel_requested,j.state,j.worker_id,r.*,s.url FROM jobs j JOIN input_revisions i ON i.id=j.input_revision_id JOIN recordings r ON r.id=i.recording_id JOIN media_sources s ON s.id=i.source_id WHERE j.id=?1`).bind(jobId).first<Record<string, unknown>>();
   if (row === null) throw new ServiceError(404, "NOT_FOUND");
   if (row.cancel_requested === 1) throw new ServiceError(409, "CANCELLED");
-  const workerId = actor.id;
-  const worker = await env.ADMIN_DB.prepare("SELECT id,production_ready,desired_state FROM workers WHERE id=(SELECT substr(name,8) FROM service_keys WHERE id=?1)").bind(workerId).first<{ id: string; production_ready: number; desired_state: string }>();
+  if (row.state !== "claimed" || row.worker_id !== worker.id) throw new ServiceError(409, "CONFLICT");
   const attemptId = crypto.randomUUID();
-  await env.ADMIN_DB.batch([
-    env.ADMIN_DB.prepare("UPDATE jobs SET state='claimed',attempt_count=attempt_count+1,worker_id=?1,updated_at=?2 WHERE id=?3 AND state IN ('queued','failed')").bind(worker?.id ?? actor.id, Date.now(), jobId),
-    env.ADMIN_DB.prepare("INSERT INTO job_attempts (id,job_id,worker_id,state,started_at) VALUES (?1,?2,?3,'running',?4)").bind(attemptId, jobId, worker?.id ?? actor.id, Date.now()),
-  ]);
+  const startedAt = Date.now();
+  const started = await env.ADMIN_DB.prepare("UPDATE jobs SET state='running',attempt_count=attempt_count+1,updated_at=?1 WHERE id=?2 AND state='claimed' AND worker_id=?3")
+    .bind(startedAt, jobId, worker.id).run();
+  if ((started.meta.changes ?? 0) !== 1) throw new ServiceError(409, "CONFLICT");
+  await env.ADMIN_DB.prepare("INSERT INTO job_attempts (id,job_id,worker_id,state,started_at) VALUES (?1,?2,?3,'running',?4)").bind(attemptId, jobId, worker.id, startedAt).run();
   const lyrics = await env.ADMIN_DB.prepare("SELECT id,provider,provider_ref,language,text,preprocessor FROM lyric_revisions WHERE input_revision_id=?1 AND layer!='raw'").bind(String(row.input_revision_id)).all<Record<string, unknown>>();
   const alternatives = await env.ADMIN_DB.prepare("SELECT url FROM media_sources WHERE recording_id=?1 AND selected=0 ORDER BY rank LIMIT 2").bind(String(row.id)).all<{ url: string }>();
   const output: GeneratorJobInput = {
@@ -370,7 +436,6 @@ async function jobAction(env: WorkerEnv, actor: Actor, jobId: string, action: st
     if (row === null) throw new ServiceError(404, "NOT_FOUND");
     if (row.attempt_count >= row.max_attempts) throw new ServiceError(409, "ATTEMPT_LIMIT");
     await env.ADMIN_DB.prepare("UPDATE jobs SET state='queued',cancel_requested=0,error_code=NULL,available_at=?1,updated_at=?1 WHERE id=?2").bind(now, jobId).run();
-    await env.GENERATION_QUEUE.send(JSON.stringify({ schema_version: JOB_SCHEMA_VERSION, job_id: jobId, input_revision_id: row.input_revision_id }), { contentType: "text" });
   } else throw new ServiceError(404, "NOT_FOUND");
   await audit(env, actor, `job.${action}`, "job", jobId);
   await event(env, `job.${action}`, { job_id: jobId });
@@ -401,6 +466,8 @@ async function artifactContent(request: Request, env: WorkerEnv, actor: Actor, a
 async function workerHeartbeat(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "workers.heartbeat");
   const workerId = requiredString(value.worker_id, 100);
+  const worker = await generatorActorWorker(env, actor);
+  if (worker.id !== workerId) throw new ServiceError(403, "FORBIDDEN");
   await env.ADMIN_DB.prepare("UPDATE workers SET last_seen_at=?1,version=?2,desired_state=desired_state WHERE id=?3").bind(Date.now(), requiredString(value.version, 100), workerId).run();
   const state = await env.ADMIN_DB.prepare("SELECT desired_state FROM workers WHERE id=?1").bind(workerId).first<{ desired_state: string }>();
   return json({ desired_state: state?.desired_state ?? "paused", server_time: Date.now() });
@@ -434,10 +501,18 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   }
   if (request.method === "POST" && url.pathname === "/admin/api/auth/bootstrap/options") return json(await bootstrapOptions(request, env, await body(request)));
   if (request.method === "POST" && url.pathname === "/admin/api/auth/bootstrap/verify") { const result = await bootstrapVerify(request, env, await body(request)); return json({ user_id: result.user_id }, 201, { "Set-Cookie": result.cookie }); }
+  if (request.method === "POST" && url.pathname === "/admin/api/auth/credential/options") return json(await credentialOptions(request, env, await body(request)));
+  if (request.method === "POST" && url.pathname === "/admin/api/auth/credential/verify") { const result = await credentialVerify(request, env, await body(request)); return json({ user_id: result.user_id }, 201, { "Set-Cookie": result.cookie }); }
   if (request.method === "POST" && url.pathname === "/admin/api/auth/login/options") return json(await loginOptions(request, env, await body(request)));
   if (request.method === "POST" && url.pathname === "/admin/api/auth/login/verify") { const result = await loginVerify(request, env, await body(request)); return json({ user_id: result.user_id }, 200, { "Set-Cookie": result.cookie }); }
   if (request.method === "POST" && url.pathname === "/admin/api/auth/logout") return json({ ok: true }, 200, { "Set-Cookie": await logout(request, env) });
   if (request.method === "POST" && url.pathname === "/admin/api/generator/enroll") return enrollWorker(env, await body(request));
+  if (request.method === "POST" && url.pathname === "/admin/api/generator/pairings") return startGeneratorPairing(env, await body(request, 64 * 1024));
+  const generatorPairingMatch = url.pathname.match(/^\/admin\/api\/generator\/pairings\/([^/]+)$/u);
+  if (request.method === "GET" && generatorPairingMatch?.[1] !== undefined) return pollGeneratorPairing(request, env, generatorPairingMatch[1]);
+  if (request.method === "POST" && url.pathname === "/admin/api/collector/pairings") return startCollectorPairing(env, await body(request, 16 * 1024));
+  const pairingMatch = url.pathname.match(/^\/admin\/api\/collector\/pairings\/([^/]+)$/u);
+  if (request.method === "GET" && pairingMatch?.[1] !== undefined) return pollCollectorPairing(request, env, pairingMatch[1]);
 
   const actor = await authenticate(request, env);
   if (request.method === "GET" && url.pathname === "/admin/api/events") {
@@ -453,6 +528,9 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "GET" && url.pathname === "/admin/api/releases") { requirePermission(actor, "releases.read"); return json({items:await list(env.ADMIN_DB,"SELECT * FROM releases ORDER BY created_at DESC LIMIT 500")}); }
   if (request.method === "GET" && url.pathname === "/admin/api/roles") { requirePermission(actor,"roles.read");return json({items:await list(env.ADMIN_DB,"SELECT id,name,permissions,system,created_at FROM roles ORDER BY name")}); }
   if (request.method === "GET" && url.pathname === "/admin/api/settings") return listRuntimeConfig(env, actor);
+  if (request.method === "GET" && url.pathname === "/admin/api/collector/config") return collectorRuntimeConfig(env, actor);
+  if (request.method === "POST" && url.pathname === "/admin/api/collector/pairings/approve") return approveCollectorPairing(env, actor, await body(request, 16 * 1024));
+  if (request.method === "POST" && url.pathname === "/admin/api/generator/pairings/approve") return approveGeneratorPairing(env, actor, await body(request, 16 * 1024));
   if (request.method === "POST" && url.pathname === "/admin/api/service-keys") return createServiceKey(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/roles") return upsertRole(env,actor,await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/notifications") return addNotification(env,actor,await body(request));
@@ -462,6 +540,9 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "POST" && url.pathname === "/admin/api/generator/candidates") return submitCandidates(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/generator/artifacts") return registerArtifact(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/generator/heartbeat") return workerHeartbeat(env, actor, await body(request));
+  if (request.method === "POST" && url.pathname === "/admin/api/generator/queue/pull") return generatorQueuePull(env, actor);
+  if (request.method === "POST" && url.pathname === "/admin/api/generator/queue/ack") return generatorQueueAction(env, actor, "ack", await body(request, 16 * 1024));
+  if (request.method === "POST" && url.pathname === "/admin/api/generator/queue/retry") return generatorQueueAction(env, actor, "retry", await body(request, 16 * 1024));
 
   let match = url.pathname.match(/^\/admin\/api\/generator\/jobs\/([^/]+)$/u);
   if (request.method === "GET" && match?.[1] !== undefined) return generatorJob(env, actor, match[1]);

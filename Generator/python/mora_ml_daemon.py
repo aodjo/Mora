@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+from contextlib import redirect_stdout
 import json
 import math
 import os
@@ -99,9 +100,10 @@ def transcode(source: Path, directory: Path) -> Path:
     return output
 
 
-def separate(mixture: Path, directory: Path) -> dict[str, Path]:
+def separate(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
     output = directory / "demucs"
-    run_command([sys.executable, "-m", "demucs", "-n", "htdemucs_ft", "--out", str(output), str(mixture)], "SEPARATION_FAILED")
+    device = "mps" if backend == "mps" else "cuda" if backend == "cuda" else "cpu"
+    run_command([sys.executable, "-m", "demucs", "-n", "htdemucs_ft", "--device", device, "--out", str(output), str(mixture)], "SEPARATION_FAILED")
     stem_dir = output / "htdemucs_ft" / mixture.stem
     stems = {path.stem: path for path in stem_dir.glob("*.wav")}
     if "vocals" not in stems:
@@ -113,14 +115,16 @@ def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any
     if backend == "mps":
         import mlx_whisper
         model = os.getenv("MORA_MLX_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
-        result = mlx_whisper.transcribe(str(vocals), path_or_hf_repo=model, word_timestamps=True, language=None if language == "und" else language.split("-")[0])
+        with redirect_stdout(sys.stderr):
+            result = mlx_whisper.transcribe(str(vocals), path_or_hf_repo=model, word_timestamps=True, language=None if language == "und" else language.split("-")[0])
         return result, str(result.get("language", language))
     import whisperx
     device = "cuda" if backend == "cuda" else backend
     compute_type = "float16" if backend in ("cuda", "xpu", "rocm") else "int8"
-    model = whisperx.load_model("large-v3-turbo", device, compute_type=compute_type, language=None if language == "und" else language.split("-")[0])
-    audio = whisperx.load_audio(str(vocals))
-    result = model.transcribe(audio, batch_size=8)
+    with redirect_stdout(sys.stderr):
+        model = whisperx.load_model("large-v3-turbo", device, compute_type=compute_type, language=None if language == "und" else language.split("-")[0])
+        audio = whisperx.load_audio(str(vocals))
+        result = model.transcribe(audio, batch_size=8)
     return result, str(result.get("language", language))
 
 
@@ -150,6 +154,39 @@ def proportional_spans(counts: list[int], start: float, end: float) -> tuple[lis
     return lines, words
 
 
+def interpolate_boundaries(candidates: list[dict[str, Any]], count: int) -> list[list[int | float]]:
+    """Project aligned ASR words onto the canonical tokenizer count without using text."""
+    if count <= 0 or not candidates:
+        return []
+    boundaries = [float(candidates[0]["start"])]
+    for index in range(1, len(candidates)):
+        previous_end = float(candidates[index - 1]["end"])
+        next_start = float(candidates[index]["start"])
+        boundaries.append(max(boundaries[-1], (previous_end + next_start) / 2))
+    boundaries.append(max(boundaries[-1], float(candidates[-1]["end"])))
+
+    def sample(position: float) -> float:
+        left = min(len(candidates) - 1, max(0, math.floor(position)))
+        fraction = position - left
+        return boundaries[left] + (boundaries[left + 1] - boundaries[left]) * fraction
+
+    candidate_count = len(candidates)
+    count_ratio = min(candidate_count, count) / max(candidate_count, count)
+    average_score = sum(float(word.get("score", 0.75)) for word in candidates) / candidate_count
+    score = max(0.0, min(1.0, average_score * count_ratio))
+    projected: list[list[int | float]] = []
+    for token_offset in range(count):
+        start_position = token_offset * candidate_count / count
+        end_position = (token_offset + 1) * candidate_count / count
+        projected.append([
+            token_offset,
+            round(sample(start_position) * 1000),
+            round(sample(end_position) * 1000),
+            score,
+        ])
+    return projected
+
+
 def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], duration_ms: int, backend: str) -> dict[str, Any]:
     text_lines = [line for line in str(variant["text"]).splitlines() if line.strip()]
     counts = [int(value) for value in variant.get("token_counts", [])]
@@ -161,27 +198,50 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
         import whisperx
         language = str(variant.get("language", "und")).split("-")[0]
         device = "cuda" if backend == "cuda" else "cpu" if backend == "mps" else backend
-        model, metadata = whisperx.load_align_model(language_code=language, device=device)
-        segments = [{"start": line_windows[index][0] / 1000, "end": line_windows[index][1] / 1000, "text": line} for index, line in enumerate(text_lines)]
-        audio = whisperx.load_audio(str(vocals))
-        aligned = whisperx.align(segments, model, metadata, audio, device, return_char_alignments=True)
+        with redirect_stdout(sys.stderr):
+            model, metadata = whisperx.load_align_model(language_code=language, device=device)
+            segments = [{"start": line_windows[index][0] / 1000, "end": line_windows[index][1] / 1000, "text": line} for index, line in enumerate(text_lines)]
+            audio = whisperx.load_audio(str(vocals))
+            aligned = whisperx.align(segments, model, metadata, audio, device, return_char_alignments=True)
+        aligned_segments = aligned.get("segments", [])
+        all_candidates = sorted(
+            [word for word in aligned.get("word_segments", []) if "start" in word and "end" in word],
+            key=lambda word: float(word["start"]),
+        )
+        if not all_candidates:
+            all_candidates = sorted(
+                [word for segment in aligned_segments for word in segment.get("words", []) if "start" in word and "end" in word],
+                key=lambda word: float(word["start"]),
+            )
         result_words: list[list[int | float]] = []
+        aligned_token_weight = 0.0
         token_index = 0
-        for line_index, segment in enumerate(aligned.get("segments", [])):
-            candidates = [word for word in segment.get("words", []) if "start" in word and "end" in word]
-            count = counts[line_index] if line_index < len(counts) else 0
-            if len(candidates) == count:
-                for word in candidates:
-                    result_words.append([token_index, round(float(word["start"]) * 1000), round(float(word["end"]) * 1000), float(word.get("score", 0.75))])
-                    token_index += 1
+        candidate_index = 0
+        cumulative_tokens = 0
+        total_tokens = sum(counts)
+        for line_index, count in enumerate(counts):
+            cumulative_tokens += count
+            next_candidate_index = len(all_candidates) if line_index == len(counts) - 1 else round(cumulative_tokens * len(all_candidates) / max(1, total_tokens))
+            candidates = all_candidates[candidate_index:next_candidate_index]
+            candidate_index = next_candidate_index
+            if candidates:
+                projected = interpolate_boundaries(candidates, count)
+                for token_offset, word_start, word_end, score in projected:
+                    result_words.append([token_index + int(token_offset), word_start, word_end, score])
+                line_windows[line_index] = [
+                    round(float(candidates[0]["start"]) * 1000),
+                    round(float(candidates[-1]["end"]) * 1000),
+                ]
+                aligned_token_weight += count * min(len(candidates), count) / max(len(candidates), count)
             else:
                 fallback = [word for word in fallback_words if token_index <= int(word[0]) < token_index + count]
                 result_words.extend(fallback)
-                token_index += count
-        coverage = sum(1 for word in result_words if float(word[3]) >= 0.5) / max(1, sum(counts))
-        return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": {"token_coverage": coverage, "monotonicity": 1.0, "duration_match": 1.0, "language_match": 1.0}}
-    except Exception:
-        return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": fallback_words, "quality": {"token_coverage": 0.25, "monotonicity": 1.0, "duration_match": 1.0, "language_match": 1.0}}
+            token_index += count
+        coverage = aligned_token_weight / max(1, sum(counts))
+        return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": {"token_coverage": coverage, "monotonicity": 1.0, "duration_match": 1.0, "language_match": 1.0, "alignment_fallback": 1.0 - coverage}}
+    except Exception as error:
+        print(f"[forced_align] fallback error={type(error).__name__}", file=sys.stderr)
+        return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": fallback_words, "quality": {"token_coverage": 0.0, "monotonicity": 1.0, "duration_match": 1.0, "language_match": 1.0, "alignment_fallback": 1.0}}
 
 
 def diarize(vocals: Path, backend: str, minimum: int | None, maximum: int | None) -> list[list[int | float]]:
@@ -191,13 +251,14 @@ def diarize(vocals: Path, backend: str, minimum: int | None, maximum: int | None
     try:
         import torch
         from pyannote.audio import Pipeline
-        pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-community-1", token=token)
-        device = "cuda" if backend == "cuda" else "mps" if backend == "mps" else "cpu"
-        pipeline.to(torch.device(device))
-        kwargs: dict[str, int] = {}
-        if minimum is not None: kwargs["min_speakers"] = minimum
-        if maximum is not None: kwargs["max_speakers"] = maximum
-        output = pipeline(str(vocals), **kwargs)
+        with redirect_stdout(sys.stderr):
+            pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-community-1", token=token)
+            device = "cuda" if backend == "cuda" else "mps" if backend == "mps" else "cpu"
+            pipeline.to(torch.device(device))
+            kwargs: dict[str, int] = {}
+            if minimum is not None: kwargs["min_speakers"] = minimum
+            if maximum is not None: kwargs["max_speakers"] = maximum
+            output = pipeline(str(vocals), **kwargs)
         labels: dict[str, int] = {}
         turns: list[list[int | float]] = []
         for turn, speaker in output.speaker_diarization:
@@ -271,7 +332,7 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     mixture = transcode(source, directory)
     notify("transcode", "completed", 0.18)
     notify("separate", "started", 0.2)
-    stems = separate(mixture, directory)
+    stems = separate(mixture, directory, config["backend"])
     notify("separate", "completed", 0.52)
     notify("coarse_asr", "started", 0.55)
     asr, detected = coarse_asr(stems["vocals"], job["recording"].get("language", "und"), config["backend"])

@@ -3,7 +3,7 @@
 Mora는 클라이언트가 이미 가진 가사에 단어·줄·익명 발화자 타이밍을 얹는 시스템입니다. 공개 Server와 덤프에는 가사 문자가 없고 숫자 지문과 활성 타이밍만 들어갑니다.
 
 ```text
-Collector → Admin Control Plane → Queue → Generator
+Collector → Admin Control Plane/D1 작업 큐 → Generator
                 ↑                         │
                 └──── 후보·스템·상태 ─────┘
                 │
@@ -14,9 +14,11 @@ Collector → Admin Control Plane → Queue → Generator
 
 - `Admin/`: React + Vite + TailwindCSS Control Plane. 작업, 워커, 검수, 타이밍 편집, 권한, 감사 로그를 관리합니다.
 - `Collector/`: KR/US/JP 인기곡·신곡을 찾고 MusicBrainz로 ISRC를 보강하며, 내장 SongTitle 라우터의 모든 provider 원문과 YouTube Music 오디오 후보를 제출합니다.
-- `Generator/`: Cloudflare Queue pull consumer. `yt-dlp`, `htdemucs_ft`, Whisper large-v3-turbo, forced alignment, diarization과 speaker stem 생성을 실행합니다.
+- `Generator/`: 승인된 서비스 키로 Admin 작업 큐를 소비합니다. `yt-dlp`, `htdemucs_ft`, Whisper large-v3-turbo, forced alignment, diarization과 speaker stem 생성을 실행합니다.
 - `Server/`: Cloudflare Worker. Admin API/asset과 가사 없는 Public API를 함께 서빙합니다.
 - `packages/`: API 계약, 전처리, 토큰화, 지문, 정렬, 포맷 변환과 `songtitle` 가사 provider 라우터를 공유합니다.
+
+Collector는 후보 목록의 순위만 먼저 계산합니다. 실제 곡 데이터는 한 곡씩 수집해 즉시 Admin 작업 큐에 넣으며, Generator는 Collector가 다음 곡을 수집하는 동안 방금 들어온 작업을 처리합니다.
 
 ## 데이터 경계
 
@@ -35,13 +37,12 @@ Node.js 24, pnpm 11, Python 3.11~3.13, ffmpeg가 필요합니다.
 
 ```bash
 corepack pnpm install
-cp Server/.dev.vars.example Server/.dev.vars
-corepack pnpm d1:migrate:local
+corepack pnpm local:setup
 corepack pnpm build
 corepack pnpm dev:worker
 ```
 
-Dashboard는 `http://localhost:8787/admin/`입니다. 첫 접속에서는 `.dev.vars`의 `BOOTSTRAP_TOKEN`으로 최초 관리자 패스키를 등록합니다.
+개발 중에는 다른 터미널에서 `corepack pnpm dev:admin`을 실행하고 `http://localhost:5173/admin/`에 접속합니다. 첫 접속에서는 `.dev.vars`의 `BOOTSTRAP_TOKEN`으로 최초 관리자 패스키를 등록합니다. Worker가 `localhost:8787`에서 함께 실행 중이어야 합니다.
 
 검증 명령:
 
@@ -63,12 +64,14 @@ corepack pnpm infra:provision
 
 - APAC D1 `mora-public`, `mora-admin` 생성 및 실제 ID 바인딩
 - R2 `mora-admin-artifacts`, `mora-public-dumps` 생성
-- `mora-generation` Queue와 HTTP pull consumer 생성
+- `mora-generation` Queue binding 생성(향후 이벤트 트리거용)
 - 원격 D1 migration, Admin/Worker 빌드 및 배포
 - Bootstrap token, 설정 암호화 키, artifact RSA 키 생성 및 Cloudflare Secret 등록
 - 빈 카탈로그를 포함한 최초 공개 SQLite dump 게시
 
 최초 관리자 등록에 필요한 값은 권한 `0600`의 `Server/.mora-infra-secrets.json`에 한 번 생성됩니다. 이 파일을 암호 관리자로 옮긴 뒤 로컬 사본의 보관 여부를 결정하세요. Generator용 공개 키는 `Generator/artifact-public.pem`에 생성됩니다. 두 파일은 Git에서 제외됩니다.
+
+프로덕션 Worker와 Admin의 기본 주소는 `https://mora.junx.dev`입니다. `Server/wrangler.jsonc`의 Custom Domain 설정으로 Cloudflare DNS와 TLS가 Worker에 연결됩니다. 기존 도메인에서 만든 패스키는 WebAuthn 보안 정책상 새 도메인에서 사용할 수 없으므로, 로그인 화면의 `이 도메인에 패스키 추가`에서 기존 관리자 이메일과 `Server/.mora-infra-secrets.json`의 Bootstrap token으로 현재 도메인용 패스키를 한 번 등록합니다. 기존 계정과 패스키는 삭제되지 않습니다.
 
 배포 후 Cloudflare에서 Account/Queues Edit 권한의 전용 API token을 만들고 Queue ID와 함께 Generator에 제공합니다. YouTube 쿠키, Hugging Face token, Cloudflare token은 Queue 메시지·작업 JSON·로그에 넣지 않습니다.
 
@@ -78,42 +81,32 @@ Admin의 `권한·설정 → 서버 런타임 환경`에서 외부 dump URL, Web
 
 ## Generator 실행
 
-Apple Silicon:
+Apple Silicon Mac에서는 Docker가 아니라 호스트의 Metal/MPS와 MLX를 직접 사용합니다.
+
+Generator의 기본 Admin 주소도 `https://mora.junx.dev`이며 `MORA_ADMIN_URL`로만 덮어씁니다.
 
 ```bash
-cd Generator/python
-uv sync --extra apple
-cd ../..
-corepack pnpm build:services
-
-MORA_PYTHON=Generator/python/.venv/bin/python \
-MORA_ADMIN_URL=https://mora.example \
-MORA_GENERATOR_TOKEN=mora_... \
-MORA_WORKER_ID=... \
-MORA_ARTIFACT_PUBLIC_KEY="$(cat artifact-public.pem)" \
-CF_ACCOUNT_ID=... CF_QUEUE_ID=... CF_API_TOKEN=... \
-YTDLP_COOKIE_FILE=/secure/path/cookies.txt \
-node dist/Generator/src/worker-cli.js
+Generator/scripts/setup-macos.sh
+npm run generator
 ```
 
-새 워커는 Admin에서 일회용 등록 token을 만든 뒤 `MORA_ENROLLMENT_TOKEN`으로 한 번 실행합니다. 자격증명은 `.mora-worker.json`에 mode `0600`으로 기록됩니다. self-test에서 GPU backend, yt-dlp, ffmpeg, Demucs, ASR, aligner를 모두 통과한 워커만 production 작업을 받습니다. diarization은 best-effort입니다.
+설치 검증은 `Generator/scripts/self-test-macos.sh`, 외부 음원 없는 전체 파이프라인 검증은 `node Generator/scripts/smoke-test-macos.mjs`로 실행합니다. 로그인 후 상시 실행은 `Generator/scripts/install-launch-agent.sh`로 등록합니다.
 
-Linux CUDA용 `Generator/Dockerfile`도 제공됩니다. XPU/ROCm은 같은 backend adapter와 self-test 계약을 사용하며, 해당 PyTorch 런타임 이미지에서 실행합니다.
+첫 실행에 표시되는 10자리 PIN을 `Admin → 기기 연결 → Generator 연결`에서 승인합니다. Generator는 전용 서비스 키를 직접 받아 `Generator/.mora-worker.json`에 mode `0600`으로 저장하고 다음 실행부터 자동 인증합니다. 작업 pull·완료·재시도도 이 서비스 키로 Mora Worker를 통해 수행하므로 Cloudflare 계정 ID나 API token은 Generator에 필요하지 않습니다. self-test에서 MPS backend, yt-dlp, ffmpeg, Demucs, ASR, aligner를 모두 통과한 워커만 PIN 연결을 요청하고 production 작업을 받습니다. `HF_TOKEN`이 없으면 diarization만 건너뜁니다.
+
+Linux CUDA용 `Generator/Dockerfile`은 다른 GPU 호스트를 위한 보조 경로입니다. Docker Desktop의 Linux VM은 Mac의 Metal/MPS를 Generator에 전달하지 않으므로 Mac production Generator에는 사용하지 않습니다.
 
 ## Collector 연결
 
 `~/Documents/SongTitle`의 소스는 `packages/songtitle` 워크스페이스 패키지로 포함되어 있습니다. Collector는 별도 adapter 설정 없이 Melon, Bugs, Genie, FLO, Vibe, Genius, LyricFind, Shazam에서 성공한 원문을 모두 Admin에 제출합니다.
 
 ```bash
-MORA_ADMIN_URL=https://mora.example \
-MORA_COLLECTOR_TOKEN=mora_... \
-COLLECTOR_DAILY_BUDGET=300 \
-corepack pnpm dev:collector
+npm run collector
 ```
 
-`SONGTITLE_PROVIDERS=melon,bugs,genie`, `SONGTITLE_TIMEOUT_MS=12000`으로 범위와 타임아웃을 조절합니다. `SONGTITLE_BROWSER=1`은 Chromium 폴백을 켜고 `SONGTITLE_HEADFUL=1`은 디버깅용 창을 표시합니다. Genius API와 LyricFind는 각각 `GENIUS_ACCESS_TOKEN`, `LYRICFIND_API_KEY`를 사용합니다. 브라우저를 쓰려면 한 번 `corepack pnpm --filter @mora/songtitle exec playwright install chromium`을 실행합니다.
+첫 실행에 표시되는 10자리 PIN을 `Admin → 권한·설정 → Collector 연결`에서 승인하면 서비스 키가 로컬 보안 파일에 자동 저장됩니다. 기본 Admin 주소는 `https://mora.junx.dev`이며, 로컬 Worker를 사용할 때만 `MORA_ADMIN_URL=http://localhost:8787 npm run collector`로 덮어씁니다. 수집 한도·주기·국가, SongTitle provider, 브라우저 모드, Genius/LyricFind 키는 Admin의 Collector 런타임에서 관리하며 Collector가 주기적으로 다시 읽습니다. 브라우저를 쓰려면 호스트에 한 번 `corepack pnpm --filter @mora/songtitle exec playwright install chromium`을 실행합니다.
 
-다른 라이브러리를 쓰려면 `packages/contracts`의 `LyricsProvider`를 default 또는 `provider`로 export하고 `LYRICS_LIBRARY_MODULE=/absolute/path/to/provider.js`를 지정하면 내장 SongTitle 대신 사용됩니다.
+다른 라이브러리를 쓰려면 `packages/contracts`의 `LyricsProvider`를 default 또는 `provider`로 export하고 Dashboard에 호스트의 절대 모듈 경로를 저장하면 내장 SongTitle 대신 사용됩니다.
 
 Collector는 뮤직비디오·live·cover·karaoke·instrumental·sped-up 결과를 자동 후보에서 제외합니다. 공식/Topic 오디오이면서 점수 0.90 이상인 경우에만 자동 선택합니다. ISRC나 소스가 모호하면 Generator 작업을 만들지 않고 Admin 검수함으로 보냅니다.
 

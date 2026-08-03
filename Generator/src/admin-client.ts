@@ -2,6 +2,7 @@ import { createHash, publicEncrypt, randomBytes, constants } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import { basename } from "node:path";
 import type { GeneratorCandidateSubmission, GeneratorJobInput, StageEvent, WorkerCapabilities } from "../../packages/contracts/src/index.js";
+import type { LeasedMessage } from "./queue.js";
 
 export class AdminClient {
   constructor(readonly baseUrl:string,readonly token:string,readonly fetcher:typeof fetch=fetch){}
@@ -14,6 +15,9 @@ export class AdminClient {
   event(value:StageEvent):Promise<{accepted:boolean}>{return this.request("/generator/events",{method:"POST",body:JSON.stringify(value)});}
   candidates(value:GeneratorCandidateSubmission):Promise<{candidate_ids:string[]}>{return this.request("/generator/candidates",{method:"POST",body:JSON.stringify(value)});}
   heartbeat(value:{worker_id:string;version:string}):Promise<{desired_state:string}>{return this.request("/generator/heartbeat",{method:"POST",body:JSON.stringify(value)});}
+  async pullJob():Promise<LeasedMessage|null>{return (await this.request<LeasedMessage|undefined>("/generator/queue/pull",{method:"POST",body:"{}"}))??null;}
+  ackJob(leaseId:string):Promise<void>{return this.request("/generator/queue/ack",{method:"POST",body:JSON.stringify({lease_id:leaseId})});}
+  retryJob(leaseId:string,delaySeconds:number):Promise<void>{return this.request("/generator/queue/retry",{method:"POST",body:JSON.stringify({lease_id:leaseId,delay_seconds:delaySeconds})});}
   static async enroll(baseUrl:string,enrollmentToken:string,name:string,capabilities:WorkerCapabilities):Promise<{worker_id:string;api_key:string}>{
     const response=await fetch(`${baseUrl.replace(/\/$/u,"")}/admin/api/generator/enroll`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:enrollmentToken,name,capabilities})});
     if(!response.ok)throw new Error(`ENROLL_${response.status}`);return response.json() as Promise<{worker_id:string;api_key:string}>;

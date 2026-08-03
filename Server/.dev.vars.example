@@ -5,6 +5,7 @@ SECRET_ENCRYPTION_KEY=replace-with-base64-32-byte-key
 ARTIFACT_PRIVATE_KEY=replace-with-pkcs8-private-key
 
 # 아래 값은 선택 사항이며 Admin Dashboard의 서버 런타임 환경에서 덮어쓸 수 있습니다.
+# Vite Admin(http://localhost:5173)에서 패스키를 사용할 때 필요합니다.
 # ADMIN_RP_ID=localhost
-# ADMIN_ORIGIN=http://localhost:8787
+# ADMIN_ORIGIN=http://localhost:5173
 # DUMP_URL=https://example.invalid/mora-public.sqlite

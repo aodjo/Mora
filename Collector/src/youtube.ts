@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import type { RecordingSeed, YoutubeCandidate } from "./types.js";
 
@@ -9,7 +11,7 @@ function normalize(value:string):string{return value.normalize("NFKC").toLowerCa
 
 export async function searchYoutubeMusic(seed:RecordingSeed):Promise<YoutubeCandidate[]> {
   const query=`${seed.artist} ${seed.title} ${seed.album??""} audio`;
-  const {stdout}=await run("yt-dlp",["--dump-single-json","--flat-playlist","--no-warnings",`ytsearch10:${query}`],{maxBuffer:10*1024*1024});
+  const {stdout}=await run(youtubeDlCommand(),["--dump-single-json","--flat-playlist","--no-warnings",`ytsearch10:${query}`],{maxBuffer:10*1024*1024});
   const parsed=JSON.parse(stdout) as {entries?:YtEntry[]};
   return (parsed.entries??[]).flatMap((entry):YoutubeCandidate[]=>{
     if(!entry.id||!entry.title||entry.live_status==="is_live")return[];
@@ -25,4 +27,12 @@ export async function searchYoutubeMusic(seed:RecordingSeed):Promise<YoutubeCand
     if(score<.55)return[];
     return [{url:`https://music.youtube.com/watch?v=${entry.id}`,video_id:entry.id,title,artist,album:entry.album,duration_ms:durationMs,official,source_type:/topic/iu.test(`${entry.uploader??""} ${entry.channel??""}`)?"topic":official?"song":"unofficial",score}];
   }).sort((a,b)=>b.score-a.score).slice(0,3);
+}
+
+function youtubeDlCommand():string {
+  if(process.env.YTDLP_BIN!==undefined&&process.env.YTDLP_BIN.length>0)return process.env.YTDLP_BIN;
+  const candidates=process.platform==="win32"
+    ? [resolve(process.cwd(),"Generator/.venv/Scripts/yt-dlp.exe")]
+    : [resolve(process.cwd(),"Generator/.venv/bin/yt-dlp")];
+  return candidates.find(candidate=>existsSync(candidate))??"yt-dlp";
 }
