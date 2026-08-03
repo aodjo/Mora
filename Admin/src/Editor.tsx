@@ -9,6 +9,7 @@ interface ReviewLine { index:number;text:string;token_indices:number[] }
 interface Artifact { id:string;kind:string;speaker_id:number|null;content_type:string;byte_size:number }
 interface Detail {
   id:string;
+  job_id:string;
   recording:{artist:string;title:string};
   variant:{provider:string;language:string;layer:string};
   lyric_text:string;
@@ -30,6 +31,7 @@ export function Editor({ candidateId }: { candidateId: string }) {
   const [message, setMessage] = useState("");
   const [currentMs,setCurrentMs]=useState(0);
   const [mediaDuration,setMediaDuration]=useState(0);
+  const [regenerating,setRegenerating]=useState(false);
   const audioRefs=useRef(new Map<string,HTMLAudioElement>());
   const lineRefs=useRef(new Map<number,HTMLDivElement>());
   useEffect(() => {
@@ -55,6 +57,7 @@ export function Editor({ candidateId }: { candidateId: string }) {
   const activeLine=activeToken===null?null:tokens.get(activeToken)?.line??null;
   useEffect(()=>{if(activeLine!==null)lineRefs.current.get(activeLine)?.scrollIntoView({block:"nearest"});},[activeLine]);
   if (detail === null) return <p className="loading-copy">편집기를 불러오는 중…</p>;
+  const jobId=detail.job_id;
 
   function change(index: number, field: 1 | 2, value: number): void {
     setDetail((current) => current === null ? current : { ...current, word_spans: current.word_spans.map((span, spanIndex) => spanIndex === index ? [span[0], field === 1 ? value : span[1], field === 2 ? value : span[2]] : span) });setDirty(true);setDraftSaved(false);setMessage("편집 중");
@@ -68,7 +71,7 @@ export function Editor({ candidateId }: { candidateId: string }) {
       <div className="editor-section-heading"><h3>검수 오디오</h3><span>{formatTime(currentMs)} / {formatTime(duration)}</span></div>
       <div className="audio-tracks">{playableArtifacts.map(artifact=><div key={artifact.id} className="artifact-row"><span>{trackName(artifact)}</span><audio ref={element=>{if(element===null)audioRefs.current.delete(artifact.id);else audioRefs.current.set(artifact.id,element);}} controls preload="metadata" src={`/admin/api/generator/artifacts/${artifact.id}/content`} onPlay={event=>play(artifact.id,event.currentTarget)} onTimeUpdate={event=>setCurrentMs(event.currentTarget.currentTime*1000)} onSeeked={event=>setCurrentMs(event.currentTarget.currentTime*1000)} onLoadedMetadata={event=>setMediaDuration(current=>Math.max(current,event.currentTarget.duration*1000))}/></div>)}</div>
       {playableArtifacts.length===0&&<p className="editor-notice">재생 가능한 검수 오디오가 없습니다. 이 작업을 다시 생성해야 합니다.</p>}
-      {unsupportedCount>0&&<p className="editor-notice">현재 브라우저가 지원하지 않는 이전 형식 트랙 {unsupportedCount}개는 숨겼습니다.</p>}
+      {unsupportedCount>0&&<div className="editor-notice"><span>현재 브라우저가 지원하지 않는 이전 형식 트랙 {unsupportedCount}개는 숨겼습니다.</span><button disabled={regenerating} onClick={()=>void regenerate()}>{regenerating?"요청 중…":"호환 오디오 다시 생성"}</button></div>}
       <div className="timeline" aria-label="단어 타이밍 개요">{detail.word_spans.map((span,index)=>{const token=tokens.get(span[0]);return <button key={index} className={`timeline-span${activeToken===span[0]?" active":""}`} style={{left:`${span[1]/duration*100}%`,width:`${Math.max(.15,(span[2]-span[1])/duration*100)}%`,"--speaker-color":speakerColor(token?.speaker_id)} as CSSProperties} title={`${token?.text??`토큰 ${span[0]}`} · ${formatTime(span[1])}–${formatTime(span[2])}`} onClick={()=>seek(span[1])}/>;})}</div>
     </section>
 
@@ -84,6 +87,10 @@ export function Editor({ candidateId }: { candidateId: string }) {
   async function submitDraft(): Promise<void> {
     try {await api(`/candidates/${candidateId}/submit-draft`,{method:"POST",body:"{}"});setDraftSaved(false);setMessage("새 후보 리비전 제출됨");showToast("검수 리비전을 제출했습니다.");}
     catch(reason){showToast(reason instanceof Error?reason.message:"검수 리비전 제출 실패",{variant:"error"});}
+  }
+  async function regenerate():Promise<void>{
+    setRegenerating(true);try{await api(`/jobs/${encodeURIComponent(jobId)}/retry`,{method:"POST",body:"{}"});showToast("AAC 호환 오디오 재생성 작업을 큐에 넣었습니다.");}
+    catch(reason){showToast(reason instanceof Error?reason.message:"오디오 재생성 요청 실패",{variant:"error"});}finally{setRegenerating(false);}
   }
 }
 
