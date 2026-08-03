@@ -522,7 +522,18 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "GET" && url.pathname === "/admin/api/overview") { requirePermission(actor, "dashboard.read"); return json(await overview(env)); }
   if (request.method === "GET" && url.pathname === "/admin/api/jobs") { requirePermission(actor, "jobs.read"); return json({ items: await list(env.ADMIN_DB, "SELECT * FROM jobs ORDER BY created_at DESC LIMIT 200") }); }
   if (request.method === "GET" && url.pathname === "/admin/api/workers") { requirePermission(actor, "workers.read"); return json({ items: await list(env.ADMIN_DB, "SELECT id,name,version,backend,hardware,capabilities,self_test,production_ready,desired_state,last_seen_at,created_at FROM workers ORDER BY last_seen_at DESC") }); }
-  if (request.method === "GET" && url.pathname === "/admin/api/recordings") { requirePermission(actor, "recordings.read"); return json({ items: await list(env.ADMIN_DB, "SELECT * FROM recordings ORDER BY created_at DESC LIMIT 200") }); }
+  if (request.method === "GET" && url.pathname === "/admin/api/recordings") {
+    requirePermission(actor, "recordings.read");
+    return json({ items: await list(env.ADMIN_DB, `
+      SELECT r.*,
+        (SELECT COUNT(*) FROM input_revisions i WHERE i.recording_id=r.id) revision_count,
+        (SELECT COUNT(*) FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id WHERE i.recording_id=r.id) alignment_count,
+        (SELECT j.state FROM jobs j JOIN input_revisions i ON i.id=j.input_revision_id WHERE i.recording_id=r.id ORDER BY j.created_at DESC LIMIT 1) job_state,
+        (SELECT j.current_stage FROM jobs j JOIN input_revisions i ON i.id=j.input_revision_id WHERE i.recording_id=r.id ORDER BY j.created_at DESC LIMIT 1) current_stage,
+        EXISTS(SELECT 1 FROM releases x WHERE x.recording_id=r.id AND x.state='active') published
+      FROM recordings r ORDER BY r.created_at DESC LIMIT 200
+    `) });
+  }
   if (request.method === "GET" && url.pathname === "/admin/api/candidates") { requirePermission(actor, "candidates.read"); return json({ items: await list(env.ADMIN_DB, "SELECT id,job_id,input_revision_id,variant_id,status,tokenizer,text_hash,quality,quality_score,pipeline_version,backend,hardware,created_at FROM alignment_candidates ORDER BY created_at DESC LIMIT 200") }); }
   if (request.method === "GET" && url.pathname === "/admin/api/audit") { requirePermission(actor, "audit.read"); return json({ items: await list(env.ADMIN_DB, "SELECT * FROM audit_log ORDER BY id DESC LIMIT 500") }); }
   if (request.method === "GET" && url.pathname === "/admin/api/releases") { requirePermission(actor, "releases.read"); return json({items:await list(env.ADMIN_DB,"SELECT * FROM releases ORDER BY created_at DESC LIMIT 500")}); }
