@@ -20,7 +20,7 @@ import {
   webhookSignature,
 } from "./runtime-config.js";
 import { openSecret, sealSecret } from "./secrets.js";
-import { youtubeVideoId } from "./source-review.js";
+import { normalizeIsrc, resolveLyricLanguage, youtubeVideoId } from "./source-review.js";
 
 const jsonHeaders = { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff" } as const;
 
@@ -222,6 +222,22 @@ async function reviewQueues(env:WorkerEnv,actor:Actor):Promise<Response>{
   const grouped=new Map<string,SourceReviewItem>();
   for(const row of rows.results){const inputId=String(row.input_revision_id);let item=grouped.get(inputId);if(item===undefined){item={input_revision_id:inputId,recording_id:String(row.recording_id),artist:String(row.artist),title:String(row.title),album:typeof row.album==="string"?row.album:null,isrc:typeof row.isrc==="string"?row.isrc:null,duration_ms:Number(row.duration_ms),language:String(row.language),created_at:Number(row.created_at),lyrics_count:Number(row.lyrics_count),sources:[]};grouped.set(inputId,item);}if(typeof row.source_id==="string")item.sources.push({id:row.source_id,url:String(row.url),video_id:String(row.video_id),rank:Number(row.rank),official:row.official===1,source_type:String(row.source_type),score:Number(row.score),metadata:typeof row.metadata==="string"?JSON.parse(row.metadata) as Record<string,unknown>:{}});}
   return json({source_items:[...grouped.values()],candidate_items:candidates.results});
+}
+
+async function updateSourceReview(env:WorkerEnv,actor:Actor,inputId:string,value:Record<string,unknown>):Promise<Response>{
+  requirePermission(actor,"jobs.manage");
+  const input=await env.ADMIN_DB.prepare(`SELECT i.id,i.recording_id,i.state,r.isrc,r.language,(SELECT COUNT(*) FROM lyric_revisions l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count FROM input_revisions i JOIN recordings r ON r.id=i.recording_id WHERE i.id=?1`).bind(inputId).first<{id:string;recording_id:string;state:string;isrc:string|null;language:string;lyrics_count:number}>();
+  if(input===null)throw new ServiceError(404,"NOT_FOUND");if(input.state!=="draft")throw new ServiceError(409,"CONFLICT");
+  const suppliedIsrc=typeof value.isrc==="string"?value.isrc:"";const isrc=normalizeIsrc(suppliedIsrc||(input.isrc??""));
+  const duplicate=await env.ADMIN_DB.prepare("SELECT id FROM recordings WHERE isrc=?1 AND id!=?2").bind(isrc,input.recording_id).first<{id:string}>();if(duplicate!==null)throw new ServiceError(409,"CONFLICT");
+  const raw=typeof value.lyrics==="string"?value.lyrics.trim():"";if(input.lyrics_count<1&&raw.length===0)throw new ServiceError(400,"INVALID_REQUEST");
+  const requestedLanguage=typeof value.language==="string"?value.language:input.language;const language=raw.length>0?resolveLyricLanguage(requestedLanguage,raw):["ko","en","ja"].includes(requestedLanguage)?requestedLanguage:input.language;
+  await env.ADMIN_DB.batch([
+    env.ADMIN_DB.prepare("UPDATE recordings SET isrc=?1,language=?2,identification_state='verified',updated_at=?3 WHERE id=?4").bind(isrc,language,Date.now(),input.recording_id),
+    env.ADMIN_DB.prepare("UPDATE input_revisions SET input_signature=NULL WHERE id=?1").bind(inputId),
+  ]);
+  if(raw.length>0){const now=Date.now();const provider="manual-admin";const rawHash=await sha256(raw);await env.ADMIN_DB.prepare(`INSERT OR IGNORE INTO lyric_revisions (id,input_revision_id,provider,provider_ref,layer,language,text,text_hash,preprocessor,confidence,review_required,offset_map,rules,created_at) VALUES (?1,?2,?3,NULL,'raw',?4,?5,?6,'raw-v1',1,0,'[]','[]',?7)`).bind(crypto.randomUUID(),inputId,provider,language,raw,rawHash,now).run();const processed=preprocessLyrics(raw,language);for(const variant of processed.variants){const tokenization=tokenizeV2(variant.text,variant.language);if(tokenization.tokens.length===0)continue;await env.ADMIN_DB.prepare(`INSERT OR IGNORE INTO lyric_revisions (id,input_revision_id,provider,provider_ref,layer,language,text,text_hash,preprocessor,confidence,review_required,offset_map,rules,created_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)`).bind(crypto.randomUUID(),inputId,provider,variant.layer,variant.language,variant.text,textHash(tokenization.canonical),processed.version,variant.confidence,variant.review_required?1:0,JSON.stringify(variant.offset_map),JSON.stringify(variant.rules),now).run();}}
+  await audit(env,actor,"source.metadata_update","input_revision",inputId,{recording_id:input.recording_id,isrc_updated:suppliedIsrc.trim().length>0,lyrics_added:raw.length>0,language});await event(env,"collector.metadata_updated",{input_revision_id:inputId});return json({input_revision_id:inputId,ready_for_source:true});
 }
 
 async function selectSourceReview(env:WorkerEnv,actor:Actor,inputId:string,value:Record<string,unknown>):Promise<Response>{
@@ -615,6 +631,7 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if(request.method==="PUT"&&match?.[1]!==undefined)return putRuntimeConfig(env,actor,decodeURIComponent(match[1]),await body(request));
   if(request.method==="DELETE"&&match?.[1]!==undefined)return deleteRuntimeConfig(env,actor,decodeURIComponent(match[1]));
   match=url.pathname.match(/^\/admin\/api\/source-reviews\/([^/]+)\/select$/u);if(request.method==="POST"&&match?.[1]!==undefined)return selectSourceReview(env,actor,match[1],await body(request,16*1024));
+  match=url.pathname.match(/^\/admin\/api\/source-reviews\/([^/]+)$/u);if(request.method==="PUT"&&match?.[1]!==undefined)return updateSourceReview(env,actor,match[1],await body(request));
   match=url.pathname.match(/^\/admin\/api\/releases\/([^/]+)\/withdraw$/u);if(request.method==="POST"&&match?.[1]!==undefined)return withdrawRelease(env,actor,match[1]);
   throw new ServiceError(404, "NOT_FOUND");
 }

@@ -1,4 +1,4 @@
-import { AlertTriangle, AudioLines, Check, ChevronRight, ExternalLink, Gauge, Link2, Microchip, Music2, WandSparkles } from "lucide-react";
+import { AlertTriangle, AudioLines, Check, ChevronRight, ExternalLink, Gauge, Link2, Microchip, Music2, Save, WandSparkles } from "lucide-react";
 import { useState, type CSSProperties } from "react";
 import { api } from "../api";
 import { useToast } from "../Toast";
@@ -26,16 +26,27 @@ function SourceReviews({ items, actionable, refresh }: { items: AdminItem[]; act
 function SourceReviewCard({ item, refresh }: { item: AdminItem; refresh: () => void }) {
   const { showToast } = useToast();
   const [manualUrl, setManualUrl] = useState("");
+  const [isrc, setIsrc] = useState(text(item.isrc, ""));
+  const [language, setLanguage] = useState<"auto" | "ko" | "en" | "ja">(["ko", "en", "ja"].includes(text(item.language)) ? text(item.language) as "ko" | "en" | "ja" : "auto");
+  const [lyrics, setLyrics] = useState("");
   const [busy, setBusy] = useState(false);
   const inputId = text(item.input_revision_id);
   const sources = Array.isArray(item.sources) ? item.sources.filter((value): value is AdminItem => typeof value === "object" && value !== null) : [];
   const hasIsrc = typeof item.isrc === "string" && item.isrc.length > 0;
   const hasLyrics = number(item.lyrics_count) > 0;
   const blocked = !hasIsrc || !hasLyrics;
+  const validIsrc = /^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$/u.test(isrc.replaceAll("-", "").trim().toUpperCase());
+  const canComplete = (hasIsrc || validIsrc) && (hasLyrics || lyrics.trim().length > 0);
+
+  async function saveMetadata(notify = true): Promise<void> {
+    await api(`/source-reviews/${encodeURIComponent(inputId)}`, { method: "PUT", body: JSON.stringify({ isrc, language, ...(lyrics.trim().length > 0 ? { lyrics } : {}) }) });
+    if (notify) { showToast("곡 정보와 가사를 저장하고 전처리했습니다."); refresh(); }
+  }
 
   async function approve(value: { source_id: string } | { url: string }): Promise<void> {
     setBusy(true);
     try {
+      if (blocked) await saveMetadata(false);
       await api(`/source-reviews/${encodeURIComponent(inputId)}/select`, { method: "POST", body: JSON.stringify(value) });
       showToast("소스를 확정하고 Generator 작업을 생성했습니다.");
       refresh();
@@ -46,12 +57,17 @@ function SourceReviewCard({ item, refresh }: { item: AdminItem; refresh: () => v
   return <article className="source-review-card">
     <header><span className="source-review-icon"><Music2 size={17}/></span><div><h2>{text(item.title, "제목 없음")}</h2><p>{text(item.artist, "아티스트 미상")} · {text(item.album, "앨범 정보 없음")}</p></div><span className={`state-badge ${blocked ? "bad" : sources.length > 0 ? "warn" : "neutral"}`}>{blocked ? "정보 보완 필요" : sources.length > 0 ? "후보 선택 필요" : "후보 없음"}</span></header>
     <div className="source-review-meta"><code>{text(item.isrc, "ISRC 없음")}</code><span>전처리 가사 {number(item.lyrics_count)}개</span><span>후보 {sources.length}개</span><time>{time(item.created_at)}</time></div>
-    {blocked && <div className="source-blocker"><AlertTriangle size={14}/><span>{!hasIsrc && "ISRC가 없습니다. "}{!hasLyrics && "전처리 가사가 없습니다. "}곡 정보를 보완해야 작업을 생성할 수 있습니다.</span></div>}
+    {blocked && <><div className="source-blocker"><AlertTriangle size={14}/><span>{!hasIsrc && "ISRC가 없습니다. "}{!hasLyrics && "전처리 가사가 없습니다. "}아래에서 입력하면 저장과 동시에 실제 전처리를 수행합니다.</span></div><div className="source-metadata-form">
+      <label><span>ISRC</span><input value={isrc} onChange={(event) => setIsrc(event.target.value.toUpperCase())} disabled={busy} placeholder="KRA302600330" maxLength={15} className="form-control"/></label>
+      <label><span>가사 언어</span><select value={language} onChange={(event) => setLanguage(event.target.value as "auto" | "ko" | "en" | "ja")} disabled={busy} className="form-control"><option value="auto">자동 감지</option><option value="ko">한국어</option><option value="en">영어</option><option value="ja">일본어</option></select></label>
+      {!hasLyrics && <label className="lyrics-field"><span>원문 가사</span><textarea value={lyrics} onChange={(event) => setLyrics(event.target.value)} disabled={busy} rows={7} placeholder="이미 확보한 원문 가사를 입력하세요. 저장 시 원문 리비전과 전처리 리비전을 생성합니다." className="form-control"/></label>}
+      <button disabled={!canComplete || busy} onClick={() => { setBusy(true); void saveMetadata().catch((reason:unknown) => showToast(reason instanceof Error ? reason.message : "정보 저장 실패", { variant: "error" })).finally(() => setBusy(false)); }} className="primary-button"><Save size={13}/>정보 저장</button>
+    </div></>}
     {sources.length > 0 && <div className="source-options">{sources.map((source) => {
       const metadata = parseObject(source.metadata);
-      return <div key={text(source.id)} className="source-option"><div><strong>{text(metadata.title, `YouTube ${text(source.video_id)}`)}</strong><a href={text(source.url)} target="_blank" rel="noreferrer">{text(source.url)}<ExternalLink size={11}/></a></div><span className="source-score">{Math.round(number(source.score) * 100)}%</span>{source.official === true && <span className="source-official">공식</span>}<button disabled={blocked || busy} onClick={() => void approve({ source_id: text(source.id) })}><Check size={13}/>선택</button></div>;
+      return <div key={text(source.id)} className="source-option"><div><strong>{text(metadata.title, `YouTube ${text(source.video_id)}`)}</strong><a href={text(source.url)} target="_blank" rel="noreferrer">{text(source.url)}<ExternalLink size={11}/></a></div><span className="source-score">{Math.round(number(source.score) * 100)}%</span>{source.official === true && <span className="source-official">공식</span>}<button disabled={!canComplete || busy} onClick={() => void approve({ source_id: text(source.id) })}><Check size={13}/>{blocked ? "저장 후 선택" : "선택"}</button></div>;
     })}</div>}
-    <div className="manual-source"><input value={manualUrl} onChange={(event) => setManualUrl(event.target.value)} disabled={blocked || busy} type="url" placeholder="https://music.youtube.com/watch?v=…" className="form-control"/><button disabled={blocked || busy || manualUrl.length === 0} onClick={() => void approve({ url: manualUrl })} className="secondary-button"><Link2 size={13}/>직접 지정</button></div>
+    <div className="manual-source"><input value={manualUrl} onChange={(event) => setManualUrl(event.target.value)} disabled={busy} type="url" placeholder="https://music.youtube.com/watch?v=…" className="form-control"/><button disabled={!canComplete || busy || manualUrl.length === 0} onClick={() => void approve({ url: manualUrl })} className="secondary-button"><Link2 size={13}/>{blocked ? "저장 후 지정" : "직접 지정"}</button></div>
   </article>;
 }
 

@@ -241,8 +241,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .source-review-meta time { margin-left: auto; }
 .source-blocker { display: flex; align-items: flex-start; gap: 7px; border-bottom: 1px solid color-mix(in srgb, var(--red) 16%, var(--border)); background: var(--red-soft); padding: 9px 18px; color: var(--red); font-size: 11px; line-height: 16px; }
 .source-blocker svg { flex: none; margin-top: 1px; }
+.source-metadata-form { display: grid; grid-template-columns: minmax(180px, 1fr) 160px auto; align-items: end; gap: 10px; border-bottom: 1px solid var(--border); padding: 14px 18px; }
+.source-metadata-form label { display: grid; gap: 5px; }
+.source-metadata-form label > span { color: var(--muted); font-size: 10px; font-weight: 500; line-height: 14px; }
+.source-metadata-form .lyrics-field { grid-column: 1 / -1; }
+.source-metadata-form textarea { min-height: 132px; resize: vertical; line-height: 20px; }
+.source-metadata-form > button { display: inline-flex; min-width: 92px; align-items: center; justify-content: center; gap: 6px; }
 .source-options { padding: 8px 18px 0; }
-.source-option { display: grid; grid-template-columns: minmax(0, 1fr) 44px 40px 62px; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding: 9px 0; }
+.source-option { display: grid; grid-template-columns: minmax(0, 1fr) 44px 40px 92px; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding: 9px 0; }
 .source-option strong, .source-option a { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-option strong { font-size: 12px; font-weight: 500; line-height: 17px; }
 .source-option a { color: var(--faint); font-size: 9px; line-height: 14px; text-decoration: none; }
@@ -418,7 +424,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .source-review-card > header { align-items: flex-start; }
   .source-review-card header .state-badge { max-width: 88px; white-space: nowrap; }
   .source-review-meta time { width: 100%; margin-left: 0; }
-  .source-option { grid-template-columns: minmax(0, 1fr) 40px 58px; }
+  .source-metadata-form { grid-template-columns: 1fr; }
+  .source-metadata-form .lyrics-field { grid-column: auto; }
+  .source-option { grid-template-columns: minmax(0, 1fr) 40px 90px; }
   .source-option .source-official { display: none; }
   .manual-source { display: grid; }
   .manual-source button { justify-content: center; }
