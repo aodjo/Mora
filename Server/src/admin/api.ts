@@ -140,7 +140,8 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
   const mbid = typeof recording.mbid === "string" && recording.mbid.length > 0 ? recording.mbid : null;
   const recordingId = crypto.randomUUID();
   const now = Date.now();
-  const existing = isrc===null&&mbid===null?null:await env.ADMIN_DB.prepare("SELECT id,isrc FROM recordings WHERE (?1 IS NOT NULL AND isrc=?1) OR (?2 IS NOT NULL AND mbid=?2) ORDER BY CASE WHEN isrc=?1 THEN 0 ELSE 1 END LIMIT 1").bind(isrc,mbid).first<{id:string;isrc:string|null}>();
+  let existing=isrc===null?null:await env.ADMIN_DB.prepare("SELECT id,isrc FROM recordings WHERE isrc=?1 LIMIT 1").bind(isrc).first<{id:string;isrc:string|null}>();
+  if(existing===null&&mbid!==null)existing=await env.ADMIN_DB.prepare("SELECT id,isrc FROM recordings WHERE mbid=?1 LIMIT 1").bind(mbid).first<{id:string;isrc:string|null}>();
   const targetRecordingId = existing?.id ?? recordingId;
   if (existing === null) {
     if (typeof recording.duration_ms !== "number" || !Number.isFinite(recording.duration_ms) || recording.duration_ms < 1 || recording.duration_ms > 900_000) throw new ServiceError(400, "DURATION_REQUIRED");
