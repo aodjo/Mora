@@ -293,9 +293,9 @@ def speaker_stems(vocals: Path, turns: list[list[int | float]], directory: Path)
     for speaker in sorted({int(turn[0]) for turn in turns}):
         ranges = [(float(start) / 1000, float(end) / 1000) for owner, start, end, _confidence in turns if int(owner) == speaker]
         expression = "+".join(f"between(t,{start:.3f},{end:.3f})" for start, end in ranges) or "0"
-        output = directory / f"speaker-{speaker}.opus"
-        run_command(["ffmpeg", "-y", "-i", str(vocals), "-af", f"volume='if(gt({expression},0),1,0)':eval=frame", "-c:a", "libopus", "-b:a", "128k", str(output)], "SPEAKER_STEM_FAILED")
-        artifacts.append({"kind": "speaker", "speaker_id": speaker, "path": str(output), "content_type": "audio/ogg"})
+        output = directory / f"speaker-{speaker}.m4a"
+        run_command(["ffmpeg", "-y", "-i", str(vocals), "-af", f"volume='if(gt({expression},0),1,0)':eval=frame", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(output)], "SPEAKER_STEM_FAILED")
+        artifacts.append({"kind": "speaker", "speaker_id": speaker, "path": str(output), "content_type": "audio/mp4"})
     return artifacts
 
 
@@ -346,16 +346,13 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     notify("diarize", "completed", 0.88)
     notify("speaker_stems", "started", 0.89)
     speaker_artifacts = speaker_stems(stems["vocals"], turns, directory) if turns else []
-    artifacts: list[dict[str, Any]] = [{"kind": "source", "path": str(source), "content_type": "application/octet-stream"}]
+    review_source = directory / "source.m4a"
+    run_command(["ffmpeg", "-y", "-i", str(mixture), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(review_source)], "SOURCE_REVIEW_ENCODE_FAILED")
+    artifacts: list[dict[str, Any]] = [{"kind": "source", "path": str(review_source), "content_type": "audio/mp4"}]
     for name, path in stems.items():
-        if name == "vocals":
-            flac = directory / "vocals.flac"
-            run_command(["ffmpeg", "-y", "-i", str(path), "-c:a", "flac", str(flac)], "VOCALS_ENCODE_FAILED")
-            artifacts.append({"kind": "vocals", "path": str(flac), "content_type": "audio/flac"})
-        else:
-            opus = directory / f"{name}.opus"
-            run_command(["ffmpeg", "-y", "-i", str(path), "-c:a", "libopus", "-b:a", "160k", str(opus)], "STEM_ENCODE_FAILED")
-            artifacts.append({"kind": name if name in ("drums", "bass", "other") else "other", "path": str(opus), "content_type": "audio/ogg"})
+        encoded = directory / f"{name}.m4a"
+        run_command(["ffmpeg", "-y", "-i", str(path), "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(encoded)], "STEM_ENCODE_FAILED")
+        artifacts.append({"kind": name if name in ("vocals", "drums", "bass", "other") else "other", "path": str(encoded), "content_type": "audio/mp4"})
     artifacts.extend(speaker_artifacts)
     artifacts.append({"kind": "waveform", "path": str(waveform(mixture, directory)), "content_type": "application/json"})
     checkpoint = directory / "checkpoint.json"

@@ -21,6 +21,7 @@ import {
 } from "./runtime-config.js";
 import { openSecret, sealSecret } from "./secrets.js";
 import { normalizeIsrc, resolveLyricLanguage, youtubeVideoId } from "./source-review.js";
+import { buildReviewLyrics } from "./candidate-review.js";
 
 const jsonHeaders = { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff" } as const;
 
@@ -421,10 +422,11 @@ async function withdrawRelease(env:WorkerEnv,actor:Actor,releaseId:string):Promi
 
 async function candidateDetail(env: WorkerEnv, actor: Actor, candidateId: string): Promise<Response> {
   requirePermission(actor, "candidates.read");
-  const candidate = await env.ADMIN_DB.prepare(`SELECT c.*,l.text lyric_text FROM alignment_candidates c JOIN lyric_revisions l ON l.id=c.variant_id WHERE c.id=?1`).bind(candidateId).first<Record<string, unknown>>();
+  const candidate = await env.ADMIN_DB.prepare(`SELECT c.*,l.text lyric_text,l.language lyric_language,l.provider lyric_provider,l.layer lyric_layer,r.artist recording_artist,r.title recording_title FROM alignment_candidates c JOIN lyric_revisions l ON l.id=c.variant_id JOIN input_revisions i ON i.id=c.input_revision_id JOIN recordings r ON r.id=i.recording_id WHERE c.id=?1`).bind(candidateId).first<Record<string, unknown>>();
   if (candidate === null) throw new ServiceError(404, "NOT_FOUND");
-  const artifacts = await env.ADMIN_DB.prepare("SELECT id,kind,speaker_id,content_type,byte_size FROM artifacts WHERE job_id=?1 AND deleted_at IS NULL ORDER BY kind,speaker_id").bind(candidate.job_id).all<Record<string, unknown>>();
-  return json({ id: candidate.id, lyric_text: candidate.lyric_text, line_spans: decode(candidate.line_spans as ArrayBuffer), word_spans: decode(candidate.word_spans as ArrayBuffer), speaker_turns: decode(candidate.speaker_turns as ArrayBuffer), word_speakers: decode(candidate.word_speakers as ArrayBuffer), line_speakers: decode(candidate.line_speakers as ArrayBuffer), quality: JSON.parse(String(candidate.quality)), artifacts: artifacts.results });
+  const artifacts = await env.ADMIN_DB.prepare("SELECT id,kind,speaker_id,content_type,byte_size FROM artifacts WHERE job_id=?1 AND deleted_at IS NULL AND content_type LIKE 'audio/%' ORDER BY CASE kind WHEN 'source' THEN 0 WHEN 'vocals' THEN 1 WHEN 'speaker' THEN 2 WHEN 'drums' THEN 3 WHEN 'bass' THEN 4 ELSE 5 END,speaker_id").bind(candidate.job_id).all<Record<string, unknown>>();
+  const wordSpeakers=decode<Array<[number,number,number]>>(candidate.word_speakers as ArrayBuffer);const lyricText=String(candidate.lyric_text);const review=buildReviewLyrics(lyricText,String(candidate.lyric_language),wordSpeakers);
+  return json({ id: candidate.id, recording:{artist:candidate.recording_artist,title:candidate.recording_title},variant:{provider:candidate.lyric_provider,language:candidate.lyric_language,layer:candidate.lyric_layer},lyric_text:lyricText,...review,line_spans: decode(candidate.line_spans as ArrayBuffer), word_spans: decode(candidate.word_spans as ArrayBuffer), speaker_turns: decode(candidate.speaker_turns as ArrayBuffer), word_speakers:wordSpeakers, line_speakers: decode(candidate.line_speakers as ArrayBuffer), quality: JSON.parse(String(candidate.quality)), artifacts: artifacts.results });
 }
 
 async function acquireLease(env: WorkerEnv, actor: Actor, candidateId: string, force: boolean): Promise<Response> {
