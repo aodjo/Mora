@@ -23,7 +23,7 @@ interface Detail {
 const trackNames:Record<string,string>={source:"원본",vocals:"보컬",drums:"드럼",bass:"베이스",other:"기타 반주",speaker:"화자"};
 const speakerColors=["#0070f3","#7928ca","#eb367f","#ab570a","#0c8c72","#c50000"];
 
-export function Editor({ candidateId }: { candidateId: string }) {
+export function Editor({ candidateId, onPublished }: { candidateId: string; onPublished?: () => void }) {
   const { showToast } = useToast();
   const [detail, setDetail] = useState<Detail | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -32,6 +32,8 @@ export function Editor({ candidateId }: { candidateId: string }) {
   const [currentMs,setCurrentMs]=useState(0);
   const [mediaDuration,setMediaDuration]=useState(0);
   const [regenerating,setRegenerating]=useState(false);
+  const [publishing,setPublishing]=useState(false);
+  const [published,setPublished]=useState(false);
   const audioRefs=useRef(new Map<string,HTMLAudioElement>());
   const lineRefs=useRef(new Map<number,HTMLDivElement>());
   useEffect(() => {
@@ -81,12 +83,23 @@ export function Editor({ candidateId }: { candidateId: string }) {
     </section>
 
     <div className="editor-table-wrap"><table className="editor-table"><thead><tr><th>#</th><th>가사</th><th>화자</th><th>시작 ms</th><th>종료 ms</th></tr></thead><tbody>{detail.word_spans.map((span,index)=>{const token=tokens.get(span[0]);return <tr key={index} className={activeToken===span[0]?"active":""}><td>{span[0]}</td><td className="token-text">{token?.text??"—"}</td><td>{token?.speaker_id===null||token?.speaker_id===undefined?"—":`화자 ${token.speaker_id+1}`}</td><td><input type="number" min="0" step="10" value={span[1]} onChange={(event)=>change(index,1,Number(event.target.value))} className="timing-input"/></td><td><input type="number" min="0" step="10" value={span[2]} onChange={(event)=>change(index,2,Number(event.target.value))} className="timing-input"/></td></tr>;})}</tbody></table></div>
-    <button disabled={!draftSaved||dirty} onClick={()=>void submitDraft()} className="primary-button editor-submit">검수 리비전 제출</button>
+    <div className="editor-actions">
+      <div className="editor-publish-note"><strong>이 후보를 공개할까요?</strong><p>승인하면 지금 보고 있는 타이밍이 공개 API와 주간 덤프에 즉시 반영됩니다. 편집한 내용을 반영하려면 먼저 검수 리비전을 제출하고 새 후보를 승인하세요.</p></div>
+      <button disabled={!draftSaved||dirty||publishing} onClick={()=>void submitDraft()} className="secondary-button">검수 리비전 제출</button>
+      <button disabled={dirty||publishing||published} onClick={()=>void approve()} className="primary-button">{published?"게시 완료":publishing?"게시 중…":"승인하고 공개 게시"}</button>
+    </div>
   </div>;
 
   async function submitDraft(): Promise<void> {
     try {await api(`/candidates/${candidateId}/submit-draft`,{method:"POST",body:"{}"});setDraftSaved(false);setMessage("새 후보 리비전 제출됨");showToast("검수 리비전을 제출했습니다.");}
     catch(reason){showToast(reason instanceof Error?reason.message:"검수 리비전 제출 실패",{variant:"error"});}
+  }
+  async function approve():Promise<void>{
+    if(!window.confirm(`"${detail?.recording.title ?? "이 후보"}"의 타이밍을 공개 게시합니다. 공개 API에 즉시 반영되며, 되돌리려면 릴리스 화면에서 철회해야 합니다. 계속할까요?`))return;
+    setPublishing(true);
+    try{await api(`/candidates/${candidateId}/approve`,{method:"POST",body:"{}"});setPublished(true);setMessage("공개 게시됨");showToast("후보를 승인하고 공개 게시했습니다.");onPublished?.();}
+    catch(reason){showToast(reason instanceof Error?reason.message:"후보 승인 실패",{variant:"error"});}
+    finally{setPublishing(false);}
   }
   async function regenerate():Promise<void>{
     setRegenerating(true);try{await api(`/jobs/${encodeURIComponent(jobId)}/retry`,{method:"POST",body:"{}"});showToast("AAC 호환 오디오 재생성 작업을 큐에 넣었습니다.");}

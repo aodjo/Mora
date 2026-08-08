@@ -1,7 +1,23 @@
-import { Box, CheckCircle2, Cpu, Radio, ServerCog, XCircle } from "lucide-react";
+import { Box, CheckCircle2, Cpu, Pause, Play, Radio, ServerCog, XCircle } from "lucide-react";
+import { useState } from "react";
+import { api } from "../api";
+import { useToast } from "../Toast";
 import { parseArray, parseObject, relativeTime, shortId, stateLabel, stateTone, text, type AdminItem } from "./utils";
 
-export function WorkersView({ items }: { items: AdminItem[] }) {
+export function WorkersView({ items, refresh }: { items: AdminItem[]; refresh: () => void }) {
+  const { showToast } = useToast();
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  async function setState(id: string, desired: "active" | "paused"): Promise<void> {
+    setBusyId(id);
+    try {
+      await api(`/workers/${encodeURIComponent(id)}/state`, { method: "POST", body: JSON.stringify({ desired_state: desired }) });
+      showToast(desired === "active" ? "워커를 다시 활성화했습니다." : "워커를 일시정지했습니다. 진행 중인 작업은 끝까지 처리됩니다.");
+      refresh();
+    } catch (reason) { showToast(reason instanceof Error ? reason.message : "워커 상태 변경 실패", { variant: "error" }); }
+    finally { setBusyId(null); }
+  }
+
   if (items.length === 0) return <div className="empty-panel"><Radio size={20}/><strong>연결된 Generator가 없습니다</strong><p>기기 연결에서 PIN을 승인하면 워커 상태를 확인할 수 있습니다.</p></div>;
   return <div className="worker-grid">{items.map((item) => {
     const id = text(item.id);
@@ -20,6 +36,9 @@ export function WorkersView({ items }: { items: AdminItem[] }) {
       <div className="worker-capabilities">{capabilities.length > 0 ? capabilities.map((value) => <span key={value}>{value}</span>) : <span>capability 정보 없음</span>}</div>
       <div className="worker-checks">{checks.slice(0, 6).map(([name, result]) => <span key={name}>{result === "passed" ? <CheckCircle2 size={13}/> : <XCircle size={13}/>}<b>{name}</b></span>)}</div>
       <footer><span className={`state-badge ${stateTone(desired)}`}>{stateLabel(desired)}</span><span>v{text(item.version)}</span><time>{relativeTime(item.last_seen_at)}</time></footer>
+      <div className="worker-actions">{desired === "active"
+        ? <button disabled={busyId === id} onClick={() => void setState(id, "paused")}><Pause size={13}/>일시정지</button>
+        : <button disabled={busyId === id} onClick={() => void setState(id, "active")}><Play size={13}/>재개</button>}</div>
     </article>;
   })}</div>;
 }

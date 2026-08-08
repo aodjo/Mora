@@ -1,4 +1,4 @@
-import { AlertTriangle, Clock3, LoaderCircle, RotateCcw, UserRound } from "lucide-react";
+import { AlertTriangle, Ban, Clock3, LoaderCircle, RotateCcw, UserRound } from "lucide-react";
 import { api } from "../api";
 import { useToast } from "../Toast";
 import { number, shortId, stateLabel, stateTone, text, time, type AdminItem } from "./utils";
@@ -15,6 +15,15 @@ export function JobsView({ items, refresh }: { items: AdminItem[]; refresh: () =
       showToast("작업을 다시 대기열에 넣었습니다.");
       refresh();
     } catch (reason) { showToast(reason instanceof Error ? reason.message : "작업 재시도 실패", { variant: "error" }); }
+  }
+
+  async function cancel(id: string): Promise<void> {
+    if (!window.confirm("이 작업을 취소합니다. 실행 중이라면 Generator가 현재 단계를 마친 뒤 중단합니다. 계속할까요?")) return;
+    try {
+      await api(`/jobs/${id}/cancel`, { method: "POST", body: "{}" });
+      showToast("작업 취소를 요청했습니다.");
+      refresh();
+    } catch (reason) { showToast(reason instanceof Error ? reason.message : "작업 취소 실패", { variant: "error" }); }
   }
 
   return <div className="jobs-view">
@@ -41,7 +50,11 @@ export function JobsView({ items, refresh }: { items: AdminItem[]; refresh: () =
           <span><Clock3 size={13}/>{time(item.updated_at)}</span>
           {typeof item.error_code === "string" && <span className="job-error"><AlertTriangle size={13}/>{item.error_code}</span>}
         </div>
-        {state === "failed" && <button className="job-retry" onClick={() => void retry(id)}><RotateCcw size={14}/>재시도</button>}
+        <div className="job-actions">
+          {state === "failed" && <button className="job-retry" onClick={() => void retry(id)}><RotateCcw size={14}/>재시도</button>}
+          {["queued", "claimed", "running", "failed"].includes(state) && item.cancel_requested !== 1 && <button className="job-cancel" onClick={() => void cancel(id)}><Ban size={14}/>취소</button>}
+          {item.cancel_requested === 1 && state !== "cancelled" && <span className="job-cancelling"><Ban size={13}/>취소 요청됨</span>}
+        </div>
       </article>;
     })}</div>}
   </div>;

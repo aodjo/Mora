@@ -24,6 +24,9 @@ import { normalizeIsrc, resolveLyricLanguage, youtubeVideoId } from "./source-re
 import { buildReviewLyrics } from "./candidate-review.js";
 
 const jsonHeaders = { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff" } as const;
+// Human approvals required before the quality gate is allowed to promote on its own.
+const CALIBRATION_TARGET = 100;
+const WORKER_STATES = ["active", "draining", "paused", "update"] as const;
 
 function json(value: unknown, status = 200, extra: HeadersInit = {}): Response {
   return new Response(JSON.stringify(value), { status, headers: { ...jsonHeaders, ...Object.fromEntries(new Headers(extra)) } });
@@ -74,13 +77,23 @@ function actorJson(actor: Actor): unknown {
 }
 
 async function overview(env: WorkerEnv): Promise<unknown> {
-  const [jobs, workers, candidates, recordings] = await Promise.all([
+  const [jobs, workers, candidates, recordings, releases, settings] = await Promise.all([
     env.ADMIN_DB.prepare("SELECT state, COUNT(*) count FROM jobs GROUP BY state").all<{ state: string; count: number }>(),
     env.ADMIN_DB.prepare("SELECT COUNT(*) total, SUM(CASE WHEN production_ready=1 AND desired_state='active' AND last_seen_at>?1 THEN 1 ELSE 0 END) healthy FROM workers").bind(Date.now() - 120_000).first<{ total: number; healthy: number }>(),
     env.ADMIN_DB.prepare("SELECT COUNT(*) count FROM alignment_candidates WHERE status='pending'").first<{ count: number }>(),
     env.ADMIN_DB.prepare("SELECT COUNT(*) count FROM recordings").first<{ count: number }>(),
+    env.ADMIN_DB.prepare("SELECT COUNT(*) count FROM releases WHERE state='active'").first<{ count: number }>(),
+    env.ADMIN_DB.prepare("SELECT key,value FROM settings WHERE key IN ('calibration_reviews','auto_promotion_enabled')").all<{ key: string; value: string }>(),
   ]);
-  return { jobs: Object.fromEntries(jobs.results.map((row) => [row.state, row.count])), workers: workers ?? { total: 0, healthy: 0 }, review_count: candidates?.count ?? 0, recording_count: recordings?.count ?? 0 };
+  const values = Object.fromEntries(settings.results.map((row) => [row.key, row.value]));
+  return {
+    jobs: Object.fromEntries(jobs.results.map((row) => [row.state, row.count])),
+    workers: workers ?? { total: 0, healthy: 0 },
+    review_count: candidates?.count ?? 0,
+    recording_count: recordings?.count ?? 0,
+    release_count: releases?.count ?? 0,
+    calibration: { reviews: Number(values.calibration_reviews ?? 0), target: CALIBRATION_TARGET, auto_promotion_enabled: values.auto_promotion_enabled === "true" },
+  };
 }
 
 async function list(database: D1Database, sql: string, bindings: unknown[] = []): Promise<unknown[]> {
@@ -103,6 +116,7 @@ async function createServiceKey(env: WorkerEnv, actor: Actor, value: Record<stri
 
 async function upsertRole(env:WorkerEnv,actor:Actor,value:Record<string,unknown>):Promise<Response>{requirePermission(actor,"roles.manage");const permissions=value.permissions;if(!Array.isArray(permissions)||permissions.some(item=>typeof item!=="string"))throw new ServiceError(400,"INVALID_REQUEST");const id=typeof value.id==="string"?value.id:crypto.randomUUID();await env.ADMIN_DB.prepare("INSERT INTO roles (id,name,permissions,created_at) VALUES (?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET name=excluded.name,permissions=excluded.permissions").bind(id,requiredString(value.name,100),JSON.stringify(permissions),Date.now()).run();await audit(env,actor,"role.upsert","role",id,{permissions});return json({id},201);}
 async function assignRole(env:WorkerEnv,actor:Actor,userId:string,value:Record<string,unknown>):Promise<Response>{requirePermission(actor,"roles.manage");const roleId=requiredString(value.role_id,100);await env.ADMIN_DB.prepare("INSERT OR IGNORE INTO user_roles (user_id,role_id) VALUES (?1,?2)").bind(userId,roleId).run();await audit(env,actor,"user.role.assign","user",userId,{role_id:roleId});return json({user_id:userId,role_id:roleId});}
+async function unassignRole(env:WorkerEnv,actor:Actor,userId:string,roleId:string):Promise<Response>{requirePermission(actor,"roles.manage");await env.ADMIN_DB.prepare("DELETE FROM user_roles WHERE user_id=?1 AND role_id=?2").bind(userId,roleId).run();await audit(env,actor,"user.role.unassign","user",userId,{role_id:roleId});return json({user_id:userId,role_id:roleId});}
 async function addNotification(env:WorkerEnv,actor:Actor,value:Record<string,unknown>):Promise<Response>{requirePermission(actor,"notifications.manage");const kind=requiredString(value.kind,20);if(kind!=="webhook"&&kind!=="discord")throw new ServiceError(400,"INVALID_REQUEST");const targetUrl=requiredString(value.url,4096);const parsed=new URL(targetUrl);if(parsed.protocol!=="https:")throw new ServiceError(400,"INVALID_REQUEST");const id=crypto.randomUUID();const events=Array.isArray(value.events)?value.events.filter(item=>typeof item==="string"):[];await env.ADMIN_DB.prepare("INSERT INTO notification_targets (id,kind,name,url_ciphertext,events,created_at) VALUES (?1,?2,?3,?4,?5,?6)").bind(id,kind,requiredString(value.name,100),await sealSecret(env,targetUrl),JSON.stringify(events),Date.now()).run();await audit(env,actor,"notification.create","notification",id,{kind,events});return json({id,kind,configured:true},201);}
 
 async function createEnrollment(env: WorkerEnv, actor: Actor): Promise<Response> {
@@ -410,7 +424,7 @@ async function promote(env: WorkerEnv, actor: Actor, candidateId: string): Promi
     const current=await env.ADMIN_DB.prepare("SELECT value FROM settings WHERE key='calibration_reviews'").first<{value:string}>();const count=Number(current?.value??0)+1;
     await env.ADMIN_DB.batch([
       env.ADMIN_DB.prepare("INSERT INTO settings (key,value,updated_by,updated_at) VALUES ('calibration_reviews',?1,?2,?3) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_by=excluded.updated_by,updated_at=excluded.updated_at").bind(String(count),actor.id,Date.now()),
-      ...(count>=100?[env.ADMIN_DB.prepare("INSERT INTO settings (key,value,updated_by,updated_at) VALUES ('auto_promotion_enabled','true',?1,?2) ON CONFLICT(key) DO UPDATE SET value='true',updated_by=excluded.updated_by,updated_at=excluded.updated_at").bind(actor.id,Date.now())]:[]),
+      ...(count>=CALIBRATION_TARGET?[env.ADMIN_DB.prepare("INSERT INTO settings (key,value,updated_by,updated_at) VALUES ('auto_promotion_enabled','true',?1,?2) ON CONFLICT(key) DO UPDATE SET value='true',updated_by=excluded.updated_by,updated_at=excluded.updated_at").bind(actor.id,Date.now())]:[]),
     ]);
   }
   await audit(env, actor, "release.promote", "candidate", candidateId, { release_id: releaseId });
@@ -528,9 +542,20 @@ async function workerHeartbeat(env: WorkerEnv, actor: Actor, value: Record<strin
   const workerId = requiredString(value.worker_id, 100);
   const worker = await generatorActorWorker(env, actor);
   if (worker.id !== workerId) throw new ServiceError(403, "FORBIDDEN");
-  await env.ADMIN_DB.prepare("UPDATE workers SET last_seen_at=?1,version=?2,desired_state=desired_state WHERE id=?3").bind(Date.now(), requiredString(value.version, 100), workerId).run();
+  await env.ADMIN_DB.prepare("UPDATE workers SET last_seen_at=?1,version=?2 WHERE id=?3").bind(Date.now(), requiredString(value.version, 100), workerId).run();
   const state = await env.ADMIN_DB.prepare("SELECT desired_state FROM workers WHERE id=?1").bind(workerId).first<{ desired_state: string }>();
   return json({ desired_state: state?.desired_state ?? "paused", server_time: Date.now() });
+}
+
+async function setWorkerState(env: WorkerEnv, actor: Actor, workerId: string, value: Record<string, unknown>): Promise<Response> {
+  requirePermission(actor, "workers.manage");
+  const desired = requiredString(value.desired_state, 20);
+  if (!WORKER_STATES.includes(desired as (typeof WORKER_STATES)[number])) throw new ServiceError(400, "INVALID_REQUEST");
+  const updated = await env.ADMIN_DB.prepare("UPDATE workers SET desired_state=?1 WHERE id=?2").bind(desired, workerId).run();
+  if ((updated.meta.changes ?? 0) !== 1) throw new ServiceError(404, "NOT_FOUND");
+  await audit(env, actor, "worker.state", "worker", workerId, { desired_state: desired });
+  await event(env, "worker.state", { worker_id: workerId, desired_state: desired });
+  return json({ worker_id: workerId, desired_state: desired });
 }
 
 async function dispatchNotifications(env: WorkerEnv, type: string, data: Record<string, unknown>): Promise<void> {
@@ -600,6 +625,18 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "GET" && url.pathname === "/admin/api/audit") { requirePermission(actor, "audit.read"); return json({ items: await list(env.ADMIN_DB, "SELECT * FROM audit_log ORDER BY id DESC LIMIT 500") }); }
   if (request.method === "GET" && url.pathname === "/admin/api/releases") { requirePermission(actor, "releases.read"); return json({items:await list(env.ADMIN_DB,"SELECT * FROM releases ORDER BY created_at DESC LIMIT 500")}); }
   if (request.method === "GET" && url.pathname === "/admin/api/roles") { requirePermission(actor,"roles.read");return json({items:await list(env.ADMIN_DB,"SELECT id,name,permissions,system,created_at FROM roles ORDER BY name")}); }
+  if (request.method === "GET" && url.pathname === "/admin/api/users") {
+    requirePermission(actor, "roles.read");
+    return json({ items: await list(env.ADMIN_DB, `
+      SELECT u.id,u.email,u.display_name,u.status,u.created_at,
+        (SELECT json_group_array(ur.role_id) FROM user_roles ur WHERE ur.user_id=u.id) role_ids
+      FROM users u ORDER BY u.created_at
+    `) });
+  }
+  if (request.method === "GET" && url.pathname === "/admin/api/service-keys") {
+    requirePermission(actor, "service_keys.manage");
+    return json({ items: await list(env.ADMIN_DB, "SELECT id,name,prefix,scopes,expires_at,revoked_at,last_used_at,created_at FROM service_keys ORDER BY created_at DESC LIMIT 200") });
+  }
   if (request.method === "GET" && url.pathname === "/admin/api/settings") return listRuntimeConfig(env, actor);
   if (request.method === "GET" && url.pathname === "/admin/api/collector/config") return collectorRuntimeConfig(env, actor);
   if (request.method === "POST" && url.pathname === "/admin/api/collector/pairings/approve") return approveCollectorPairing(env, actor, await body(request, 16 * 1024));
@@ -634,6 +671,8 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   match = url.pathname.match(/^\/admin\/api\/candidates\/([^/]+)\/submit-draft$/u);
   if (request.method === "POST" && match?.[1] !== undefined) return submitDraft(env, actor, match[1]);
   match=url.pathname.match(/^\/admin\/api\/users\/([^/]+)\/roles$/u);if(request.method==="POST"&&match?.[1]!==undefined)return assignRole(env,actor,match[1],await body(request));
+  match=url.pathname.match(/^\/admin\/api\/users\/([^/]+)\/roles\/([^/]+)$/u);if(request.method==="DELETE"&&match?.[1]!==undefined&&match[2]!==undefined)return unassignRole(env,actor,match[1],match[2]);
+  match=url.pathname.match(/^\/admin\/api\/workers\/([^/]+)\/state$/u);if(request.method==="POST"&&match?.[1]!==undefined)return setWorkerState(env,actor,match[1],await body(request,16*1024));
   match=url.pathname.match(/^\/admin\/api\/settings\/([^/]+)$/u);
   if(request.method==="PUT"&&match?.[1]!==undefined)return putRuntimeConfig(env,actor,decodeURIComponent(match[1]),await body(request));
   if(request.method==="DELETE"&&match?.[1]!==undefined)return deleteRuntimeConfig(env,actor,decodeURIComponent(match[1]));
