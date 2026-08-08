@@ -13,7 +13,7 @@ import {
   Settings,
   ShieldCheck,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, liveEvents, type AuthStatus } from "./api";
 import { Auth } from "./Auth";
 import { Editor } from "./Editor";
@@ -50,6 +50,13 @@ const descriptions: Record<Page, string> = {
   settings: "런타임 설정과 서비스 자격증명을 관리합니다.",
 };
 
+function pathFor(page: Page): string {
+  if (page === "review") return "/reviews";
+  // Settings and connections render their own panels; they only need the overview payload.
+  if (page === "settings" || page === "connections") return "/overview";
+  return `/${page}`;
+}
+
 function initialTheme(): Theme {
   try {
     const stored = window.localStorage.getItem("mora-theme");
@@ -65,6 +72,9 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [page, setPage] = useState<Page>("overview");
   const [data, setData] = useState<Record<string, unknown>>({});
+  const [loadedPage, setLoadedPage] = useState<Page | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const request = useRef(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [live, setLive] = useState(false);
   const [theme, setTheme] = useState<Theme>(initialTheme);
@@ -89,12 +99,38 @@ export default function App() {
       });
   }, []);
   useEffect(refreshAuth, [refreshAuth]);
+  // Tagged with the page it belongs to: the payloads share a shape, so untagged data
+  // from the previous page renders happily — and wrongly — in the next page's view.
+  const load = useCallback(
+    (mode: "switch" | "silent") => {
+      if (auth?.actor === null || auth === null) return;
+      const target = page;
+      const ticket = ++request.current;
+      if (mode === "switch") setLoadedPage(null);
+      else setRefreshing(true);
+      void api<Record<string, unknown>>(pathFor(target))
+        .then((result) => {
+          if (ticket !== request.current) return; // a later page won the race
+          setData(result);
+          setLoadedPage(target);
+        })
+        .catch(() => {
+          if (ticket !== request.current) return;
+          setData({});
+          setLoadedPage(target); // stop waiting; the view shows its own empty state
+        })
+        .finally(() => {
+          if (ticket === request.current) setRefreshing(false);
+        });
+    },
+    [auth, page],
+  );
   const refresh = useCallback(() => {
-    if (auth?.actor === null || auth === null) return;
-    const path = page === "review" ? "/reviews" : page === "settings" || page === "connections" ? "/overview" : `/${page}`;
-    void api<Record<string, unknown>>(path).then(setData);
-  }, [auth, page]);
-  useEffect(refresh, [refresh]);
+    load("silent");
+  }, [load]);
+  useEffect(() => {
+    load("switch");
+  }, [load]);
   useEffect(() => {
     if (auth?.actor === null || auth === null) return;
     const close = liveEvents(() => {
@@ -128,6 +164,9 @@ export default function App() {
   const sourceItems = Array.isArray(data.source_items) ? (data.source_items as Array<Record<string, unknown>>) : [];
   const candidateItems = Array.isArray(data.candidate_items) ? (data.candidate_items as Array<Record<string, unknown>>) : [];
   const activeLabel = pages.find(([id]) => id === page)?.[1];
+  // Settings, connections and the editor fetch their own data, so they never wait on this.
+  const selfLoading = page === "settings" || page === "connections" || (page === "review" && selected !== null);
+  const ready = selfLoading || loadedPage === page;
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -208,13 +247,15 @@ export default function App() {
               <p>{selected !== null && page === "review" ? "단어별 시작·종료 시간을 검수합니다." : descriptions[page]}</p>
             </div>
             {page !== "overview" && page !== "settings" && selected === null && (
-              <button onClick={refresh} className="secondary-button">
-                <RefreshCw size={14} />
+              <button onClick={refresh} disabled={refreshing} className="secondary-button">
+                <RefreshCw size={14} className={refreshing ? "spinning" : ""} />
                 새로고침
               </button>
             )}
           </div>
-          {page === "overview" ? (
+          {!ready ? (
+            <PageSkeleton page={page} />
+          ) : page === "overview" ? (
             <Overview data={data} />
           ) : page === "jobs" ? (
             <JobsView items={items} refresh={refresh} />
@@ -319,5 +360,29 @@ function CalibrationPanel({ value }: { value: Calibration | undefined }) {
         <i style={{ width: `${progress * 100}%` }} />
       </div>
     </section>
+  );
+}
+
+function PageSkeleton({ page }: { page: Page }) {
+  if (page === "overview")
+    return (
+      <div className="space-y-5" aria-busy="true" aria-label="불러오는 중">
+        <div className="skeleton-banner" />
+        <div className="metrics-grid">
+          {[0, 1, 2, 3].map((index) => (
+            <div key={index} className="skeleton-card" style={{ animationDelay: `${index * 90}ms` }} />
+          ))}
+        </div>
+      </div>
+    );
+  return (
+    <div className="skeleton-list" aria-busy="true" aria-label="불러오는 중">
+      {[0, 1, 2, 3].map((index) => (
+        <div key={index} className="skeleton-row" style={{ animationDelay: `${index * 90}ms` }}>
+          <i />
+          <i />
+        </div>
+      ))}
+    </div>
   );
 }
