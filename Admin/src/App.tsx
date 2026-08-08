@@ -363,26 +363,64 @@ function CalibrationPanel({ value }: { value: Calibration | undefined }) {
   );
 }
 
+// Each page lays its list out differently — one column, two, or a card grid, some behind a
+// filter bar. The placeholder borrows the real wrapper class so column count, gap and offset
+// come from the same CSS the loaded page uses, instead of a second set of numbers to drift.
+interface SkeletonSpec {
+  view?: string; // the page wrapper, for its gap between filter bar and list
+  filters?: number; // height of the filter/tab bar that sits above the list
+  band?: number; // height of the summary band between the tabs and the list
+  panel?: number; // height of the panel header the list is nested under
+  wrapper: string; // the real list/grid class, so columns and gap match
+  count: number;
+  height: number;
+}
+
+const skeletons: Record<Page, SkeletonSpec | null> = {
+  overview: null,
+  jobs: { view: "jobs-view", filters: 38, wrapper: "job-list", count: 4, height: 74 },
+  workers: { wrapper: "worker-grid", count: 2, height: 316 },
+  recordings: { view: "recordings-view", filters: 36, wrapper: "recording-grid", count: 4, height: 161 },
+  review: { view: "review-workspace", filters: 38, band: 76, wrapper: "source-review-list", count: 2, height: 240 },
+  releases: { view: "releases-view", wrapper: "release-list", count: 4, height: 88 },
+  audit: { panel: 71, wrapper: "audit-list", count: 5, height: 75 },
+  connections: null,
+  settings: null,
+};
+
 function PageSkeleton({ page }: { page: Page }) {
   if (page === "overview")
     return (
       <div className="space-y-5" aria-busy="true" aria-label="불러오는 중">
-        <div className="skeleton-banner" />
+        <div className="skeleton-block" style={{ height: 90 }} />
         <div className="metrics-grid">
           {[0, 1, 2, 3].map((index) => (
-            <div key={index} className="skeleton-card" style={{ animationDelay: `${index * 90}ms` }} />
+            <div key={index} className="skeleton-block" style={{ height: 104, animationDelay: `${index * 90}ms` }} />
           ))}
         </div>
       </div>
     );
-  return (
-    <div className="skeleton-list" aria-busy="true" aria-label="불러오는 중">
-      {[0, 1, 2, 3].map((index) => (
-        <div key={index} className="skeleton-row" style={{ animationDelay: `${index * 90}ms` }}>
-          <i />
-          <i />
-        </div>
+  const spec = skeletons[page];
+  if (spec === null) return null;
+  const blocks = (
+    <div className={spec.wrapper}>
+      {Array.from({ length: spec.count }, (_, index) => (
+        <div key={index} className="skeleton-block" style={{ height: spec.height, animationDelay: `${index * 90}ms` }} />
       ))}
+    </div>
+  );
+  if (spec.panel !== undefined)
+    return (
+      <section className="audit-stream" aria-busy="true" aria-label="불러오는 중">
+        <div className="skeleton-panel-head" style={{ height: spec.panel }} />
+        {blocks}
+      </section>
+    );
+  return (
+    <div className={spec.view ?? "skeleton-page"} aria-busy="true" aria-label="불러오는 중">
+      {spec.filters !== undefined && <div className="skeleton-filters" style={{ height: spec.filters }} />}
+      {spec.band !== undefined && <div className="skeleton-block" style={{ height: spec.band }} />}
+      {blocks}
     </div>
   );
 }
