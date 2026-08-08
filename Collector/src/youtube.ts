@@ -27,6 +27,65 @@ function normalize(value: string): string {
     .replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
+/**
+ * Uploads that carry the right title over audio that is not the recording: someone else singing
+ * it, a backing track, or a master that has been re-timed. "cover" alone missed "covered by",
+ * and the ASCII words missed every Japanese and Korean upload — the top hit for Ado's ギラギラ
+ * was a cover scoring 0.89.
+ */
+const NOT_THE_RECORDING =
+  /\b(?:cover(?:ed|s)?|karaoke|instrumental|remix|mashup|nightcore|reverb|acoustic|piano|8d\s*audio|vinyl|rip)\b|\b(?:sped|speed)\s*up\b|\bslowed\b|[+-]\s*\d+(?:\.\d+)?\s*st\b|pitch\s*shift|커버|노래방|반주|불러봄|歌ってみた|カラオケ|弾いてみた|演奏してみた/iu;
+
+/**
+ * A rendition of the song that is not the recording the seed names: another language's cut runs
+ * to a different vocal, and a dance practice is a room mic over a video. Both share the title,
+ * and aespa's "Whiplash (English Version)" auto-selected over the Korean original because of it.
+ */
+const OTHER_RENDITION =
+  /\b(?:english|korean|japanese|chinese|mandarin|spanish|band|festival|orchestra)\s*(?:version|ver\.?)|\bdance\s*practice\b|\bchoreograph|\bperformance\s*(?:video|clip)\b|안무|퍼포먼스/iu;
+
+/** A stage recording of the song, which is a different performance from the released one. */
+const A_PERFORMANCE = /\b(?:live|라이브)\b|歌唱|공연/iu;
+
+/**
+ * Whether the upload is something other than the released recording. Only what the uploader
+ * wrote around the song title counts, so that Oasis' "Live Forever" and Springsteen's "Cover
+ * Me" are not disqualified by their own names.
+ */
+export function isDifferentRecording(videoTitle: string, songTitle: string): boolean {
+  const escaped = songTitle.trim().replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const added = escaped.length === 0 ? videoTitle : videoTitle.replace(new RegExp(escaped, "giu"), " ");
+  return NOT_THE_RECORDING.test(added) || OTHER_RENDITION.test(added) || A_PERFORMANCE.test(added);
+}
+
+/** Channel-name words that say nothing about who owns the channel. */
+const CHANNEL_NOISE = new Set(["official", "vevo", "topic", "music", "records", "record", "label", "channel", "tv", "entertainment"]);
+
+function tokens(value: string): string[] {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((token) => token.length > 0);
+}
+
+/**
+ * The word "official" in a channel name means nothing: NORISTRY Official uploads covers and
+ * JXS_BP Official reuploads other labels' masters, while the channels that actually hold the
+ * recording are named Red Velvet, aespa and Oasis. What counts is whether the channel is the
+ * artist's own, or the "<artist> - Topic" channel the label feeds automatically.
+ */
+export function isArtistChannel(channel: string, artist: string): boolean {
+  const wanted = tokens(artist);
+  const owner = tokens(channel);
+  if (wanted.length === 0 || owner.length === 0) return false;
+  // The artist has to be named either way. What "official" buys is room for the rest of the
+  // name, because IU's channel is "이지금 [IU Official]" — a reuploader calling itself
+  // JXS_BP Official still fails, having never named the artist at all.
+  if (!wanted.every((word) => owner.includes(word))) return false;
+  return owner.includes("official") || owner.every((word) => wanted.includes(word) || CHANNEL_NOISE.has(word));
+}
+
 export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCandidate[]> {
   // Deliberately without the album: it pulls the search towards the record rather than the
   // track, and "BTS Come Over Proof audio" returns the album's other songs and a live stream
@@ -41,7 +100,7 @@ export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCa
       if (!entry.id || !entry.title || entry.live_status === "is_live") return [];
       const title = entry.track ?? entry.title;
       const artist = entry.artist ?? entry.uploader ?? entry.channel ?? "";
-      if (/\b(?:live|cover|karaoke|instrumental|sped\s*up|slowed|remix)\b/iu.test(title)) return [];
+      if (isDifferentRecording(entry.title, seed.title)) return [];
       // A loop or compilation shares the title but not the recording.
       if (/\d+\s*(?:시간|hours?|hr)\b/iu.test(entry.title)) return [];
       const durationMs = Math.round((entry.duration ?? 0) * 1000);
@@ -65,7 +124,8 @@ export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCa
       // demand a match inside half a second, which almost nothing survives.
       const drift = seed.duration_ms === undefined ? undefined : Math.abs(seed.duration_ms - durationMs);
       const durationScore = drift === undefined || durationMs === 0 ? 0.5 : drift <= 2_000 ? 1 : Math.max(0, 1 - (drift - 2_000) / 12_000);
-      const official = /topic|official/iu.test(`${entry.uploader ?? ""} ${entry.channel ?? ""}`);
+      const channel = entry.channel ?? entry.uploader ?? "";
+      const official = isArtistChannel(channel, seed.artist);
       const score = titleScore * 0.45 + artistScore * 0.35 + durationScore * 0.15 + (official ? 0.05 : 0) - (isVideo ? 0.1 : 0);
       if (score < 0.55) return [];
       return [
@@ -77,7 +137,7 @@ export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCa
           album: entry.album,
           duration_ms: durationMs,
           official,
-          source_type: /topic/iu.test(`${entry.uploader ?? ""} ${entry.channel ?? ""}`) ? "topic" : official ? "song" : "unofficial",
+          source_type: official ? (/-\s*topic$/iu.test(channel.trim()) ? "topic" : "song") : "unofficial",
           score,
         },
       ];

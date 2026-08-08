@@ -99,7 +99,12 @@ export class CollectorService {
           this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "no-lyrics" });
           continue;
         }
-        const selected = sources[0]?.official === true && sources[0].score >= 0.9;
+        // Search results come back flat, so the score compares the song title against the whole
+        // video title and tops out at 0.86 for anything captioned "'Whiplash' Official Audio".
+        // 0.90 therefore asked for a title that is bare — which is why almost everything landed
+        // in review. Now that official means the artist's own channel rather than any channel
+        // with the word in its name, that is the gate worth leaning on.
+        const selected = sources[0]?.official === true && sources[0].score >= 0.85;
         const response = await this.#fetch(`${this.config.adminUrl.replace(/\/$/u, "")}/admin/api/collector/recordings`, {
           method: "POST",
           headers: { authorization: `Bearer ${this.config.adminToken}`, "content-type": "application/json" },
@@ -146,7 +151,11 @@ export function reviewReason(blockedBy: string[], sources: YoutubeCandidate[]): 
   if (blockedBy.includes("source")) {
     const best = sources[0];
     parts.push(
-      best === undefined ? "음원 후보 없음" : `자동 선택 기준 미달 (최고 ${best.score.toFixed(2)}${best.official ? ", 공식" : ", 비공식"})`,
+      best === undefined
+        ? "음원 후보 없음"
+        : best.official
+          ? `자동 선택 기준 미달 (아티스트 채널, 최고 ${best.score.toFixed(2)})`
+          : `아티스트 채널 음원 없음 (최고 ${best.score.toFixed(2)})`,
     );
   }
   return parts.length > 0 ? parts.join(" · ") : "확인 필요";

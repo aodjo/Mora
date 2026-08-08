@@ -83,7 +83,8 @@ test("Review reasons name what is actually missing", () => {
   const candidate = { ...source, score: 0.86, official: false };
   // The two songs that kept reaching review with an ISRC and candidates: the shortlist simply
   // never cleared auto-selection, which the log could not say before.
-  assert.equal(reviewReason(["source"], [candidate]), "자동 선택 기준 미달 (최고 0.86, 비공식)");
+  assert.equal(reviewReason(["source"], [candidate]), "아티스트 채널 음원 없음 (최고 0.86)");
+  assert.equal(reviewReason(["source"], [{ ...candidate, official: true }]), "자동 선택 기준 미달 (아티스트 채널, 최고 0.86)");
   assert.equal(reviewReason(["source"], []), "음원 후보 없음");
   assert.equal(reviewReason(["isrc"], [candidate]), "ISRC 없음");
   assert.equal(reviewReason(["isrc", "source"], []), "ISRC 없음 · 음원 후보 없음");
