@@ -116,8 +116,17 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: WorkerEnv): Promise<void> {
-    await env.ADMIN_DB.prepare("DELETE FROM stage_events WHERE created_at < ?1")
-      .bind(Date.now() - DIAGNOSTIC_RETENTION_MS)
-      .run();
+    const now = Date.now();
+    // Rows whose whole purpose has a deadline. Nothing reads them once it passes, but only
+    // the pairing tables swept themselves, so the rest grew for the life of the deployment.
+    await env.ADMIN_DB.batch([
+      env.ADMIN_DB.prepare("DELETE FROM stage_events WHERE created_at < ?1").bind(now - DIAGNOSTIC_RETENTION_MS),
+      env.ADMIN_DB.prepare("DELETE FROM sessions WHERE expires_at < ?1").bind(now),
+      env.ADMIN_DB.prepare("DELETE FROM auth_challenges WHERE expires_at < ?1").bind(now),
+      env.ADMIN_DB.prepare("DELETE FROM enrollment_tokens WHERE used_at IS NOT NULL OR expires_at < ?1").bind(now),
+      env.ADMIN_DB.prepare("DELETE FROM edit_leases WHERE expires_at < ?1").bind(now),
+      env.ADMIN_DB.prepare("DELETE FROM collector_pairings WHERE expires_at < ?1").bind(now),
+      env.ADMIN_DB.prepare("DELETE FROM generator_pairings WHERE expires_at < ?1").bind(now),
+    ]);
   },
 } satisfies ExportedHandler<WorkerEnv>;

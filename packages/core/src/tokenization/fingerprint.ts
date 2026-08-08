@@ -3,6 +3,13 @@ import { ServiceError } from "../shared/errors.js";
 import { activeLines } from "./tokenizer.js";
 import type { Fingerprint, TokenType, Tokenization } from "../shared/types.js";
 
+/**
+ * Alignment is quadratic in token count, so this bounds the work a single request can ask
+ * for. Both the fingerprint a caller submits and the text we tokenize ourselves are held to
+ * it; letting the text path run uncapped let one request outgrow the Worker's memory.
+ */
+export const MAX_TOKENS = 100_000;
+
 export function textHash(canonical: string): string {
   return createHash("sha256").update(canonical, "utf8").digest("hex").slice(0, 16);
 }
@@ -62,7 +69,7 @@ export function validateFingerprint(value: unknown): Fingerprint {
     types.push(lineTypes);
   }
 
-  if (tokenCount > 100_000) throw new ServiceError(413, "PAYLOAD_TOO_LARGE");
+  if (tokenCount > MAX_TOKENS) throw new ServiceError(413, "PAYLOAD_TOO_LARGE");
   return { lens, types };
 }
 

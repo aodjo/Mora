@@ -3,7 +3,15 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { AlignmentService, AlignmentStore, fingerprint, serializeOutput, textHash, tokenize } from "../packages/core/src/index.js";
+import {
+  AlignmentService,
+  AlignmentStore,
+  MAX_TOKENS,
+  fingerprint,
+  serializeOutput,
+  textHash,
+  tokenize,
+} from "../packages/core/src/index.js";
 
 const fixtureText = "나는 오늘 밤에\n너를 기다렸어";
 const fixtureTokenization = tokenize(fixtureText);
@@ -117,4 +125,16 @@ test("numeric WebVTT overlay and local SQLite fixture contain no lyric text", as
   assert.equal(bytes.subarray(0, 15).toString("ascii"), "SQLite format 3");
   assert.equal(bytes.includes(Buffer.from("나는", "utf8")), false);
   assert.equal(bytes.includes(Buffer.from("기다렸어", "utf8")), false);
+});
+
+test("align refuses a text whose token count would outgrow the alignment matrix", async () => {
+  // One line, no newlines: this is the shape that reaches the flat matcher, where the
+  // matrix is source × target and a megabyte of text asks for more memory than the isolate has.
+  const oversized = "가나 ".repeat(120_000);
+  await assert.rejects(
+    service.align({ isrc: "KRA382400123", text: oversized }),
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "PAYLOAD_TOO_LARGE",
+  );
+  // The same ceiling the fingerprint endpoint already enforced.
+  assert.equal(tokenize(oversized).tokens.length > MAX_TOKENS, true);
 });

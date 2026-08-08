@@ -963,12 +963,20 @@ async function promote(env: WorkerEnv, actor: Actor, candidateId: string): Promi
   const results = await env.PUBLIC_DB.batch([publicWrite, alignmentWrite]);
   const publicId = Number(results[1]?.meta.last_row_id ?? 0);
   const releaseId = crypto.randomUUID();
-  await env.ADMIN_DB.batch([
-    env.ADMIN_DB.prepare("UPDATE alignment_candidates SET status='published' WHERE id=?1").bind(candidateId),
-    env.ADMIN_DB.prepare(
-      "INSERT INTO releases (id,recording_id,candidate_id,public_alignment_id,state,policy_version,created_by,created_at) VALUES (?1,(SELECT recording_id FROM input_revisions WHERE id=?2),?3,?4,'active','manual-v1',?5,?6)",
-    ).bind(releaseId, row.input_revision_id, candidateId, publicId, actor.id, Date.now()),
-  ]);
+  try {
+    await env.ADMIN_DB.batch([
+      env.ADMIN_DB.prepare("UPDATE alignment_candidates SET status='published' WHERE id=?1").bind(candidateId),
+      env.ADMIN_DB.prepare(
+        "INSERT INTO releases (id,recording_id,candidate_id,public_alignment_id,state,policy_version,created_by,created_at) VALUES (?1,(SELECT recording_id FROM input_revisions WHERE id=?2),?3,?4,'active','manual-v1',?5,?6)",
+      ).bind(releaseId, row.input_revision_id, candidateId, publicId, actor.id, Date.now()),
+    ]);
+  } catch (error) {
+    // D1 has no transaction across databases. Withdrawing is driven by the release row, so a
+    // public alignment without one is live with no way to take it down from the console —
+    // undo the public write rather than leave that behind.
+    await env.PUBLIC_DB.prepare("UPDATE public_alignment SET active=0 WHERE revision_id=?1").bind(candidateId).run();
+    throw error;
+  }
   if (actor.type === "user") {
     const current = await env.ADMIN_DB.prepare("SELECT value FROM settings WHERE key='calibration_reviews'").first<{ value: string }>();
     const count = Number(current?.value ?? 0) + 1;

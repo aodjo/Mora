@@ -14,7 +14,7 @@ import {
   timeSpans,
 } from "./shared/validation.js";
 import type { AlignmentRepository, Contribution } from "./storage/repository.js";
-import { fingerprint, textHash, validateFingerprint } from "./tokenization/fingerprint.js";
+import { MAX_TOKENS, fingerprint, textHash, validateFingerprint } from "./tokenization/fingerprint.js";
 import { publicTokens, tokenize } from "./tokenization/tokenizer.js";
 import { tokenizeV2 } from "./tokenization/tokenizer-v2.js";
 import type { SpeakerIndex, SpeakerTurn, Tokenization, TokenizerId } from "./shared/types.js";
@@ -40,7 +40,11 @@ function identifier(body: Record<string, unknown>): { isrc?: string; mbid?: stri
 }
 
 function tokenizationFor(text: string, tokenizer: string, language = "und"): Tokenization {
-  return tokenizer === "unilab-v2" ? tokenizeV2(text, language) : tokenize(text);
+  const result = tokenizer === "unilab-v2" ? tokenizeV2(text, language) : tokenize(text);
+  // The same ceiling validateFingerprint applies to a submitted fingerprint. Without it a
+  // single unauthenticated request can ask alignment for a matrix larger than the isolate.
+  if (result.tokens.length > MAX_TOKENS) throw new ServiceError(413, "PAYLOAD_TOO_LARGE");
+  return result;
 }
 
 function bestCandidate(alignments: StoredAlignment[], targetFor: (tokenizer: string) => ReturnType<typeof fingerprint>): Candidate {
