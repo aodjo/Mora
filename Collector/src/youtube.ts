@@ -50,8 +50,11 @@ export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCa
       const artistScore =
         wanted.length > 0 && (credited.includes(wanted) || (artist.length > 0 && wanted.includes(normalize(artist)))) ? 1 : 0;
       const durationMs = Math.round((entry.duration ?? 0) * 1000);
-      const durationScore =
-        seed.duration_ms === undefined || durationMs === 0 ? 0.5 : Math.max(0, 1 - Math.abs(seed.duration_ms - durationMs) / 10_000);
+      // An upload of the same recording drifts a second or two from the catalogue length —
+      // silence padding, a trimmed fade. Scoring that linearly from zero made auto-selection
+      // demand a match inside half a second, which almost nothing survives.
+      const drift = seed.duration_ms === undefined ? undefined : Math.abs(seed.duration_ms - durationMs);
+      const durationScore = drift === undefined || durationMs === 0 ? 0.5 : drift <= 2_000 ? 1 : Math.max(0, 1 - (drift - 2_000) / 12_000);
       const official = /topic|official/iu.test(`${entry.uploader ?? ""} ${entry.channel ?? ""}`);
       const score = titleScore * 0.45 + artistScore * 0.35 + durationScore * 0.15 + (official ? 0.05 : 0);
       if (score < 0.55) return [];
