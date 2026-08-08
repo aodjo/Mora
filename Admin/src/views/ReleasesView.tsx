@@ -7,8 +7,6 @@ import { shortId, stateLabel, stateTone, text, time, type AdminItem } from "./ut
 export function ReleasesView({ items, refresh }: { items: AdminItem[]; refresh: () => void }) {
   const { showToast } = useToast();
   const [busyId, setBusyId] = useState<string | null>(null);
-  const active = items.filter((item) => item.state === "active").length;
-  const withdrawn = items.filter((item) => item.state === "withdrawn").length;
 
   async function withdraw(id: string): Promise<void> {
     if (!window.confirm("이 릴리스를 철회합니다. 공개 API에서 즉시 내려가며 다음 주간 덤프에도 포함되지 않습니다. 계속할까요?")) return;
@@ -34,21 +32,6 @@ export function ReleasesView({ items, refresh }: { items: AdminItem[]; refresh: 
     );
   return (
     <div className="releases-view">
-      <section className="queue-summary" aria-label="릴리스 요약">
-        <div>
-          <span>공개 중</span>
-          <strong>{active}</strong>
-        </div>
-        <div>
-          <span>철회됨</span>
-          <strong>{withdrawn}</strong>
-        </div>
-        <div>
-          <span>전체 이력</span>
-          <strong>{items.length}</strong>
-        </div>
-        <p>철회한 릴리스는 기록으로 남고 공개 데이터에서만 비활성화됩니다.</p>
-      </section>
       <div className="release-list">
         {items.map((item) => {
           const id = text(item.id);
@@ -57,17 +40,15 @@ export function ReleasesView({ items, refresh }: { items: AdminItem[]; refresh: 
             <article key={id} className="release-card">
               <div className="release-main">
                 <div className="release-head">
-                  <span className="mono-eyebrow">RELEASE · {shortId(id)}</span>
+                  <div className="release-song">
+                    <strong>{text(item.title, "제목 없음")}</strong>
+                    <span>{text(item.artist, "아티스트 미상")}</span>
+                  </div>
                   <span className={`state-badge ${stateTone(state)}`}>{stateLabel(state)}</span>
                 </div>
                 <div className="release-meta">
-                  <span>
-                    후보 <code title={text(item.candidate_id)}>{shortId(item.candidate_id)}</code>
-                  </span>
-                  <span>
-                    곡 <code title={text(item.recording_id)}>{shortId(item.recording_id)}</code>
-                  </span>
-                  <span>정책 {text(item.policy_version)}</span>
+                  <code>{text(item.isrc, "ISRC 없음")}</code>
+                  <span title={text(item.candidate_id)}>후보 {shortId(item.candidate_id)}</span>
                   <time>{time(item.created_at)}</time>
                 </div>
               </div>

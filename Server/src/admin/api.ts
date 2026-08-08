@@ -506,7 +506,13 @@ async function reviewQueues(env: WorkerEnv, actor: Actor): Promise<Response> {
       ORDER BY CASE WHEN s.id IS NULL THEN 1 ELSE 0 END,i.created_at DESC,s.rank LIMIT 1000`,
     ).all<Record<string, unknown>>(),
     env.ADMIN_DB.prepare(
-      "SELECT id,job_id,input_revision_id,variant_id,status,tokenizer,text_hash,quality,quality_score,pipeline_version,backend,hardware,created_at FROM alignment_candidates ORDER BY created_at DESC LIMIT 200",
+      `SELECT c.id,c.job_id,c.input_revision_id,c.variant_id,c.status,c.tokenizer,c.quality,c.quality_score,c.created_at,
+        r.artist,r.title,l.provider,l.language
+       FROM alignment_candidates c
+       JOIN input_revisions i ON i.id=c.input_revision_id
+       JOIN recordings r ON r.id=i.recording_id
+       JOIN lyric_revisions l ON l.id=c.variant_id
+       ORDER BY c.created_at DESC LIMIT 200`,
     ).all<Record<string, unknown>>(),
   ]);
   const grouped = new Map<string, SourceReviewItem>();
@@ -1343,7 +1349,17 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   }
   if (request.method === "GET" && url.pathname === "/admin/api/jobs") {
     requirePermission(actor, "jobs.read");
-    return json({ items: await list(env.ADMIN_DB, "SELECT * FROM jobs ORDER BY created_at DESC LIMIT 200") });
+    // The queue is read as "which song is where", so every row carries its song.
+    return json({
+      items: await list(
+        env.ADMIN_DB,
+        `SELECT j.*, r.artist, r.title, r.isrc
+         FROM jobs j
+         JOIN input_revisions i ON i.id = j.input_revision_id
+         JOIN recordings r ON r.id = i.recording_id
+         ORDER BY j.created_at DESC LIMIT 200`,
+      ),
+    });
   }
   if (request.method === "GET" && url.pathname === "/admin/api/workers") {
     requirePermission(actor, "workers.read");
@@ -1388,7 +1404,14 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   }
   if (request.method === "GET" && url.pathname === "/admin/api/releases") {
     requirePermission(actor, "releases.read");
-    return json({ items: await list(env.ADMIN_DB, "SELECT * FROM releases ORDER BY created_at DESC LIMIT 500") });
+    return json({
+      items: await list(
+        env.ADMIN_DB,
+        `SELECT x.*, r.artist, r.title, r.isrc
+         FROM releases x JOIN recordings r ON r.id = x.recording_id
+         ORDER BY x.created_at DESC LIMIT 500`,
+      ),
+    });
   }
   if (request.method === "GET" && url.pathname === "/admin/api/roles") {
     requirePermission(actor, "roles.read");

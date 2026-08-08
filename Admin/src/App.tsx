@@ -256,9 +256,8 @@ interface Calibration {
 function Overview({ data }: { data: Record<string, unknown> }) {
   const jobs = (data.jobs ?? {}) as Record<string, number>;
   const workers = (data.workers ?? {}) as Record<string, number>;
+  // Queued/running counts live in the banner sentence; repeating them as cards said nothing new.
   const cards = [
-    ["대기 작업", jobs.queued ?? 0, ListChecks],
-    ["실행 중", jobs.running ?? 0, Activity],
     ["검수 대기", Number(data.review_count ?? 0), ShieldCheck],
     ["정상 워커", `${workers.healthy ?? 0}/${workers.total ?? 0}`, Radio],
     ["공개 중", Number(data.release_count ?? 0), Globe],

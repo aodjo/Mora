@@ -73,6 +73,26 @@ export function stateLabel(value: unknown): string {
   return labels[state] ?? state;
 }
 
+export function stageLabel(value: unknown): string {
+  const labels: Record<string, string> = {
+    probe: "음원 확인",
+    download: "다운로드",
+    transcode: "변환",
+    separate: "음원 분리",
+    coarse_asr: "받아쓰기",
+    language_validate: "언어 확인",
+    forced_align: "타이밍 정렬",
+    diarize: "화자 분석",
+    speaker_stems: "화자 스템",
+    index: "정리",
+    quality_gate: "품질 검사",
+    candidate_submit: "후보 제출",
+    cleanup: "마무리",
+  };
+  const stage = text(value, "");
+  return labels[stage] ?? stage;
+}
+
 export function stateTone(value: unknown): "good" | "warn" | "bad" | "neutral" | "live" {
   const state = text(value, "unknown");
   if (["active", "approved", "candidate_ready", "published", "verified"].includes(state)) return "good";

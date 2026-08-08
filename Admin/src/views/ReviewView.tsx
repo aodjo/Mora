@@ -1,20 +1,8 @@
-import {
-  AlertTriangle,
-  AudioLines,
-  Check,
-  ChevronRight,
-  ExternalLink,
-  Gauge,
-  Link2,
-  Microchip,
-  Music2,
-  Save,
-  WandSparkles,
-} from "lucide-react";
+import { AlertTriangle, AudioLines, Check, ChevronRight, ExternalLink, Link2, Music2, Save } from "lucide-react";
 import { useState, type CSSProperties } from "react";
 import { api } from "../api";
 import { useToast } from "../Toast";
-import { number, parseObject, shortId, stateLabel, stateTone, text, time, type AdminItem } from "./utils";
+import { number, parseObject, stateLabel, stateTone, text, time, type AdminItem } from "./utils";
 
 const qualityNames: Record<string, string> = {
   duration_match: "길이",
@@ -294,8 +282,8 @@ function TimingReviews({ items, onSelect }: { items: AdminItem[]; onSelect: (id:
             <div className="review-main">
               <div className="review-head">
                 <div>
-                  <span className="mono-eyebrow">CANDIDATE · {shortId(id)}</span>
-                  <h2>{stateLabel(item.status)}</h2>
+                  <h2>{text(item.title, "제목 없음")}</h2>
+                  <p>{text(item.artist, "아티스트 미상")}</p>
                 </div>
                 <span className={`state-badge ${stateTone(item.status)}`}>{stateLabel(item.status)}</span>
               </div>
@@ -311,18 +299,8 @@ function TimingReviews({ items, onSelect }: { items: AdminItem[]; onSelect: (id:
                 ))}
               </div>
               <footer>
-                <span>
-                  <WandSparkles size={13} />
-                  {text(item.pipeline_version)}
-                </span>
-                <span>
-                  <Microchip size={13} />
-                  {text(item.backend)} · {text(item.hardware)}
-                </span>
-                <span>
-                  <Gauge size={13} />
-                  {text(item.tokenizer)}
-                </span>
+                <span>{text(item.provider)} 가사</span>
+                <span>{text(item.language).toUpperCase()}</span>
                 <time>{time(item.created_at)}</time>
               </footer>
             </div>
