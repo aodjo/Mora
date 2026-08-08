@@ -37,8 +37,17 @@ function fieldType(item: RuntimeSetting): "number" | "password" | "text" | "url"
   return "text";
 }
 
+type SettingsTab = "server" | "collector" | "access" | "infra";
+const settingsTabs: Array<[SettingsTab, string]> = [
+  ["server", "Server 런타임"],
+  ["collector", "Collector 런타임"],
+  ["access", "접근 권한"],
+  ["infra", "알림·인프라"],
+];
+
 export function SettingsPanel() {
   const { showToast } = useToast();
+  const [tab, setTab] = useState<SettingsTab>("server");
   const [settings, setSettings] = useState<RuntimeSetting[]>([]);
   const [bindings, setBindings] = useState<BindingStatus[]>([]);
   const [values, setValues] = useState<Record<string, string>>({});
@@ -111,132 +120,157 @@ export function SettingsPanel() {
 
   return (
     <div className="space-y-5">
+      <nav className="settings-tabs" role="tablist" aria-label="설정 영역">
+        {settingsTabs.map(([id, label]) => (
+          <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
+            {label}
+          </button>
+        ))}
+      </nav>
+
       {(
         [
           ["server", "Server 런타임", "Cloudflare Worker와 공개 데이터 승격 정책입니다."],
           ["collector", "Collector 런타임", "Collector는 시작 시와 실행 대기 중 이 설정을 Admin에서 다시 읽습니다."],
         ] as const
-      ).map(([component, title, description]) => (
-        <section key={component} className="settings-section">
-          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <div className="section-heading">
-              <span className="section-icon">
-                <Settings2 size={17} />
-              </span>
-              <div>
-                <h2>{title}</h2>
-                <p>{description} 비밀값은 다시 표시하지 않습니다.</p>
+      )
+        .filter(([component]) => component === tab)
+        .map(([component, title, description]) => (
+          <section key={component} className="settings-section">
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div className="section-heading">
+                <span className="section-icon">
+                  <Settings2 size={17} />
+                </span>
+                <div>
+                  <h2>{title}</h2>
+                  <p>{description} 비밀값은 다시 표시하지 않습니다.</p>
+                </div>
               </div>
+              <button onClick={() => void load()} className="secondary-button">
+                <RefreshCw size={14} />
+                새로고침
+              </button>
             </div>
-            <button onClick={() => void load()} className="secondary-button">
-              <RefreshCw size={14} />
-              새로고침
-            </button>
-          </div>
-          <div className="grid gap-4 xl:grid-cols-2">
-            {settings
-              .filter((item) => item.component === component)
-              .map((item) => (
-                <article key={item.key} className="setting-card">
-                  <div className="mb-3 flex items-start justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3>{item.label}</h3>
-                        {item.secret && <LockKeyhole size={13} className="secret-icon" />}
+            <div className="settings-grid">
+              {settings
+                .filter((item) => item.component === component)
+                .map((item) => (
+                  <article key={item.key} className="setting-card">
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3>{item.label}</h3>
+                          {item.secret && <LockKeyhole size={13} className="secret-icon" />}
+                        </div>
+                        <code>{item.key}</code>
                       </div>
-                      <code>{item.key}</code>
+                      <span className={`config-badge ${item.configured ? "configured" : "default"}`}>
+                        {item.configured ? "설정됨" : "기본값"}
+                      </span>
                     </div>
-                    <span className={`config-badge ${item.configured ? "configured" : "default"}`}>
-                      {item.configured ? "설정됨" : "기본값"}
-                    </span>
-                  </div>
-                  <p className="setting-description">{item.description}</p>
-                  <div className="flex gap-2">
-                    {item.type === "boolean" ? (
-                      <select
-                        value={values[item.key] ?? "false"}
-                        onChange={(event) => setValues((old) => ({ ...old, [item.key]: event.target.value }))}
-                        className="form-control min-w-0 flex-1"
-                      >
-                        <option value="false">비활성화</option>
-                        <option value="true">활성화</option>
-                      </select>
-                    ) : (
-                      <input
-                        value={values[item.key] ?? ""}
-                        onChange={(event) => setValues((old) => ({ ...old, [item.key]: event.target.value }))}
-                        type={fieldType(item)}
-                        placeholder={item.secret ? (item.configured ? "새 값으로 교체" : "비밀값 입력") : (item.default_value ?? "값 입력")}
-                        step={item.type === "number" ? "any" : undefined}
-                        autoComplete="off"
-                        className="form-control min-w-0 flex-1"
-                      />
-                    )}
-                    <button disabled={busyKey === item.key} onClick={() => void save(item)} title="저장" className="square-primary-button">
-                      <Save size={15} />
-                    </button>
-                    {item.configured && (
+                    <p className="setting-description">{item.description}</p>
+                    <div className="flex gap-2">
+                      {item.type === "boolean" ? (
+                        <select
+                          value={values[item.key] ?? "false"}
+                          onChange={(event) => setValues((old) => ({ ...old, [item.key]: event.target.value }))}
+                          className="form-control min-w-0 flex-1"
+                        >
+                          <option value="false">비활성화</option>
+                          <option value="true">활성화</option>
+                        </select>
+                      ) : (
+                        <input
+                          value={values[item.key] ?? ""}
+                          onChange={(event) => setValues((old) => ({ ...old, [item.key]: event.target.value }))}
+                          type={fieldType(item)}
+                          placeholder={
+                            item.secret ? (item.configured ? "새 값으로 교체" : "비밀값 입력") : (item.default_value ?? "값 입력")
+                          }
+                          step={item.type === "number" ? "any" : undefined}
+                          autoComplete="off"
+                          className="form-control min-w-0 flex-1"
+                        />
+                      )}
                       <button
                         disabled={busyKey === item.key}
-                        onClick={() => void reset(item)}
-                        title="기본값 복원"
-                        className="square-button"
+                        onClick={() => void save(item)}
+                        title="저장"
+                        className="square-primary-button"
                       >
-                        <Trash2 size={15} />
+                        <Save size={15} />
                       </button>
-                    )}
-                  </div>
-                </article>
-              ))}
+                      {item.configured && (
+                        <button
+                          disabled={busyKey === item.key}
+                          onClick={() => void reset(item)}
+                          title="기본값 복원"
+                          className="square-button"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                ))}
+            </div>
+          </section>
+        ))}
+
+      {tab === "access" && (
+        <>
+          <RolesPanel />
+          <ServiceKeysPanel />
+        </>
+      )}
+
+      {tab === "infra" && (
+        <section className="settings-section">
+          <div className="section-heading mb-3">
+            <span className="section-icon">
+              <Users size={17} />
+            </span>
+            <h2>Discord 알림</h2>
+          </div>
+          <input
+            value={discord}
+            onChange={(event) => setDiscord(event.target.value)}
+            type="password"
+            placeholder="https://discord.com/api/webhooks/…"
+            className="form-control w-full"
+          />
+          <button onClick={() => void saveDiscord()} className="secondary-button mt-3">
+            Write-only로 저장
+          </button>
+          <p className="security-note">패스키, capability RBAC, write-only secret, 불변 감사 로그가 적용됩니다.</p>
+        </section>
+      )}
+
+      {tab === "infra" && (
+        <section className="settings-section">
+          <div className="section-heading mb-4">
+            <span className="section-icon">
+              <Cloud size={17} />
+            </span>
+            <div>
+              <h2>Cloudflare Binding 및 루트 Secret</h2>
+              <p>인프라 수준 값은 Dashboard에서 노출하지 않으며 배포 도구로만 교체합니다.</p>
+            </div>
+          </div>
+          <div className="binding-grid">
+            {bindings.map((binding) => (
+              <div key={binding.key} className="binding-card">
+                <div className="flex items-center justify-between gap-2">
+                  <code>{binding.key}</code>
+                  <i className={`binding-dot ${binding.configured ? "configured" : "missing"}`} />
+                </div>
+                <p>{binding.kind}</p>
+              </div>
+            ))}
           </div>
         </section>
-      ))}
-
-      <section className="settings-section">
-        <div className="section-heading mb-4">
-          <span className="section-icon">
-            <Cloud size={17} />
-          </span>
-          <div>
-            <h2>Cloudflare Binding 및 루트 Secret</h2>
-            <p>인프라 수준 값은 Dashboard에서 노출하지 않으며 배포 도구로만 교체합니다.</p>
-          </div>
-        </div>
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-          {bindings.map((binding) => (
-            <div key={binding.key} className="binding-card">
-              <div className="flex items-center justify-between gap-2">
-                <code>{binding.key}</code>
-                <i className={`binding-dot ${binding.configured ? "configured" : "missing"}`} />
-              </div>
-              <p>{binding.kind}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <RolesPanel />
-      <ServiceKeysPanel />
-
-      <section className="settings-section">
-        <div className="section-heading mb-3">
-          <span className="section-icon">
-            <Users size={17} />
-          </span>
-          <h2>Discord 알림</h2>
-        </div>
-        <input
-          value={discord}
-          onChange={(event) => setDiscord(event.target.value)}
-          type="password"
-          placeholder="https://discord.com/api/webhooks/…"
-          className="form-control w-full"
-        />
-        <button onClick={() => void saveDiscord()} className="secondary-button mt-3">
-          Write-only로 저장
-        </button>
-        <p className="security-note">패스키, capability RBAC, write-only secret, 불변 감사 로그가 적용됩니다.</p>
-      </section>
+      )}
     </div>
   );
 }
