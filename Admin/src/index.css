@@ -144,7 +144,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .empty-panel p { max-width: 420px; margin: 0; color: var(--muted); font-size: 13px; line-height: 18px; }
 .empty-panel.compact { min-height: 140px; }
 .mono-eyebrow { color: var(--faint); font-family: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 500; line-height: 16px; }
-.state-badge { display: inline-flex; min-height: 24px; flex: none; align-items: center; border: 1px solid var(--border); border-radius: 9999px; padding: 0 8px; background: var(--surface); color: var(--muted); font-size: 12px; font-weight: 500; line-height: 16px; }
+/* nowrap: in a narrow table column the label otherwise breaks between Korean
+   characters and stacks one per line, stretching the row. */
+.state-badge { display: inline-flex; min-height: 24px; flex: none; align-items: center; border: 1px solid var(--border); border-radius: 9999px; padding: 0 8px; background: var(--surface); color: var(--muted); font-size: 12px; font-weight: 500; line-height: 16px; white-space: nowrap; }
 .state-badge.good { border-color: color-mix(in srgb, var(--link) 20%, var(--border)); background: var(--link-soft); color: var(--link-deep); }
 .state-badge.live { border-color: color-mix(in srgb, var(--link) 28%, var(--border)); color: var(--link); }
 .state-badge.warn { border-color: color-mix(in srgb, var(--amber) 24%, var(--border)); background: var(--amber-soft); color: var(--amber); }
@@ -231,11 +233,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .data-table .cell-mono { color: var(--muted); font-family: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: nowrap; }
 .cell-song { display: grid; gap: 1px; min-width: 0; }
 .cell-song strong { overflow: hidden; font-size: 14px; font-weight: 500; line-height: 20px; letter-spacing: -.28px; text-overflow: ellipsis; white-space: nowrap; }
-.cell-song span { color: var(--muted); font-size: 12px; line-height: 16px; }
+.cell-song span { overflow: hidden; color: var(--muted); font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 /* The song column takes the slack; the rest stay as wide as their content needs. */
 .recording-table { min-width: 900px; }
 .recording-table td:first-child, .recording-table th:first-child { width: 30%; }
 .recording-table td:nth-child(2) { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recording-table td:nth-child(8), .recording-table th:nth-child(8) { white-space: nowrap; }
 
 /* Review: quality is the primary axis; editing is a deliberate trailing action. */
 .review-workspace { display: grid; gap: 14px; }
