@@ -1,6 +1,6 @@
 import { CheckCircle2, Clock3, Disc3, Fingerprint, GitBranch, Hourglass, Languages, Music2 } from "lucide-react";
 import { useState } from "react";
-import { number, shortId, text, time, type AdminItem } from "./utils";
+import { number, shortId, stageLabel, text, time, type AdminItem } from "./utils";
 
 function duration(value: unknown): string {
   const total = Math.max(0, Math.round(number(value) / 1000));
@@ -104,7 +104,7 @@ function lifecycle(item: AdminItem): Lifecycle {
   if (number(item.alignment_count) > 0 || item.job_state === "candidate_ready" || item.job_state === "published")
     return { group: "complete", label: "생성 완료", tone: "good" };
   if (item.job_state === "running" || item.job_state === "claimed")
-    return { group: "pending", label: text(item.current_stage, "처리 중"), tone: "live" };
+    return { group: "pending", label: stageLabel(item.current_stage) || "처리 중", tone: "live" };
   if (item.job_state === "failed" || item.job_state === "cancelled") return { group: "pending", label: "처리 실패", tone: "bad" };
   if (item.job_state === "review_required") return { group: "pending", label: "검수 대기", tone: "warn" };
   if (item.job_state === "queued") return { group: "pending", label: "생성 대기", tone: "warn" };
