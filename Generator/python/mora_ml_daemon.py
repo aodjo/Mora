@@ -78,6 +78,11 @@ def probe(path: Path) -> dict[str, Any]:
     return json.loads(result.stdout)
 
 
+def downloaded(directory: Path) -> Path | None:
+    candidates = [path for path in directory.glob("source.*") if path.suffix not in (".part", ".m4a")]
+    return candidates[0] if candidates else None
+
+
 def download(job: dict[str, Any], directory: Path, cookie_file: str | None) -> Path:
     urls = [job["source"]["url"], *job["source"].get("alternatives", [])]
     for url in urls:
@@ -88,9 +93,9 @@ def download(job: dict[str, Any], directory: Path, cookie_file: str | None) -> P
         args.append(url)
         result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if result.returncode == 0:
-            candidates = [path for path in directory.glob("source.*") if path.suffix != ".part"]
-            if candidates:
-                return candidates[0]
+            existing = downloaded(directory)
+            if existing is not None:
+                return existing
     raise RuntimeError("YTDLP_FAILED")
 
 
@@ -102,9 +107,10 @@ def transcode(source: Path, directory: Path) -> Path:
 
 def separate(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
     output = directory / "demucs"
-    device = "mps" if backend == "mps" else "cuda" if backend == "cuda" else "cpu"
-    run_command([sys.executable, "-m", "demucs", "-n", "htdemucs_ft", "--device", device, "--out", str(output), str(mixture)], "SEPARATION_FAILED")
     stem_dir = output / "htdemucs_ft" / mixture.stem
+    if not (stem_dir / "vocals.wav").exists():
+        device = "mps" if backend == "mps" else "cuda" if backend == "cuda" else "cpu"
+        run_command([sys.executable, "-m", "demucs", "-n", "htdemucs_ft", "--device", device, "--out", str(output), str(mixture)], "SEPARATION_FAILED")
     stems = {path.stem: path for path in stem_dir.glob("*.wav")}
     if "vocals" not in stems:
         raise RuntimeError("VOCALS_MISSING")
@@ -339,18 +345,25 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     if not config["production_ready"]:
         raise RuntimeError("WORKER_NOT_PRODUCTION_READY")
     job = params["job"]
-    work_root = params.get("work_root")
-    directory = Path(tempfile.mkdtemp(prefix=f"mora-{job['job_id']}-", dir=work_root))
+    # The caller owns the directory so a retry can reuse whatever the last attempt finished.
+    requested = params.get("work_dir")
+    if requested:
+        directory = Path(requested)
+        directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    else:
+        directory = Path(tempfile.mkdtemp(prefix=f"mora-{job['job_id']}-", dir=params.get("work_root")))
     notify("probe", "started", 0.01)
     notify("download", "started", 0.03)
-    source = download(job, directory, params.get("cookie_file"))
+    source = downloaded(directory) or download(job, directory, params.get("cookie_file"))
     notify("download", "completed", 0.1)
     metadata = probe(source)
     duration_ms = round(float(metadata.get("format", {}).get("duration", 0)) * 1000)
     if duration_ms <= 0 or duration_ms > int(job["source"]["max_duration_ms"]):
         raise RuntimeError("DURATION_REJECTED")
     notify("transcode", "started", 0.12)
-    mixture = transcode(source, directory)
+    mixture = directory / "mixture.wav"
+    if not mixture.exists():
+        mixture = transcode(source, directory)
     notify("transcode", "completed", 0.18)
     notify("separate", "started", 0.2)
     stems = separate(mixture, directory, config["backend"])
