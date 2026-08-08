@@ -28,7 +28,10 @@ function normalize(value: string): string {
 }
 
 export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCandidate[]> {
-  const query = `${seed.artist} ${seed.title} ${seed.album ?? ""} audio`;
+  // Deliberately without the album: it pulls the search towards the record rather than the
+  // track, and "BTS Come Over Proof audio" returns the album's other songs and a live stream
+  // where "BTS Come Over audio" returns the official audio first.
+  const query = `${seed.artist} ${seed.title} audio`;
   const { stdout } = await run(youtubeDlCommand(), ["--dump-single-json", "--flat-playlist", "--no-warnings", `ytsearch25:${query}`], {
     maxBuffer: 10 * 1024 * 1024,
   });
