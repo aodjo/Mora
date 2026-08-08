@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hasNoLyricsToAlign, lyricsSearchInput, resolveDurationMs } from "../Collector/src/service.js";
+import { hasNoLyricsToAlign, lyricsSearchInput, resolveDurationMs, reviewReason } from "../Collector/src/service.js";
 import { SpotifyClient } from "../Collector/src/spotify.js";
 import type { RecordingSeed, YoutubeCandidate } from "../Collector/src/types.js";
 
@@ -77,4 +77,14 @@ test("Spotify identification accepts only a track whose title and artist both ag
     durationMs: 188_000,
     album: "Album",
   });
+});
+
+test("Review reasons name what is actually missing", () => {
+  const candidate = { ...source, score: 0.86, official: false };
+  // The two songs that kept reaching review with an ISRC and candidates: the shortlist simply
+  // never cleared auto-selection, which the log could not say before.
+  assert.equal(reviewReason(["source"], [candidate]), "자동 선택 기준 미달 (최고 0.86, 비공식)");
+  assert.equal(reviewReason(["source"], []), "음원 후보 없음");
+  assert.equal(reviewReason(["isrc"], [candidate]), "ISRC 없음");
+  assert.equal(reviewReason(["isrc", "source"], []), "ISRC 없음 · 음원 후보 없음");
 });

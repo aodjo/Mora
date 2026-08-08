@@ -48,6 +48,7 @@ export type CollectorProgress =
       total: number;
       song: string;
       destination: "generator" | "review";
+      reason?: string;
       jobId?: string;
       deduplicated: boolean;
     }

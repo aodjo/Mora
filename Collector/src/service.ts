@@ -111,7 +111,7 @@ export class CollectorService {
           }),
         });
         if (!response.ok) throw new Error(await adminErrorCode(response));
-        const result = (await response.json()) as { job_id?: string | null; deduplicated?: boolean };
+        const result = (await response.json()) as { job_id?: string | null; deduplicated?: boolean; blocked_by?: string[] };
         if (result.job_id) report.submitted++;
         else report.review++;
         this.config.onProgress?.({
@@ -120,7 +120,7 @@ export class CollectorService {
           total: ranked.length,
           song: `${seed.artist} - ${seed.title}`,
           destination: result.job_id ? "generator" : "review",
-          ...(result.job_id ? { jobId: result.job_id } : {}),
+          ...(result.job_id ? { jobId: result.job_id } : { reason: reviewReason(result.blocked_by ?? [], sources) }),
           deduplicated: result.deduplicated === true,
         });
       } catch (error) {
@@ -137,6 +137,19 @@ export class CollectorService {
     }
     return report;
   }
+}
+
+/** Turns the server's list of what is missing into something worth reading in a log. */
+export function reviewReason(blockedBy: string[], sources: YoutubeCandidate[]): string {
+  const parts: string[] = [];
+  if (blockedBy.includes("isrc")) parts.push("ISRC 없음");
+  if (blockedBy.includes("source")) {
+    const best = sources[0];
+    parts.push(
+      best === undefined ? "음원 후보 없음" : `자동 선택 기준 미달 (최고 ${best.score.toFixed(2)}${best.official ? ", 공식" : ", 비공식"})`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" · ") : "확인 필요";
 }
 
 export function lyricsSearchInput(seed: RecordingSeed): Parameters<LyricsProvider["search"]>[0] {

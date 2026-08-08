@@ -89,8 +89,9 @@ async function run(config: CollectorRuntimeConfig): Promise<void> {
         process.stdout.write(`후보 ${progress.total}곡 선정. 한 곡씩 수집하고 즉시 Generator 작업으로 보냅니다.\n`);
       } else if (progress.stage === "delivered") {
         const destination = progress.destination === "generator" ? "Generator 전송 완료" : "Admin 검수로 이동";
+        const why = progress.reason === undefined ? "" : ` (${progress.reason})`;
         const duplicate = progress.deduplicated ? " · 기존 작업" : "";
-        process.stdout.write(`[${progress.current}/${progress.total}] ${destination}${duplicate}: ${progress.song}\n`);
+        process.stdout.write(`[${progress.current}/${progress.total}] ${destination}${why}${duplicate}: ${progress.song}\n`);
       } else if (progress.stage === "skipped") {
         const why = progress.reason === "instrumental" ? "연주곡" : "가사를 찾지 못함";
         process.stdout.write(`[${progress.current}/${progress.total}] 건너뜀 (${why}): ${progress.song}\n`);

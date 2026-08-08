@@ -256,6 +256,11 @@ async function enrollWorker(env: WorkerEnv, value: Record<string, unknown>): Pro
   return json({ worker_id: workerId, api_key: apiKey }, 201);
 }
 
+/** What is still missing before a job can open, so the collector can say why it stopped. */
+function blockedBy(isrc: string | null, sourceId: string | null): string[] {
+  return [...(isrc === null ? ["isrc"] : []), ...(sourceId === null ? ["source"] : [])];
+}
+
 async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "collector.submit");
   const recordingValue = value.recording;
@@ -375,10 +380,10 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
   );
   const inputSignature = await sha256(`${selectedVideoId ?? "none"}\0production-v1\0${signatureParts.sort().join("\0")}`);
   const duplicate = await env.ADMIN_DB.prepare(
-    "SELECT i.id,j.id job_id,j.state FROM input_revisions i LEFT JOIN jobs j ON j.input_revision_id=i.id WHERE i.recording_id=?1 AND i.input_signature=?2",
+    "SELECT i.id,i.source_id,j.id job_id,j.state FROM input_revisions i LEFT JOIN jobs j ON j.input_revision_id=i.id WHERE i.recording_id=?1 AND i.input_signature=?2",
   )
     .bind(targetRecordingId, inputSignature)
-    .first<{ id: string; job_id: string | null; state: string | null }>();
+    .first<{ id: string; source_id: string | null; job_id: string | null; state: string | null }>();
   if (duplicate !== null) {
     await audit(env, actor, "collector.duplicate", "input_revision", duplicate.id);
     return json({
@@ -386,6 +391,7 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
       input_revision_id: duplicate.id,
       job_id: duplicate.job_id,
       state: duplicate.state ?? "review_required",
+      ...(duplicate.job_id === null ? { blocked_by: blockedBy(isrc, duplicate.source_id) } : {}),
       deduplicated: true,
     });
   }
@@ -468,7 +474,13 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
   });
   await event(env, "collector.submitted", { recording_id: targetRecordingId, input_revision_id: inputId, job_id: jobId });
   return json(
-    { recording_id: targetRecordingId, input_revision_id: inputId, job_id: jobId, state: jobId === null ? "review_required" : "queued" },
+    {
+      recording_id: targetRecordingId,
+      input_revision_id: inputId,
+      job_id: jobId,
+      state: jobId === null ? "review_required" : "queued",
+      ...(jobId === null ? { blocked_by: blockedBy(isrc, selectedSourceId) } : {}),
+    },
     201,
   );
 }
