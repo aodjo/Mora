@@ -34,11 +34,7 @@ interface Launcher {
  * - UA는 강제로 바꾸지 않는다(네이티브 UA와 Sec-CH-UA를 일치시켜 버전 불일치 탐지 방지).
  */
 async function launchBrowser(headless: boolean, extraArgs: string[]): Promise<Browser> {
-  const args = [
-    "--no-sandbox",
-    "--disable-blink-features=AutomationControlled",
-    ...extraArgs,
-  ];
+  const args = ["--no-sandbox", "--disable-blink-features=AutomationControlled", ...extraArgs];
 
   let launcher: Launcher;
   try {

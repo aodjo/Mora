@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  SongTitleLyricsProvider,
-  inferLyricsLanguage,
-} from "../Collector/src/songtitle-provider.js";
+import { SongTitleLyricsProvider, inferLyricsLanguage } from "../Collector/src/songtitle-provider.js";
 import type { SongTitleRouter } from "../Collector/src/songtitle-provider.js";
 
 test("SongTitle adapter preserves every non-empty provider result", async () => {

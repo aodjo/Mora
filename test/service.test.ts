@@ -3,14 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import {
-  AlignmentService,
-  AlignmentStore,
-  fingerprint,
-  serializeOutput,
-  textHash,
-  tokenize,
-} from "../packages/core/src/index.js";
+import { AlignmentService, AlignmentStore, fingerprint, serializeOutput, textHash, tokenize } from "../packages/core/src/index.js";
 
 const fixtureText = "나는 오늘 밤에\n너를 기다렸어";
 const fixtureTokenization = tokenize(fixtureText);
@@ -29,7 +22,10 @@ before(() => {
     tokenizer: "unilab-v1",
     textHash: fixtureHash,
     fingerprint: fixtureFingerprint,
-    lineSpans: [[12_000, 13_400], [13_600, 14_600]],
+    lineSpans: [
+      [12_000, 13_400],
+      [13_600, 14_600],
+    ],
     wordSpans: [
       [0, 12_000, 12_350],
       [1, 12_350, 12_800],
@@ -73,8 +69,7 @@ test("fingerprint alignment returns target token indices", async () => {
 test("duration validation rejects a mismatched recording version", async () => {
   await assert.rejects(
     service.align({ isrc: "KRA382400123", text: fixtureText, duration_ms: 300_000 }),
-    (error: unknown) =>
-      error instanceof Error && "code" in error && error.code === "NOT_FOUND",
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "NOT_FOUND",
   );
 });
 

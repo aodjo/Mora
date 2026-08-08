@@ -1,10 +1,4 @@
-import {
-  TOKENIZER,
-  type Token,
-  type TokenType,
-  type Tokenization,
-  type TokenizedLine,
-} from "../shared/types.js";
+import { TOKENIZER, type Token, type TokenType, type Tokenization, type TokenizedLine } from "../shared/types.js";
 
 interface Unit {
   char: string;
@@ -185,9 +179,7 @@ export function tokenize(text: string): Tokenization {
     }
 
     const hasVisibleContent = units.some((unit) => !whitespace.test(unit.char));
-    const hasUnmaskedContent = units.some(
-      (unit) => !unit.masked && !whitespace.test(unit.char) && !punctuation.test(unit.char),
-    );
+    const hasUnmaskedContent = units.some((unit) => !unit.masked && !whitespace.test(unit.char) && !punctuation.test(unit.char));
     lines.push({
       index: rawLine.index,
       start: rawLine.start,

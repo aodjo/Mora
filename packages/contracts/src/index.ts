@@ -1,15 +1,7 @@
 export const JOB_SCHEMA_VERSION = 1 as const;
 
 export type JobState =
-  | "queued"
-  | "claimed"
-  | "running"
-  | "review_required"
-  | "unsupported_language"
-  | "candidate_ready"
-  | "published"
-  | "failed"
-  | "cancelled";
+  "queued" | "claimed" | "running" | "review_required" | "unsupported_language" | "candidate_ready" | "published" | "failed" | "cancelled";
 
 export type PipelineStage =
   | "probe"
@@ -26,16 +18,7 @@ export type PipelineStage =
   | "candidate_submit"
   | "cleanup";
 
-export type ArtifactKind =
-  | "source"
-  | "mixture_preview"
-  | "vocals"
-  | "drums"
-  | "bass"
-  | "other"
-  | "speaker"
-  | "waveform"
-  | "checkpoint";
+export type ArtifactKind = "source" | "mixture_preview" | "vocals" | "drums" | "bass" | "other" | "speaker" | "waveform" | "checkpoint";
 
 export interface QueueJobMessage {
   schema_version: typeof JOB_SCHEMA_VERSION;
@@ -142,19 +125,17 @@ export interface LyricsProviderResult {
 }
 
 export interface LyricsProvider {
-  search(input: {
-    isrc?: string;
-    mbid?: string;
-    artist: string;
-    title: string;
-    album?: string;
-  }): Promise<LyricsProviderResult[]>;
+  search(input: { isrc?: string; mbid?: string; artist: string; title: string; album?: string }): Promise<LyricsProviderResult[]>;
 }
 
 export function isQueueJobMessage(value: unknown): value is QueueJobMessage {
   if (typeof value !== "object" || value === null) return false;
   const item = value as Record<string, unknown>;
-  return item.schema_version === JOB_SCHEMA_VERSION &&
-    typeof item.job_id === "string" && item.job_id.length > 0 &&
-    typeof item.input_revision_id === "string" && item.input_revision_id.length > 0;
+  return (
+    item.schema_version === JOB_SCHEMA_VERSION &&
+    typeof item.job_id === "string" &&
+    item.job_id.length > 0 &&
+    typeof item.input_revision_id === "string" &&
+    item.input_revision_id.length > 0
+  );
 }

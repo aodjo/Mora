@@ -21,13 +21,8 @@ export const bugs: Provider = {
 
     let trackId = query.trackId;
     if (!trackId) {
-      const searchHtml = await getText(
-        `${BASE}/search/track?q=${encodeURIComponent(q)}`,
-        opts,
-      );
-      trackId =
-        searchHtml.match(/\/track\/(\d+)/)?.[1] ??
-        searchHtml.match(/trackId=(\d+)/)?.[1];
+      const searchHtml = await getText(`${BASE}/search/track?q=${encodeURIComponent(q)}`, opts);
+      trackId = searchHtml.match(/\/track\/(\d+)/)?.[1] ?? searchHtml.match(/trackId=(\d+)/)?.[1];
     }
     if (!trackId) return null;
 
@@ -40,9 +35,7 @@ export const bugs: Provider = {
 
     const title = $("header.pgTitle h1").text().trim() || query.title;
     const artist =
-      $('.basicInfo a[href*="/artist/"]').first().text().trim() ||
-      $('.info a[href*="/artist/"]').first().text().trim() ||
-      query.artist;
+      $('.basicInfo a[href*="/artist/"]').first().text().trim() || $('.info a[href*="/artist/"]').first().text().trim() || query.artist;
 
     return { provider: "bugs", title, artist, lyrics, url: trackUrl, trackId };
   },

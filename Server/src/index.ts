@@ -29,13 +29,17 @@ function json(value: unknown, status = 200, cors = false): Response {
 
 async function readJson(request: Request): Promise<unknown> {
   const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim();
-  if (contentType !== null && contentType !== undefined && contentType !== "application/json") throw new ServiceError(400, "INVALID_REQUEST");
+  if (contentType !== null && contentType !== undefined && contentType !== "application/json")
+    throw new ServiceError(400, "INVALID_REQUEST");
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) throw new ServiceError(413, "PAYLOAD_TOO_LARGE");
   const body = await request.text();
   if (new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES) throw new ServiceError(413, "PAYLOAD_TOO_LARGE");
-  try { return JSON.parse(body) as unknown; }
-  catch { throw new ServiceError(400, "BAD_JSON"); }
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    throw new ServiceError(400, "BAD_JSON");
+  }
 }
 
 async function publicRoute(request: Request, env: WorkerEnv): Promise<Response> {
@@ -75,13 +79,16 @@ async function adminAsset(request: Request, env: WorkerEnv): Promise<Response> {
   const url = new URL(request.url);
   const assetPath = url.pathname.slice("/admin".length);
   url.pathname = assetPath.length === 0 || assetPath === "/" ? "/" : assetPath;
-  const htmlRoute=url.pathname==="/"||!/\.[^/]+$/u.test(url.pathname);
-  if(htmlRoute)url.searchParams.set("__mora_html",String(Date.now()));
+  const htmlRoute = url.pathname === "/" || !/\.[^/]+$/u.test(url.pathname);
+  if (htmlRoute) url.searchParams.set("__mora_html", String(Date.now()));
   const response = await env.ASSETS.fetch(new Request(url, request));
   const headers = new Headers(response.headers);
-  if(response.headers.get("content-type")?.includes("text/html")===true)headers.set("Cache-Control","no-store");
+  if (response.headers.get("content-type")?.includes("text/html") === true) headers.set("Cache-Control", "no-store");
   headers.set("Content-Security-Policy", "frame-ancestors 'none'");
-  headers.set("Permissions-Policy", "camera=(), geolocation=(), microphone=(), publickey-credentials-create=(self), publickey-credentials-get=(self)");
+  headers.set(
+    "Permissions-Policy",
+    "camera=(), geolocation=(), microphone=(), publickey-credentials-create=(self), publickey-credentials-get=(self)",
+  );
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("X-Frame-Options", "DENY");
@@ -100,14 +107,17 @@ export { AdminEventHub };
 
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
-    try { return await route(request, env); }
-    catch (error) {
+    try {
+      return await route(request, env);
+    } catch (error) {
       // Never log request bodies, caught values, or stacks: they can retain lyrics or credentials.
       if (error instanceof ServiceError) return json({ error: error.code }, error.status, new URL(request.url).pathname.startsWith("/v1/"));
       return json({ error: "INTERNAL" }, 500, new URL(request.url).pathname.startsWith("/v1/"));
     }
   },
   async scheduled(_controller: ScheduledController, env: WorkerEnv): Promise<void> {
-    await env.ADMIN_DB.prepare("DELETE FROM stage_events WHERE created_at < ?1").bind(Date.now() - DIAGNOSTIC_RETENTION_MS).run();
+    await env.ADMIN_DB.prepare("DELETE FROM stage_events WHERE created_at < ?1")
+      .bind(Date.now() - DIAGNOSTIC_RETENTION_MS)
+      .run();
   },
 } satisfies ExportedHandler<WorkerEnv>;

@@ -30,25 +30,44 @@ export function relativeTime(value: unknown): string {
 
 export function parseArray(value: unknown): string[] {
   try {
-    const parsed = typeof value === "string" ? JSON.parse(value) as unknown : value;
+    const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 export function parseObject(value: unknown): Record<string, unknown> {
   try {
-    const parsed = typeof value === "string" ? JSON.parse(value) as unknown : value;
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-  } catch { return {}; }
+    const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
 }
 
 export function stateLabel(value: unknown): string {
   const labels: Record<string, string> = {
-    active: "활성", ambiguous: "확인 필요", approved: "승인됨", candidate_ready: "후보 생성됨",
-    cancelled: "취소됨", claimed: "할당됨", draft: "초안", draining: "종료 준비", failed: "실패",
-    paused: "일시정지", pending: "대기", published: "게시됨", queued: "대기 중", rejected: "반려됨",
-    review_required: "검수 필요", running: "실행 중", unsupported_language: "미지원 언어", update: "업데이트 필요",
-    verified: "확인됨", withdrawn: "철회됨",
+    active: "활성",
+    ambiguous: "확인 필요",
+    approved: "승인됨",
+    candidate_ready: "후보 생성됨",
+    cancelled: "취소됨",
+    claimed: "할당됨",
+    draft: "초안",
+    draining: "종료 준비",
+    failed: "실패",
+    paused: "일시정지",
+    pending: "대기",
+    published: "게시됨",
+    queued: "대기 중",
+    rejected: "반려됨",
+    review_required: "검수 필요",
+    running: "실행 중",
+    unsupported_language: "미지원 언어",
+    update: "업데이트 필요",
+    verified: "확인됨",
+    withdrawn: "철회됨",
   };
   const state = text(value, "unknown");
   return labels[state] ?? state;

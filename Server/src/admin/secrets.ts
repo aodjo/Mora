@@ -28,11 +28,7 @@ function toBase64(value: ArrayBuffer | Uint8Array): string {
 
 export async function sealSecret(env: WorkerEnv, value: string): Promise<string> {
   const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const encrypted = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv: nonce },
-    await secretKey(env),
-    new TextEncoder().encode(value),
-  );
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, await secretKey(env), new TextEncoder().encode(value));
   return `v1:${toBase64(nonce)}:${toBase64(encrypted)}`;
 }
 
@@ -41,11 +37,7 @@ export async function openSecret(env: WorkerEnv, value: string): Promise<string>
   const [, nonce, cipher] = value.split(":");
   if (nonce === undefined || cipher === undefined) throw new ServiceError(500, "INTERNAL");
   try {
-    const decrypted = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: secretBytes(nonce) },
-      await secretKey(env),
-      secretBytes(cipher),
-    );
+    const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: secretBytes(nonce) }, await secretKey(env), secretBytes(cipher));
     return new TextDecoder().decode(decrypted);
   } catch (error) {
     if (error instanceof ServiceError) throw error;

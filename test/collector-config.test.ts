@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  fetchCollectorRuntimeConfig,
-  parseCollectorRuntimeConfig,
-} from "../Collector/src/admin-config.js";
+import { fetchCollectorRuntimeConfig, parseCollectorRuntimeConfig } from "../Collector/src/admin-config.js";
 
 const values = {
   MORA_USER_AGENT: "Mora/0.1 (ops@example.com)",

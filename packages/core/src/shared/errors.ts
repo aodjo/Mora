@@ -28,7 +28,6 @@ export type ErrorCode =
   | "SECRET_DECRYPT_FAILED"
   | "DUMP_NOT_READY";
 
-
 export class ServiceError extends Error {
   constructor(
     readonly status: number,

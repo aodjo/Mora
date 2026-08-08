@@ -22,13 +22,7 @@ export const melon: Provider = {
 
     // 통합검색(total)만 결과를 서버사이드로 렌더링한다. song/index.htm 은 JS로 채워짐.
     const songId =
-      query.trackId ??
-      extractSongId(
-        await getText(
-          `${BASE}/search/total/index.htm?q=${encodeURIComponent(q)}&section=song`,
-          opts,
-        ),
-      );
+      query.trackId ?? extractSongId(await getText(`${BASE}/search/total/index.htm?q=${encodeURIComponent(q)}&section=song`, opts));
     if (!songId) return null;
 
     const detailUrl = `${BASE}/song/detail.htm?songId=${songId}`;
@@ -40,7 +34,11 @@ export const melon: Provider = {
 
     const title = $(".song_name").clone().children().remove().end().text().trim() || query.title;
     const artist =
-      $(".artist a").first().attr("title")?.replace(/ 페이지 이동$/, "").trim() ||
+      $(".artist a")
+        .first()
+        .attr("title")
+        ?.replace(/ 페이지 이동$/, "")
+        .trim() ||
       $(".artist_name").text().trim() ||
       query.artist;
     const album = $(".meta dl dd").first().text().trim() || undefined;
@@ -50,9 +48,6 @@ export const melon: Provider = {
 };
 
 function extractSongId(html: string): string | undefined {
-  const m =
-    html.match(/goSongDetail\('(\d+)'/) ??
-    html.match(/playSong\('[^']*',\s*(\d+)/) ??
-    html.match(/songId=(\d+)/);
+  const m = html.match(/goSongDetail\('(\d+)'/) ?? html.match(/playSong\('[^']*',\s*(\d+)/) ?? html.match(/songId=(\d+)/);
   return m?.[1];
 }

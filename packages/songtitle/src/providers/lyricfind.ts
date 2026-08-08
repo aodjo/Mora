@@ -28,11 +28,7 @@ export const lyricfind: Provider = {
   },
 };
 
-async function lyricfindViaApi(
-  query: SearchQuery,
-  ctx: ProviderContext,
-  key: string,
-): Promise<LyricsResult | null> {
+async function lyricfindViaApi(query: SearchQuery, ctx: ProviderContext, key: string): Promise<LyricsResult | null> {
   const opts: HttpOptions = {
     timeoutMs: ctx.timeoutMs,
     signal: ctx.signal,
@@ -47,10 +43,7 @@ async function lyricfindViaApi(
     trackid: `artist:${query.artist ?? ""},title:${query.title}`,
   });
 
-  const data = await getJson<LyricFindResp>(
-    `https://api.lyricfind.com/lyric.do?${params.toString()}`,
-    opts,
-  );
+  const data = await getJson<LyricFindResp>(`https://api.lyricfind.com/lyric.do?${params.toString()}`, opts);
   const track = data.track;
   if (!track?.lyrics) return null;
 

@@ -16,27 +16,19 @@ export const shazam: Provider = {
   },
 };
 
-async function shazamViaBrowser(
-  query: SearchQuery,
-  ctx: ProviderContext,
-): Promise<LyricsResult | null> {
+async function shazamViaBrowser(query: SearchQuery, ctx: ProviderContext): Promise<LyricsResult | null> {
   const q = [query.title, query.artist].filter(Boolean).join(" ");
   return ctx.browser!.run(async (page) => {
     await page.goto("https://www.shazam.com/", { waitUntil: "domcontentloaded" });
 
     // 검색창은 접혀 있음(width 0). fill은 "not visible"로 실패하므로 focus 후 키보드 입력.
-    const box = page
-      .locator('input.searchInput, input[data-search-input="true"], input[role="combobox"]')
-      .first();
+    const box = page.locator('input.searchInput, input[data-search-input="true"], input[role="combobox"]').first();
     await box.waitFor({ state: "attached", timeout: ctx.timeoutMs });
     await page.waitForTimeout(1500); // 홈 콘텐츠(히어로/차트) 렌더 안정화
 
     // 타이핑 전 홈페이지에 이미 있는 곡 링크(히어로/차트 프로모)를 기준선으로 잡아둔다.
     const songs = page.locator('a[href*="/song/"]');
-    const readHrefs = () =>
-      songs.evaluateAll((els) =>
-        els.map((e) => e.getAttribute("href")).filter((h): h is string => !!h),
-      );
+    const readHrefs = () => songs.evaluateAll((els) => els.map((e) => e.getAttribute("href")).filter((h): h is string => !!h));
     const baseline = new Set(await readHrefs());
 
     await box.focus();
@@ -53,9 +45,7 @@ async function shazamViaBrowser(
 
     // 곡 페이지로 이동해 가사 추출
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    const lyricsLoc = page
-      .locator('[data-test-id="track_impression_songLyrics"], [class*="AppleMusicLyrics_lyrics__"]')
-      .first();
+    const lyricsLoc = page.locator('[data-test-id="track_impression_songLyrics"], [class*="AppleMusicLyrics_lyrics__"]').first();
     try {
       await lyricsLoc.waitFor({ timeout: ctx.timeoutMs });
     } catch {

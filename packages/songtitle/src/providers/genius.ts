@@ -41,11 +41,7 @@ export const genius: Provider = {
   },
 };
 
-async function geniusViaApi(
-  query: SearchQuery,
-  ctx: ProviderContext,
-  token: string,
-): Promise<LyricsResult | null> {
+async function geniusViaApi(query: SearchQuery, ctx: ProviderContext, token: string): Promise<LyricsResult | null> {
   const opts: HttpOptions = {
     timeoutMs: ctx.timeoutMs,
     signal: ctx.signal,
@@ -53,10 +49,10 @@ async function geniusViaApi(
   };
   const q = [query.title, query.artist].filter(Boolean).join(" ");
 
-  const search = await getJson<GeniusSearchResp>(
-    `https://api.genius.com/search?q=${encodeURIComponent(q)}`,
-    { ...opts, headers: { Authorization: `Bearer ${token}` } },
-  );
+  const search = await getJson<GeniusSearchResp>(`https://api.genius.com/search?q=${encodeURIComponent(q)}`, {
+    ...opts,
+    headers: { Authorization: `Bearer ${token}` },
+  });
   const hit = search.response?.hits?.find((h) => h.type === "song")?.result;
   if (!hit?.url) return null;
 
@@ -73,27 +69,20 @@ async function geniusViaApi(
   };
 }
 
-async function geniusViaBrowser(
-  query: SearchQuery,
-  ctx: ProviderContext,
-): Promise<LyricsResult | null> {
+async function geniusViaBrowser(query: SearchQuery, ctx: ProviderContext): Promise<LyricsResult | null> {
   const q = [query.title, query.artist].filter(Boolean).join(" ");
   return ctx.browser!.run(async (page) => {
     await page.goto(`https://genius.com/search?q=${encodeURIComponent(q)}`, {
       waitUntil: "domcontentloaded",
     });
     // 검색 결과 카드 첫 항목이 최상위 매치 (없으면 = 곡이 Genius에 없음 → not_found)
-    const card = await page
-      .waitForSelector("a.mini_card", { timeout: ctx.timeoutMs })
-      .catch(() => null);
+    const card = await page.waitForSelector("a.mini_card", { timeout: ctx.timeoutMs }).catch(() => null);
     if (!card) return null;
     const href = await card.getAttribute("href");
     if (!href) return null;
 
     await page.goto(href, { waitUntil: "domcontentloaded" });
-    const hasLyrics = await page
-      .waitForSelector('[data-lyrics-container="true"]', { timeout: ctx.timeoutMs })
-      .catch(() => null);
+    const hasLyrics = await page.waitForSelector('[data-lyrics-container="true"]', { timeout: ctx.timeoutMs }).catch(() => null);
     if (!hasLyrics) return null;
     // 렌더된 DOM을 HTTP 경로와 동일한 cheerio 추출기로 처리 (헤더/설명 크루프트 배제)
     const lyrics = scrapeLyricsHtml(await page.content());

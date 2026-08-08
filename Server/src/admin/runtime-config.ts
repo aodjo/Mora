@@ -139,7 +139,12 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
     component: "collector",
     environmentName: "COLLECTOR_MARKETS",
     defaultValue: "KR,US,JP",
-    normalize: (value) => value.split(",").map((item) => item.trim().toUpperCase()).filter(Boolean).join(","),
+    normalize: (value) =>
+      value
+        .split(",")
+        .map((item) => item.trim().toUpperCase())
+        .filter(Boolean)
+        .join(","),
     validate: (value) => value.length > 0 && value.split(",").every((item) => ["KR", "US", "JP"].includes(item)),
   },
   {
@@ -150,8 +155,14 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
     secret: false,
     component: "collector",
     environmentName: "SONGTITLE_PROVIDERS",
-    normalize: (value) => value.split(",").map((item) => item.trim().toLowerCase()).filter(Boolean).join(","),
-    validate: (value) => value.length > 0 && value.split(",").every((item) => /^(?:melon|bugs|genie|flo|vibe|genius|shazam|lyricfind)$/u.test(item)),
+    normalize: (value) =>
+      value
+        .split(",")
+        .map((item) => item.trim().toLowerCase())
+        .filter(Boolean)
+        .join(","),
+    validate: (value) =>
+      value.length > 0 && value.split(",").every((item) => /^(?:melon|bugs|genie|flo|vibe|genius|shazam|lyricfind)$/u.test(item)),
   },
   {
     key: "collector.songtitle_timeout_ms",
@@ -238,9 +249,12 @@ function definitionFor(key: string): RuntimeConfigDefinition {
 function validOrigin(value: string): boolean {
   try {
     const url = new URL(value);
-    return (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)))
-      && url.origin === value;
-  } catch { return false; }
+    return (
+      (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) && url.origin === value
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function normalizeRuntimeValue(definition: RuntimeConfigDefinition, raw: unknown): string {
@@ -259,16 +273,22 @@ export function normalizeRuntimeValue(definition: RuntimeConfigDefinition, raw: 
     try {
       const url = new URL(value);
       if (url.protocol !== "https:" || url.username.length > 0 || url.password.length > 0) throw new Error();
+    } catch {
+      throw new ServiceError(400, "INVALID_SETTING_VALUE");
     }
-    catch { throw new ServiceError(400, "INVALID_SETTING_VALUE"); }
   } else if (definition.type === "origin" && !validOrigin(value)) {
     throw new ServiceError(400, "INVALID_SETTING_VALUE");
-  } else if (definition.type === "rp-id" && !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/iu.test(value)) {
+  } else if (
+    definition.type === "rp-id" &&
+    !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/iu.test(value)
+  ) {
     throw new ServiceError(400, "INVALID_SETTING_VALUE");
   }
   const normalized = definition.normalize?.(value) ?? value;
-  if ((definition.max !== undefined && definition.type === "string" && normalized.length > definition.max)
-    || (definition.validate !== undefined && !definition.validate(normalized))) {
+  if (
+    (definition.max !== undefined && definition.type === "string" && normalized.length > definition.max) ||
+    (definition.validate !== undefined && !definition.validate(normalized))
+  ) {
     throw new ServiceError(400, "INVALID_SETTING_VALUE");
   }
   return normalized;
@@ -276,7 +296,9 @@ export function normalizeRuntimeValue(definition: RuntimeConfigDefinition, raw: 
 
 export async function runtimeValue(env: WorkerEnv, key: string): Promise<string | undefined> {
   const definition = definitionFor(key);
-  const row = await env.ADMIN_DB.prepare("SELECT value,secret FROM settings WHERE key=?1").bind(key).first<{ value: string; secret: number }>();
+  const row = await env.ADMIN_DB.prepare("SELECT value,secret FROM settings WHERE key=?1")
+    .bind(key)
+    .first<{ value: string; secret: number }>();
   if (row === null) return definition.defaultValue;
   return row.secret === 1 ? openSecret(env, row.value) : row.value;
 }
@@ -322,8 +344,14 @@ export async function listRuntimeConfig(env: WorkerEnv, actor: Actor): Promise<R
 
 export async function collectorRuntimeConfig(env: WorkerEnv, actor: Actor): Promise<Response> {
   requirePermission(actor, "collector.config.read");
-  const collectorDefinitions = runtimeConfigDefinitions.filter((definition) => definition.component === "collector" && definition.environmentName !== undefined);
-  const entries = await Promise.all(collectorDefinitions.map(async (definition) => [definition.environmentName as string, await runtimeValue(env, definition.key)] as const));
+  const collectorDefinitions = runtimeConfigDefinitions.filter(
+    (definition) => definition.component === "collector" && definition.environmentName !== undefined,
+  );
+  const entries = await Promise.all(
+    collectorDefinitions.map(
+      async (definition) => [definition.environmentName as string, await runtimeValue(env, definition.key)] as const,
+    ),
+  );
   const values = Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => entry[1] !== undefined));
   return Response.json({ schema_version: 1, values }, { headers: { "Cache-Control": "no-store" } });
 }
@@ -334,10 +362,14 @@ export async function putRuntimeConfig(env: WorkerEnv, actor: Actor, key: string
   const value = normalizeRuntimeValue(definition, body.value);
   const stored = definition.secret ? await sealSecret(env, value) : value;
   const now = Date.now();
-  await env.ADMIN_DB.prepare(`
+  await env.ADMIN_DB.prepare(
+    `
     INSERT INTO settings (key,value,secret,updated_by,updated_at) VALUES (?1,?2,?3,?4,?5)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value,secret=excluded.secret,updated_by=excluded.updated_by,updated_at=excluded.updated_at
-  `).bind(key, stored, definition.secret ? 1 : 0, actor.id, now).run();
+  `,
+  )
+    .bind(key, stored, definition.secret ? 1 : 0, actor.id, now)
+    .run();
   await audit(env, actor, "setting.update", "setting", key, { secret: definition.secret });
   return Response.json({ key, configured: true, secret: definition.secret, updated_at: now }, { headers: { "Cache-Control": "no-store" } });
 }

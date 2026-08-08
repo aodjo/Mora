@@ -1,10 +1,4 @@
-import type {
-  Provider,
-  ProviderContext,
-  ProviderOutcome,
-  RouterResponse,
-  SearchQuery,
-} from "./types.js";
+import type { Provider, ProviderContext, ProviderOutcome, RouterResponse, SearchQuery } from "./types.js";
 import { allProviders } from "./providers/index.js";
 import { createBrowserRunner, type BrowserOptions, type BrowserRunner } from "./browser.js";
 
@@ -68,13 +62,9 @@ export class LyricsRouter {
     };
 
     try {
-      const outcomes = await Promise.all(
-        this.providers.map((p) => this.runOne(p, query, ctx)),
-      );
+      const outcomes = await Promise.all(this.providers.map((p) => this.runOne(p, query, ctx)));
 
-      const results = outcomes
-        .filter((o) => o.status === "ok" && o.result)
-        .map((o) => o.result!);
+      const results = outcomes.filter((o) => o.status === "ok" && o.result).map((o) => o.result!);
 
       return { query, results, outcomes };
     } finally {
@@ -82,14 +72,9 @@ export class LyricsRouter {
     }
   }
 
-  private async runOne(
-    provider: Provider,
-    query: SearchQuery,
-    ctx: ProviderContext,
-  ): Promise<ProviderOutcome> {
+  private async runOne(provider: Provider, query: SearchQuery, ctx: ProviderContext): Promise<ProviderOutcome> {
     // 키가 필요한데 없으면 스킵. 단, 브라우저 폴백이 가능하면 실행.
-    const keyMissing =
-      provider.requiresKey && provider.keyName && !ctx.keys[provider.keyName];
+    const keyMissing = provider.requiresKey && provider.keyName && !ctx.keys[provider.keyName];
     const browserFallback = Boolean(ctx.browser && provider.browserCapable);
     if (keyMissing && !browserFallback) {
       return {

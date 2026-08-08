@@ -21,8 +21,6 @@ export const allProviders: Provider[] = [
 ];
 
 /** 이름으로 프로바이더 조회 */
-export const providerByName: Record<string, Provider> = Object.fromEntries(
-  allProviders.map((p) => [p.name, p]),
-);
+export const providerByName: Record<string, Provider> = Object.fromEntries(allProviders.map((p) => [p.name, p]));
 
 export { melon, bugs, genie, flo, vibe, genius, lyricfind, shazam };

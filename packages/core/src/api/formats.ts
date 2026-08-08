@@ -26,20 +26,14 @@ function lrcTime(milliseconds: number): string {
   const minutes = Math.floor(milliseconds / 60_000);
   const secondsPart = Math.floor((milliseconds % 60_000) / 1000);
   const centiseconds = Math.floor((milliseconds % 1000) / 10);
-  return `${minutes.toString().padStart(2, "0")}:${secondsPart
-    .toString()
-    .padStart(2, "0")}.${centiseconds.toString().padStart(2, "0")}`;
+  return `${minutes.toString().padStart(2, "0")}:${secondsPart.toString().padStart(2, "0")}.${centiseconds.toString().padStart(2, "0")}`;
 }
 
 function formatLrc(result: AlignmentResult): string {
   return result.lines
     .map(([lineStart, lineEnd, startMs, endMs]) => {
-      const words = result.spans.filter(
-        ([start, end]) => start >= lineStart && end <= lineEnd,
-      );
-      const enhanced = words
-        .map(([start, end, wordStart]) => `<${lrcTime(wordStart)}>${start}:${end}`)
-        .join("");
+      const words = result.spans.filter(([start, end]) => start >= lineStart && end <= lineEnd);
+      const enhanced = words.map(([start, end, wordStart]) => `<${lrcTime(wordStart)}>${start}:${end}`).join("");
       return `[${lrcTime(startMs)}]${lineStart}:${lineEnd}${enhanced}<${lrcTime(endMs)}>`;
     })
     .join("\n");

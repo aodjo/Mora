@@ -15,9 +15,13 @@ export class AdminEventHub implements DurableObject {
       const stream = new TransformStream<Uint8Array, Uint8Array>();
       const writer = stream.writable.getWriter();
       this.#writers.add(writer);
-      request.signal.addEventListener("abort", () => { this.#drop(writer); });
+      request.signal.addEventListener("abort", () => {
+        this.#drop(writer);
+      });
       void this.#deliver(writer, this.#encoder.encode(": connected\n\n"));
-      return new Response(stream.readable, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" } });
+      return new Response(stream.readable, {
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" },
+      });
     }
     if (path === "/publish" && request.method === "POST") {
       const payload = await request.text();
@@ -38,10 +42,17 @@ export class AdminEventHub implements DurableObject {
     try {
       await Promise.race([
         writer.write(chunk),
-        new Promise((_, reject) => { timer = setTimeout(() => { reject(new Error("SLOW_SUBSCRIBER")); }, DELIVERY_TIMEOUT_MS); }),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error("SLOW_SUBSCRIBER"));
+          }, DELIVERY_TIMEOUT_MS);
+        }),
       ]);
-    } catch { this.#drop(writer); }
-    finally { if (timer !== undefined) clearTimeout(timer); }
+    } catch {
+      this.#drop(writer);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 }
 

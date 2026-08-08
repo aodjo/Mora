@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ServiceError } from "../packages/core/src/shared/errors.js";
-import {
-  normalizeRuntimeValue,
-  runtimeConfigDefinitions,
-} from "../Server/src/admin/runtime-config.js";
+import { normalizeRuntimeValue, runtimeConfigDefinitions } from "../Server/src/admin/runtime-config.js";
 
 function definition(key: string) {
   const result = runtimeConfigDefinitions.find((item) => item.key === key);

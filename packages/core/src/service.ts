@@ -30,7 +30,11 @@ function identifier(body: Record<string, unknown>): { isrc?: string; mbid?: stri
   if (typeof body.artist === "string" && typeof body.title === "string") {
     const durationMs = optionalInteger(body.duration_ms, 86_400_000);
     if (durationMs === undefined) throw new ServiceError(400, "DURATION_REQUIRED");
-    return { artist: body.artist.normalize("NFKC").trim().toLowerCase(), title: body.title.normalize("NFKC").trim().toLowerCase(), durationMs };
+    return {
+      artist: body.artist.normalize("NFKC").trim().toLowerCase(),
+      title: body.title.normalize("NFKC").trim().toLowerCase(),
+      durationMs,
+    };
   }
   throw new ServiceError(400, "INVALID_REQUEST");
 }
@@ -48,7 +52,9 @@ function bestCandidate(alignments: StoredAlignment[], targetFor: (tokenizer: str
       best === undefined ||
       match.confidence > best.match.confidence + 0.03 ||
       (Math.abs(match.confidence - best.match.confidence) <= 0.03 && (alignment.qualityScore ?? 0) > (best.alignment.qualityScore ?? 0)) ||
-      (match.confidence === best.match.confidence && (alignment.qualityScore ?? 0) === (best.alignment.qualityScore ?? 0) && alignment.createdAt > best.alignment.createdAt)
+      (match.confidence === best.match.confidence &&
+        (alignment.qualityScore ?? 0) === (best.alignment.qualityScore ?? 0) &&
+        alignment.createdAt > best.alignment.createdAt)
     ) {
       best = { alignment, match };
     }
@@ -81,10 +87,12 @@ export class AlignmentService {
     };
 
     const resolvedIdentifier = identifier(body);
-    const alignments = (await this.store.findAlignments(resolvedIdentifier))
-      .filter((alignment) => durationCompatible(alignment, durationMs));
+    const alignments = (await this.store.findAlignments(resolvedIdentifier)).filter((alignment) =>
+      durationCompatible(alignment, durationMs),
+    );
     if (alignments.length === 0) throw new ServiceError(404, "NOT_FOUND");
-    if (resolvedIdentifier.artist !== undefined && new Set(alignments.map((item) => item.isrc)).size > 1) throw new ServiceError(409, "AMBIGUOUS_RECORDING");
+    if (resolvedIdentifier.artist !== undefined && new Set(alignments.map((item) => item.isrc)).size > 1)
+      throw new ServiceError(409, "AMBIGUOUS_RECORDING");
     const exact = alignments.find((alignment) => textHash(forTokenizer(alignment.tokenizer).canonical) === alignment.textHash);
     const selected =
       exact === undefined
@@ -101,10 +109,12 @@ export class AlignmentService {
     const target = validateFingerprint(body.fingerprint);
     const durationMs = optionalInteger(body.duration_ms, 86_400_000);
     const resolvedIdentifier = identifier(body);
-    const alignments = (await this.store.findAlignments(resolvedIdentifier))
-      .filter((alignment) => durationCompatible(alignment, durationMs));
+    const alignments = (await this.store.findAlignments(resolvedIdentifier)).filter((alignment) =>
+      durationCompatible(alignment, durationMs),
+    );
     if (alignments.length === 0) throw new ServiceError(404, "NOT_FOUND");
-    if (resolvedIdentifier.artist !== undefined && new Set(alignments.map((item) => item.isrc)).size > 1) throw new ServiceError(409, "AMBIGUOUS_RECORDING");
+    if (resolvedIdentifier.artist !== undefined && new Set(alignments.map((item) => item.isrc)).size > 1)
+      throw new ServiceError(409, "AMBIGUOUS_RECORDING");
     const selected = bestCandidate(alignments, () => target);
     return projectFingerprintAlignment(selected.alignment, target, selected.match);
   }
@@ -158,7 +168,8 @@ function speakerTurns(value: unknown): SpeakerTurn[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new ServiceError(400, "INVALID_REQUEST");
   return value.map((row) => {
-    if (!Array.isArray(row) || row.length !== 4 || row.some((part) => typeof part !== "number" || !Number.isFinite(part))) throw new ServiceError(400, "INVALID_REQUEST");
+    if (!Array.isArray(row) || row.length !== 4 || row.some((part) => typeof part !== "number" || !Number.isFinite(part)))
+      throw new ServiceError(400, "INVALID_REQUEST");
     return [row[0] as number, row[1] as number, row[2] as number, row[3] as number];
   });
 }
@@ -167,7 +178,8 @@ function speakerIndices(value: unknown): SpeakerIndex[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new ServiceError(400, "INVALID_REQUEST");
   return value.map((row) => {
-    if (!Array.isArray(row) || row.length !== 3 || row.some((part) => typeof part !== "number" || !Number.isFinite(part))) throw new ServiceError(400, "INVALID_REQUEST");
+    if (!Array.isArray(row) || row.length !== 3 || row.some((part) => typeof part !== "number" || !Number.isFinite(part)))
+      throw new ServiceError(400, "INVALID_REQUEST");
     return [row[0] as number, row[1] as number, row[2] as number];
   });
 }

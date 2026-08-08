@@ -13,13 +13,25 @@ export function validateContribution(value: Contribution): void {
   if (value.wordSpans.some(([index]) => index >= tokenCount)) {
     throw new ServiceError(400, "INVALID_REQUEST");
   }
-  if ((value.wordSpeakers ?? []).some(([index, speaker, confidence]) => index < 0 || index >= tokenCount || speaker < 0 || confidence < 0 || confidence > 1)) {
+  if (
+    (value.wordSpeakers ?? []).some(
+      ([index, speaker, confidence]) => index < 0 || index >= tokenCount || speaker < 0 || confidence < 0 || confidence > 1,
+    )
+  ) {
     throw new ServiceError(400, "INVALID_REQUEST");
   }
-  if ((value.lineSpeakers ?? []).some(([index, speaker, confidence]) => index < 0 || index >= value.lineSpans.length || speaker < 0 || confidence < 0 || confidence > 1)) {
+  if (
+    (value.lineSpeakers ?? []).some(
+      ([index, speaker, confidence]) => index < 0 || index >= value.lineSpans.length || speaker < 0 || confidence < 0 || confidence > 1,
+    )
+  ) {
     throw new ServiceError(400, "INVALID_REQUEST");
   }
-  if ((value.speakerTurns ?? []).some(([speaker, start, end, confidence]) => speaker < 0 || start < 0 || end <= start || confidence < 0 || confidence > 1)) {
+  if (
+    (value.speakerTurns ?? []).some(
+      ([speaker, start, end, confidence]) => speaker < 0 || start < 0 || end <= start || confidence < 0 || confidence > 1,
+    )
+  ) {
     throw new ServiceError(400, "INVALID_REQUEST");
   }
 
@@ -34,9 +46,7 @@ export function validateContribution(value: Contribution): void {
     if (value.durationMs !== undefined && lineEnd > value.durationMs) {
       throw new ServiceError(400, "INVALID_REQUEST");
     }
-    const words = value.wordSpans.filter(
-      ([index]) => index >= tokenOffset && index < tokenOffset + lineLength,
-    );
+    const words = value.wordSpans.filter(([index]) => index >= tokenOffset && index < tokenOffset + lineLength);
     let previousEnd = lineStart;
     for (const [, start, end] of words) {
       if (start < lineStart || end > lineEnd || start < previousEnd) {
