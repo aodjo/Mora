@@ -371,7 +371,8 @@ interface SkeletonSpec {
   filters?: number; // height of the filter/tab bar that sits above the list
   band?: number; // height of the summary band between the tabs and the list
   panel?: number; // height of the panel header the list is nested under
-  wrapper: string; // the real list/grid class, so columns and gap match
+  head?: number; // height of the header row, for pages that show a table
+  wrapper: string; // the real list/grid/table class, so columns and gap match
   count: number;
   height: number;
 }
@@ -380,7 +381,7 @@ const skeletons: Record<Page, SkeletonSpec | null> = {
   overview: null,
   jobs: { view: "jobs-view", filters: 38, wrapper: "job-list", count: 4, height: 74 },
   workers: { wrapper: "worker-grid", count: 2, height: 316 },
-  recordings: { view: "recordings-view", filters: 36, wrapper: "recording-grid", count: 4, height: 161 },
+  recordings: { view: "recordings-view", filters: 36, head: 41, wrapper: "table-wrap", count: 6, height: 62 },
   review: { view: "review-workspace", filters: 38, band: 76, wrapper: "source-review-list", count: 2, height: 240 },
   releases: { view: "releases-view", wrapper: "release-list", count: 4, height: 88 },
   audit: { panel: 71, wrapper: "audit-list", count: 5, height: 75 },
@@ -402,13 +403,24 @@ function PageSkeleton({ page }: { page: Page }) {
     );
   const spec = skeletons[page];
   if (spec === null) return null;
-  const blocks = (
-    <div className={spec.wrapper}>
-      {Array.from({ length: spec.count }, (_, index) => (
-        <div key={index} className="skeleton-block" style={{ height: spec.height, animationDelay: `${index * 90}ms` }} />
-      ))}
-    </div>
-  );
+  const blocks =
+    spec.head === undefined ? (
+      <div className={spec.wrapper}>
+        {Array.from({ length: spec.count }, (_, index) => (
+          <div key={index} className="skeleton-block" style={{ height: spec.height, animationDelay: `${index * 90}ms` }} />
+        ))}
+      </div>
+    ) : (
+      // A table is one bordered panel, so the rows are strips inside it rather than cards.
+      <div className={spec.wrapper}>
+        <div className="skeleton-panel-head" style={{ height: spec.head }} />
+        {Array.from({ length: spec.count }, (_, index) => (
+          <div key={index} className="skeleton-strip" style={{ height: spec.height, animationDelay: `${index * 60}ms` }}>
+            <i />
+          </div>
+        ))}
+      </div>
+    );
   if (spec.panel !== undefined)
     return (
       <section className="audit-stream" aria-busy="true" aria-label="불러오는 중">

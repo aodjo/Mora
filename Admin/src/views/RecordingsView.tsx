@@ -1,6 +1,6 @@
-import { CheckCircle2, Clock3, Disc3, Fingerprint, GitBranch, Hourglass, Languages, Music2 } from "lucide-react";
+import { CheckCircle2, Disc3, Hourglass } from "lucide-react";
 import { useState } from "react";
-import { number, shortId, stageLabel, text, time, type AdminItem } from "./utils";
+import { number, stageLabel, text, time, type AdminItem } from "./utils";
 
 function duration(value: unknown): string {
   const total = Math.max(0, Math.round(number(value) / 1000));
@@ -44,49 +44,52 @@ export function RecordingsView({ items }: { items: AdminItem[] }) {
           <strong>{filter === "complete" ? "완료된 곡이 없습니다" : "대기 중인 곡이 없습니다"}</strong>
         </div>
       ) : (
-        <div className="recording-grid">
-          {visible.map(({ item, lifecycle }) => {
-            const id = text(item.id);
-            return (
-              <article key={id} className={`recording-card ${lifecycle.group}`}>
-                <div className="recording-cover">
-                  {lifecycle.group === "complete" ? <CheckCircle2 size={20} /> : <Music2 size={20} />}
-                  <span>{duration(item.duration_ms)}</span>
-                </div>
-                <div className="recording-body">
-                  <div className="recording-title">
-                    <div>
-                      <h2>{text(item.title, "제목 없음")}</h2>
-                      <p>{text(item.artist, "아티스트 미상")}</p>
+        <div className="table-wrap">
+          <table className="data-table recording-table">
+            <thead>
+              <tr>
+                <th scope="col">곡</th>
+                <th scope="col">앨범</th>
+                <th scope="col" className="numeric">
+                  길이
+                </th>
+                <th scope="col">ISRC</th>
+                <th scope="col" className="numeric">
+                  언어
+                </th>
+                <th scope="col" className="numeric">
+                  리비전
+                </th>
+                <th scope="col" className="numeric">
+                  후보
+                </th>
+                <th scope="col">상태</th>
+                <th scope="col">최종 변경</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map(({ item, lifecycle }) => (
+                <tr key={text(item.id)}>
+                  <td>
+                    <div className="cell-song">
+                      <strong>{text(item.title, "제목 없음")}</strong>
+                      <span>{text(item.artist, "아티스트 미상")}</span>
                     </div>
+                  </td>
+                  <td className="cell-muted">{text(item.album, "—")}</td>
+                  <td className="numeric cell-mono">{duration(item.duration_ms)}</td>
+                  <td className="cell-mono">{text(item.isrc, "—")}</td>
+                  <td className="numeric cell-muted">{text(item.language, "und").toUpperCase()}</td>
+                  <td className="numeric cell-mono">{number(item.revision_count)}</td>
+                  <td className="numeric cell-mono">{number(item.alignment_count)}</td>
+                  <td>
                     <span className={`state-badge ${lifecycle.tone}`}>{lifecycle.label}</span>
-                  </div>
-                  <p className="recording-album">{text(item.album, "앨범 정보 없음")}</p>
-                  <div className="recording-identifiers">
-                    <span>
-                      <Fingerprint size={13} />
-                      <code>{text(item.isrc, "ISRC 없음")}</code>
-                    </span>
-                    <span title={id}>ID {shortId(id)}</span>
-                  </div>
-                  <footer>
-                    <span>
-                      <GitBranch size={13} />
-                      리비전 {number(item.revision_count)} · 후보 {number(item.alignment_count)}
-                    </span>
-                    <span>
-                      <Languages size={13} />
-                      {text(item.language, "und").toUpperCase()}
-                    </span>
-                    <span>
-                      <Clock3 size={13} />
-                      {time(item.updated_at)}
-                    </span>
-                  </footer>
-                </div>
-              </article>
-            );
-          })}
+                  </td>
+                  <td className="cell-muted">{time(item.updated_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
