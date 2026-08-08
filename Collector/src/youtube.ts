@@ -29,7 +29,7 @@ function normalize(value: string): string {
 
 export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCandidate[]> {
   const query = `${seed.artist} ${seed.title} ${seed.album ?? ""} audio`;
-  const { stdout } = await run(youtubeDlCommand(), ["--dump-single-json", "--flat-playlist", "--no-warnings", `ytsearch10:${query}`], {
+  const { stdout } = await run(youtubeDlCommand(), ["--dump-single-json", "--flat-playlist", "--no-warnings", `ytsearch25:${query}`], {
     maxBuffer: 10 * 1024 * 1024,
   });
   const parsed = JSON.parse(stdout) as { entries?: YtEntry[] };
@@ -39,8 +39,16 @@ export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCa
       const title = entry.track ?? entry.title;
       const artist = entry.artist ?? entry.uploader ?? entry.channel ?? "";
       if (/\b(?:live|cover|karaoke|instrumental|sped\s*up|slowed|remix)\b/iu.test(title)) return [];
-      // "Official MV" is how music videos are labelled here, and the video test alone missed it.
-      if (/\b(?:official\s*)?(?:music\s*)?video\b|\bm\.?v\.?\b/iu.test(entry.title)) return [];
+      // A loop or compilation shares the title but not the recording.
+      if (/\d+\s*(?:시간|hours?|hr)\b/iu.test(entry.title)) return [];
+      const durationMs = Math.round((entry.duration ?? 0) * 1000);
+      // Snippets, edits and Shorts carry the right title over a fragment of the song, and a
+      // compilation carries it over far too much. Judge against the length we are looking for.
+      if (durationMs > 0 && durationMs < Math.max(45_000, (seed.duration_ms ?? 0) * 0.5)) return [];
+      if (durationMs > 0 && seed.duration_ms !== undefined && durationMs > seed.duration_ms * 2.5) return [];
+      // Demoted rather than dropped: a music video's audio is second choice, but for some songs
+      // it is the only upload there is, and review can still offer it.
+      const isVideo = /\b(?:official\s*)?(?:music\s*)?video\b|\bm\.?v\.?\b/iu.test(entry.title);
       const titleScore = normalize(title) === normalize(seed.title) ? 1 : normalize(title).includes(normalize(seed.title)) ? 0.8 : 0;
       // Search results come back flat, without the artist field, so the fallback was the channel
       // name — and a label or reupload channel is never named after the artist. The artist is in
@@ -49,14 +57,13 @@ export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCa
       const wanted = normalize(seed.artist);
       const artistScore =
         wanted.length > 0 && (credited.includes(wanted) || (artist.length > 0 && wanted.includes(normalize(artist)))) ? 1 : 0;
-      const durationMs = Math.round((entry.duration ?? 0) * 1000);
       // An upload of the same recording drifts a second or two from the catalogue length —
       // silence padding, a trimmed fade. Scoring that linearly from zero made auto-selection
       // demand a match inside half a second, which almost nothing survives.
       const drift = seed.duration_ms === undefined ? undefined : Math.abs(seed.duration_ms - durationMs);
       const durationScore = drift === undefined || durationMs === 0 ? 0.5 : drift <= 2_000 ? 1 : Math.max(0, 1 - (drift - 2_000) / 12_000);
       const official = /topic|official/iu.test(`${entry.uploader ?? ""} ${entry.channel ?? ""}`);
-      const score = titleScore * 0.45 + artistScore * 0.35 + durationScore * 0.15 + (official ? 0.05 : 0);
+      const score = titleScore * 0.45 + artistScore * 0.35 + durationScore * 0.15 + (official ? 0.05 : 0) - (isVideo ? 0.1 : 0);
       if (score < 0.55) return [];
       return [
         {
