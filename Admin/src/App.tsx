@@ -57,6 +57,29 @@ function pathFor(page: Page): string {
   return `/${page}`;
 }
 
+// The console is served under /admin/ with a single-page-application fallback, so the page
+// can live in the URL: it survives a reload, the back button works, and a screen can be linked.
+const base = "/admin";
+
+interface Route {
+  page: Page;
+  selected: string | null;
+}
+
+function urlFor({ page, selected }: Route): string {
+  if (page === "review" && selected !== null) return `${base}/review/${encodeURIComponent(selected)}`;
+  return page === "overview" ? `${base}/` : `${base}/${page}`;
+}
+
+function parseUrl(pathname: string): Route {
+  const rest = (pathname.startsWith(base) ? pathname.slice(base.length) : pathname).replace(/^\/+/u, "");
+  const [first, second] = rest.split("/");
+  const page = pages.find(([id]) => id === first)?.[0];
+  if (page === undefined) return { page: "overview", selected: null };
+  if (page === "review" && second !== undefined && second !== "") return { page, selected: decodeURIComponent(second) };
+  return { page, selected: null };
+}
+
 function initialTheme(): Theme {
   try {
     const stored = window.localStorage.getItem("mora-theme");
@@ -70,13 +93,31 @@ function initialTheme(): Theme {
 export default function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [authError, setAuthError] = useState("");
-  const [page, setPage] = useState<Page>("overview");
+  const [route, setRoute] = useState<Route>(() => parseUrl(window.location.pathname));
+  const { page, selected } = route;
   const [data, setData] = useState<Record<string, unknown>>({});
   const [loadedPage, setLoadedPage] = useState<Page | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const request = useRef(0);
-  const [selected, setSelected] = useState<string | null>(null);
   const [live, setLive] = useState(false);
+  const navigate = useCallback((page: Page, selected: string | null = null) => {
+    const url = urlFor({ page, selected });
+    if (url !== window.location.pathname) window.history.pushState(null, "", url);
+    setRoute({ page, selected });
+  }, []);
+  useEffect(() => {
+    // Rewrite /admin, /admin/nope and the like to the address the app actually landed on.
+    const canonical = urlFor(parseUrl(window.location.pathname));
+    if (window.location.pathname !== canonical) window.history.replaceState(null, "", canonical);
+    const onPopState = (): void => setRoute(parseUrl(window.location.pathname));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+  useEffect(() => {
+    // Names the entry in the browser's history and tab, so back is navigable by label.
+    const label = page === "review" && selected !== null ? "타이밍 편집" : (pages.find(([id]) => id === page)?.[1] ?? "Admin");
+    document.title = `${label} · Mora Admin`;
+  }, [page, selected]);
   const [theme, setTheme] = useState<Theme>(initialTheme);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -180,14 +221,7 @@ export default function App() {
         <div className="nav-label">관리</div>
         <nav className="nav-list">
           {pages.map(([id, label, Icon]) => (
-            <button
-              key={id}
-              onClick={() => {
-                setPage(id);
-                setSelected(null);
-              }}
-              className={`nav-item ${page === id ? "active" : ""}`}
-            >
+            <button key={id} onClick={() => navigate(id)} className={`nav-item ${page === id ? "active" : ""}`}>
               <Icon size={17} />
               <span>{label}</span>
             </button>
@@ -227,14 +261,7 @@ export default function App() {
         </header>
         <nav className="mobile-nav">
           {pages.map(([id, label, Icon]) => (
-            <button
-              key={id}
-              onClick={() => {
-                setPage(id);
-                setSelected(null);
-              }}
-              className={page === id ? "active" : ""}
-            >
+            <button key={id} onClick={() => navigate(id)} className={page === id ? "active" : ""}>
               <Icon size={16} />
               <span>{label}</span>
             </button>
@@ -267,12 +294,17 @@ export default function App() {
             <Editor
               candidateId={selected}
               onPublished={() => {
-                setSelected(null);
+                navigate("review");
                 refresh();
               }}
             />
           ) : page === "review" ? (
-            <ReviewView sourceItems={sourceItems} candidateItems={candidateItems} onSelect={setSelected} refresh={refresh} />
+            <ReviewView
+              sourceItems={sourceItems}
+              candidateItems={candidateItems}
+              onSelect={(id) => navigate("review", id)}
+              refresh={refresh}
+            />
           ) : page === "releases" ? (
             <ReleasesView items={items} refresh={refresh} />
           ) : page === "audit" ? (
