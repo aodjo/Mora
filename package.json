@@ -20,7 +20,6 @@
     "collector": "corepack pnpm dev:collector",
     "generator": "corepack pnpm build:services && Generator/scripts/run-macos.sh",
     "dev:generator": "tsx Generator/src/worker-cli.ts",
-    "dev:generator-legacy": "tsx Generator/src/cli.ts",
     "generator:setup:mac": "Generator/scripts/setup-macos.sh",
     "generator:self-test:mac": "Generator/scripts/self-test-macos.sh",
     "generator:smoke:mac": "node Generator/scripts/smoke-test-macos.mjs",

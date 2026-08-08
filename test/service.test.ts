@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { mkdtempSync, readFileSync } from "node:fs";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -13,7 +11,6 @@ import {
   textHash,
   tokenize,
 } from "../packages/core/src/index.js";
-import { createGeneratorHttpServer, GeneratorService } from "../Generator/src/index.js";
 
 const fixtureText = "나는 오늘 밤에\n너를 기다렸어";
 const fixtureTokenization = tokenize(fixtureText);
@@ -23,11 +20,8 @@ const directory = mkdtempSync(join(tmpdir(), "service-test-"));
 const databasePath = join(directory, "service.sqlite");
 const store = new AlignmentStore(databasePath);
 const service = new AlignmentService(store);
-const generator = new GeneratorService();
-const server = createGeneratorHttpServer(generator);
-let baseUrl = "";
 
-before(async () => {
+before(() => {
   store.contribute({
     isrc: "KRA382400123",
     mbid: "123e4567-e89b-42d3-a456-426614174000",
@@ -45,15 +39,9 @@ before(async () => {
     ],
     source: "forced-align",
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address() as AddressInfo;
-  baseUrl = `http://127.0.0.1:${address.port}`;
 });
 
-after(async () => {
-  server.close();
-  await once(server, "close");
+after(() => {
   store.close();
 });
 
@@ -121,63 +109,6 @@ test("word-approx interpolates unmatched target tokens inside the line", async (
     [5, 3_500, 4_000, 1],
   ]);
   approximateStore.close();
-});
-
-test("generator builds a text-free contribution and does not cache the request", async () => {
-  const built = await fetch(`${baseUrl}/v1/build`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      isrc: "KRA382400123",
-      text: fixtureText,
-      duration_ms: 214_000,
-      line_spans: [[12_000, 13_400], [13_600, 14_600]],
-      word_spans: [
-        [0, 12_000, 12_350],
-        [1, 12_350, 12_800],
-        [2, 12_800, 13_400],
-        [3, 13_600, 14_000],
-        [4, 14_000, 14_600],
-      ],
-      source: "forced-align",
-    }),
-  });
-  assert.equal(built.status, 200);
-  assert.equal(built.headers.get("cache-control"), "no-store");
-  const body = await built.text();
-  const payload = JSON.parse(body) as { text_hash?: unknown; fingerprint?: unknown };
-  assert.equal(payload.text_hash, fixtureHash);
-  assert.deepEqual(payload.fingerprint, fixtureFingerprint);
-  assert.equal(body.includes(fixtureText), false);
-});
-
-test("generator publishes only the contribution payload to the Worker", async () => {
-  let uploadedBody = "";
-  const publishingGenerator = new GeneratorService({
-    publishUrl: "https://service.example",
-    publishToken: "secret",
-    fetch: async (_input, init) => {
-      uploadedBody = String(init?.body ?? "");
-      return Response.json({ alignment_id: 42 }, { status: 201 });
-    },
-  });
-  const result = await publishingGenerator.publish({
-    isrc: "KRA382400123",
-    text: fixtureText,
-    duration_ms: 214_000,
-    line_spans: [[12_000, 13_400], [13_600, 14_600]],
-    word_spans: [
-      [0, 12_000, 12_350],
-      [1, 12_350, 12_800],
-      [2, 12_800, 13_400],
-      [3, 13_600, 14_000],
-      [4, 14_000, 14_600],
-    ],
-    source: "forced-align",
-  });
-  assert.deepEqual(result, { alignment_id: 42 });
-  assert.equal(uploadedBody.includes(fixtureText), false);
-  assert.equal(JSON.parse(uploadedBody).text_hash, fixtureHash);
 });
 
 test("numeric WebVTT overlay and local SQLite fixture contain no lyric text", async () => {
