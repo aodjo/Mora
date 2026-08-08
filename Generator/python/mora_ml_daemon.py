@@ -78,6 +78,11 @@ def probe(path: Path) -> dict[str, Any]:
     return json.loads(result.stdout)
 
 
+def downloaded(directory: Path) -> Path | None:
+    candidates = [path for path in directory.glob("source.*") if path.suffix not in (".part", ".m4a")]
+    return candidates[0] if candidates else None
+
+
 def download(job: dict[str, Any], directory: Path, cookie_file: str | None) -> Path:
     urls = [job["source"]["url"], *job["source"].get("alternatives", [])]
     for url in urls:
@@ -88,9 +93,9 @@ def download(job: dict[str, Any], directory: Path, cookie_file: str | None) -> P
         args.append(url)
         result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if result.returncode == 0:
-            candidates = [path for path in directory.glob("source.*") if path.suffix != ".part"]
-            if candidates:
-                return candidates[0]
+            existing = downloaded(directory)
+            if existing is not None:
+                return existing
     raise RuntimeError("YTDLP_FAILED")
 
 
@@ -102,9 +107,10 @@ def transcode(source: Path, directory: Path) -> Path:
 
 def separate(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
     output = directory / "demucs"
-    device = "mps" if backend == "mps" else "cuda" if backend == "cuda" else "cpu"
-    run_command([sys.executable, "-m", "demucs", "-n", "htdemucs_ft", "--device", device, "--out", str(output), str(mixture)], "SEPARATION_FAILED")
     stem_dir = output / "htdemucs_ft" / mixture.stem
+    if not (stem_dir / "vocals.wav").exists():
+        device = "mps" if backend == "mps" else "cuda" if backend == "cuda" else "cpu"
+        run_command([sys.executable, "-m", "demucs", "-n", "htdemucs_ft", "--device", device, "--out", str(output), str(mixture)], "SEPARATION_FAILED")
     stems = {path.stem: path for path in stem_dir.glob("*.wav")}
     if "vocals" not in stems:
         raise RuntimeError("VOCALS_MISSING")
@@ -126,6 +132,27 @@ def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any
         audio = whisperx.load_audio(str(vocals))
         result = model.transcribe(audio, batch_size=8)
     return result, str(result.get("language", language))
+
+
+def alignable_languages() -> set[str] | None:
+    """Language codes the forced aligner has a model for, or None when unknown."""
+    try:
+        from whisperx import alignment
+        codes: set[str] = set()
+        for name in ("DEFAULT_ALIGN_MODELS_TORCH", "DEFAULT_ALIGN_MODELS_HF"):
+            codes.update(getattr(alignment, name, {}).keys())
+        return codes or None
+    except Exception:
+        return None
+
+
+def validate_language(detected: str, expected: str) -> None:
+    """Reject only what the aligner cannot process; a mere mismatch stays reviewable."""
+    supported = alignable_languages()
+    code = detected.split("-")[0]
+    if supported is not None and code not in supported:
+        raise RuntimeError("UNSUPPORTED_LANGUAGE")
+    notify("language_validate", "completed", 0.65, {"language_match": 1.0 if expected == "und" or code == expected.split("-")[0] else 0.0})
 
 
 def audio_bounds(asr: dict[str, Any], duration_ms: int) -> tuple[float, float]:
@@ -318,18 +345,25 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     if not config["production_ready"]:
         raise RuntimeError("WORKER_NOT_PRODUCTION_READY")
     job = params["job"]
-    work_root = params.get("work_root")
-    directory = Path(tempfile.mkdtemp(prefix=f"mora-{job['job_id']}-", dir=work_root))
+    # The caller owns the directory so a retry can reuse whatever the last attempt finished.
+    requested = params.get("work_dir")
+    if requested:
+        directory = Path(requested)
+        directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    else:
+        directory = Path(tempfile.mkdtemp(prefix=f"mora-{job['job_id']}-", dir=params.get("work_root")))
     notify("probe", "started", 0.01)
     notify("download", "started", 0.03)
-    source = download(job, directory, params.get("cookie_file"))
+    source = downloaded(directory) or download(job, directory, params.get("cookie_file"))
     notify("download", "completed", 0.1)
     metadata = probe(source)
     duration_ms = round(float(metadata.get("format", {}).get("duration", 0)) * 1000)
     if duration_ms <= 0 or duration_ms > int(job["source"]["max_duration_ms"]):
         raise RuntimeError("DURATION_REJECTED")
     notify("transcode", "started", 0.12)
-    mixture = transcode(source, directory)
+    mixture = directory / "mixture.wav"
+    if not mixture.exists():
+        mixture = transcode(source, directory)
     notify("transcode", "completed", 0.18)
     notify("separate", "started", 0.2)
     stems = separate(mixture, directory, config["backend"])
@@ -337,6 +371,8 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     notify("coarse_asr", "started", 0.55)
     asr, detected = coarse_asr(stems["vocals"], job["recording"].get("language", "und"), config["backend"])
     notify("coarse_asr", "completed", 0.64)
+    notify("language_validate", "started", 0.65)
+    validate_language(detected, str(job["recording"].get("language", "und")))
     notify("forced_align", "started", 0.66)
     variants = [align_variant(stems["vocals"], variant, asr, duration_ms, config["backend"]) for variant in job["lyrics"]]
     notify("forced_align", "completed", 0.8)
@@ -354,10 +390,13 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
         run_command(["ffmpeg", "-y", "-i", str(path), "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(encoded)], "STEM_ENCODE_FAILED")
         artifacts.append({"kind": name if name in ("vocals", "drums", "bass", "other") else "other", "path": str(encoded), "content_type": "audio/mp4"})
     artifacts.extend(speaker_artifacts)
+    notify("speaker_stems", "completed", 0.92)
+    notify("index", "started", 0.93)
     artifacts.append({"kind": "waveform", "path": str(waveform(mixture, directory)), "content_type": "application/json"})
     checkpoint = directory / "checkpoint.json"
     checkpoint.write_text(json.dumps({"pipeline": job["pipeline"], "detected": detected, "variants": variants}, separators=(",", ":")), encoding="utf-8")
     artifacts.append({"kind": "checkpoint", "path": str(checkpoint), "content_type": "application/json"})
+    notify("index", "completed", 0.95)
     notify("quality_gate", "completed", 0.96)
     quality = {"token_coverage": sum(item["quality"]["token_coverage"] for item in variants) / max(1, len(variants)), "monotonicity": 1.0, "duration_match": max(0.0, 1 - abs(duration_ms - int(job["recording"]["duration_ms"])) / 10000), "language_match": 1.0 if detected.split("-")[0] == str(job["recording"].get("language", "und")).split("-")[0] or job["recording"].get("language") == "und" else 0.0}
     return {"backend": config["backend"], "hardware": config["hardware"], "detected_languages": [detected], "variants": variants, "speaker_turns": turns, "word_speakers": word_speakers, "line_speakers": line_speakers, "artifacts": artifacts, "quality": quality, "work_dir": str(directory)}

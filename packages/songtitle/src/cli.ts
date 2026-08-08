@@ -105,9 +105,7 @@ async function main(): Promise<void> {
     ?.split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const providers = only?.length
-    ? only.map((n) => providerByName[n]).filter((p): p is NonNullable<typeof p> => Boolean(p))
-    : allProviders;
+  const providers = only?.length ? only.map((n) => providerByName[n]).filter((p): p is NonNullable<typeof p> => Boolean(p)) : allProviders;
 
   if (only?.length && providers.length === 0) {
     console.error(c.red(`알 수 없는 프로바이더: ${only.join(", ")}`));
@@ -123,10 +121,7 @@ async function main(): Promise<void> {
 
   const query = { title: args.title, artist: args.artist };
   console.error(
-    c.dim(
-      `검색: ${c.bold(query.title)}${query.artist ? " — " + query.artist : ""} ` +
-        `(${router.list().length}개 프로바이더)`,
-    ),
+    c.dim(`검색: ${c.bold(query.title)}${query.artist ? " — " + query.artist : ""} ` + `(${router.list().length}개 프로바이더)`),
   );
 
   const res = await router.fetchAll(query);
@@ -139,9 +134,7 @@ async function main(): Promise<void> {
   // 상태 요약
   console.error("");
   for (const o of res.outcomes) {
-    console.error(
-      `  ${o.provider.padEnd(10)} ${statusTag(o)} ${c.dim(`${o.elapsedMs}ms`)}`,
-    );
+    console.error(`  ${o.provider.padEnd(10)} ${statusTag(o)} ${c.dim(`${o.elapsedMs}ms`)}`);
   }
   console.error("");
 

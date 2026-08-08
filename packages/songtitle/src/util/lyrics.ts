@@ -55,6 +55,10 @@ export function normalize(s: string): string {
 export function plainFrom(plain: string | undefined, synced: LyricLine[] | undefined): string {
   const p = (plain ?? "").trim();
   if (p) return p;
-  if (synced && synced.length) return synced.map((l) => l.text).join("\n").trim();
+  if (synced && synced.length)
+    return synced
+      .map((l) => l.text)
+      .join("\n")
+      .trim();
   return "";
 }

@@ -33,20 +33,14 @@ export const flo: Provider = {
 
     let trackId = query.trackId;
     if (!trackId) {
-      const search = await getJson<FloSearchResp>(
-        `${BASE}/api/search/v2/search?keyword=${encodeURIComponent(q)}`,
-        opts,
-      );
+      const search = await getJson<FloSearchResp>(`${BASE}/api/search/v2/search?keyword=${encodeURIComponent(q)}`, opts);
       const groups = search.data?.list ?? [];
       const trackGroup = groups.find((g) => g.type === "TRACK") ?? groups[0];
       trackId = trackGroup?.list?.[0]?.id?.toString();
     }
     if (!trackId) return null;
 
-    const meta = await getJson<FloTrackResp>(
-      `${BASE}/api/meta/v1/track/${trackId}`,
-      opts,
-    );
+    const meta = await getJson<FloTrackResp>(`${BASE}/api/meta/v1/track/${trackId}`, opts);
     const data = meta.data ?? {};
 
     let synced: LyricLine[] | undefined;

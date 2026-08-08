@@ -36,8 +36,7 @@ export const vibe: Provider = {
     let trackId = query.trackId;
     if (!trackId) {
       const search = await getJson<VibeSearchResp>(
-        `${API}/v3/search/track?query=${encodeURIComponent(q)}` +
-          `&start=1&display=10&sort=RELEVANCE`,
+        `${API}/v3/search/track?query=${encodeURIComponent(q)}` + `&start=1&display=10&sort=RELEVANCE`,
         opts,
       );
       trackId = search.response?.result?.tracks?.[0]?.trackId?.toString();

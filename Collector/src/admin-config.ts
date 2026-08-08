@@ -50,7 +50,8 @@ export function parseCollectorRuntimeConfig(payload: ConfigResponse): CollectorR
   }
   const values = payload.values as Record<string, unknown>;
   const markets = required(values, "COLLECTOR_MARKETS").split(",");
-  if (markets.length === 0 || markets.some((market) => !["KR", "US", "JP"].includes(market))) throw new Error("collector config has invalid COLLECTOR_MARKETS");
+  if (markets.length === 0 || markets.some((market) => !["KR", "US", "JP"].includes(market)))
+    throw new Error("collector config has invalid COLLECTOR_MARKETS");
   const providerValue = optional(values, "SONGTITLE_PROVIDERS");
   const modulePath = optional(values, "LYRICS_LIBRARY_MODULE");
   const geniusAccessToken = optional(values, "GENIUS_ACCESS_TOKEN");
@@ -72,10 +73,14 @@ export function parseCollectorRuntimeConfig(payload: ConfigResponse): CollectorR
   };
 }
 
-export async function fetchCollectorRuntimeConfig(adminUrl: string, adminToken: string, fetchImpl: typeof fetch = fetch): Promise<CollectorRuntimeConfig> {
+export async function fetchCollectorRuntimeConfig(
+  adminUrl: string,
+  adminToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CollectorRuntimeConfig> {
   const response = await fetchImpl(`${adminUrl.replace(/\/$/u, "")}/admin/api/collector/config`, {
     headers: { authorization: `Bearer ${adminToken}` },
   });
   if (!response.ok) throw new Error(`COLLECTOR_CONFIG_${response.status}`);
-  return parseCollectorRuntimeConfig(await response.json() as ConfigResponse);
+  return parseCollectorRuntimeConfig((await response.json()) as ConfigResponse);
 }

@@ -1,7 +1,6 @@
 /** 브라우저 유사 User-Agent — 다수 서비스가 봇 차단하므로 기본 헤더로 사용 */
 export const DEFAULT_UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 export interface HttpOptions {
   headers?: Record<string, string>;

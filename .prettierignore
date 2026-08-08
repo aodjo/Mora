@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.wrangler/
+.wrangler-dist/
+Admin/dist/
+Generator/.venv/
+pnpm-lock.yaml
+Server/worker-configuration.d.ts

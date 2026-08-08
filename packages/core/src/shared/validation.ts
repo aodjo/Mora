@@ -8,10 +8,7 @@ export function objectValue(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-export function requiredString(
-  value: unknown,
-  options: { min?: number; max?: number } = {},
-): string {
+export function requiredString(value: unknown, options: { min?: number; max?: number } = {}): string {
   if (typeof value !== "string") throw new ServiceError(400, "INVALID_REQUEST");
   const min = options.min ?? 1;
   const max = options.max ?? 10_000;

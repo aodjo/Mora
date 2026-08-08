@@ -25,7 +25,8 @@ export interface PreprocessResult {
   warnings: string[];
 }
 
-const sectionHeader = /^\s*[\[(](?:verse|pre-?chorus|chorus|bridge|hook|intro|outro|interlude|refrain|후렴|간주|도입|벌스|코러스|브릿지|サビ|イントロ|アウトロ)(?:\s+[^\])]+)?[\])]\s*$/iu;
+const sectionHeader =
+  /^\s*[\[(](?:verse|pre-?chorus|chorus|bridge|hook|intro|outro|interlude|refrain|후렴|간주|도입|벌스|코러스|브릿지|サビ|イントロ|アウトロ)(?:\s+[^\])]+)?[\])]\s*$/iu;
 const timestampPrefix = /^\s*(?:\[\d{1,2}:\d{2}(?:[.:]\d{1,3})?\]\s*)+/u;
 const metadataLine = /^\s*(?:lyrics?|written|writer|composer|작사|작곡|가사)\s*(?:by|:|：)/iu;
 const repeatMarker = /^\s*[\[(]?(?:x\s*(\d+)|(\d+)\s*x|반복|repeat)[\])]?\s*$/iu;
@@ -40,7 +41,11 @@ function normalizeNewlines(value: string): string {
 
 function decodeEntities(value: string): string {
   const entities: Record<string, string> = {
-    "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&#39;": "'",
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&quot;": '"',
+    "&#39;": "'",
   };
   return value.replace(/&(amp|lt|gt|quot|#39);/gu, (match) => entities[match] ?? match);
 }
@@ -55,18 +60,34 @@ function stripLayerLabel(line: string): string {
   return line.replace(/^\s*(?:translation|번역|訳|romanization|romanized|로마자|ローマ字)\s*:\s*/iu, "");
 }
 
-function buildVariant(lines: Array<{ text: string; sourceStart: number; sourceEnd: number }>, layer: LyricsLayer, language: string, rules: string[], reviewRequired: boolean): ProcessedLyricsVariant | null {
+function buildVariant(
+  lines: Array<{ text: string; sourceStart: number; sourceEnd: number }>,
+  layer: LyricsLayer,
+  language: string,
+  rules: string[],
+  reviewRequired: boolean,
+): ProcessedLyricsVariant | null {
   if (lines.length === 0) return null;
   let cursor = 0;
   const offsets: OffsetMapEntry[] = [];
-  const text = lines.map((line) => {
-    const start = cursor;
-    cursor += cpLength(line.text);
-    offsets.push({ derived_start: start, derived_end: cursor, source_start: line.sourceStart, source_end: line.sourceEnd });
-    cursor += 1;
-    return line.text;
-  }).join("\n");
-  return { layer, language, text, confidence: reviewRequired ? 0.65 : 1, review_required: reviewRequired, rules: [...new Set(rules)], offset_map: offsets };
+  const text = lines
+    .map((line) => {
+      const start = cursor;
+      cursor += cpLength(line.text);
+      offsets.push({ derived_start: start, derived_end: cursor, source_start: line.sourceStart, source_end: line.sourceEnd });
+      cursor += 1;
+      return line.text;
+    })
+    .join("\n");
+  return {
+    layer,
+    language,
+    text,
+    confidence: reviewRequired ? 0.65 : 1,
+    review_required: reviewRequired,
+    rules: [...new Set(rules)],
+    offset_map: offsets,
+  };
 }
 
 /** Keeps the immutable raw input outside this result; only derived text is returned. */
@@ -85,14 +106,23 @@ export function preprocessLyrics(raw: string, language = "und"): PreprocessResul
     const sourceStart = sourceCursor;
     const sourceEnd = sourceCursor + cpLength(originalLine);
     sourceCursor = sourceEnd + 1;
-    let line = originalLine.replace(timestampPrefix, "").trim().replace(/[\t ]+/gu, " ");
+    let line = originalLine
+      .replace(timestampPrefix, "")
+      .trim()
+      .replace(/[\t ]+/gu, " ");
     if (line.length === 0) {
-      if (currentSection.length > 0) { lastSection = currentSection; currentSection = []; }
+      if (currentSection.length > 0) {
+        lastSection = currentSection;
+        currentSection = [];
+      }
       continue;
     }
     if (sectionHeader.test(line) || metadataLine.test(line)) {
       rules.push(sectionHeader.test(line) ? "section-header" : "metadata-line");
-      if (currentSection.length > 0) { lastSection = currentSection; currentSection = []; }
+      if (currentSection.length > 0) {
+        lastSection = currentSection;
+        currentSection = [];
+      }
       continue;
     }
     const repeat = repeatMarker.exec(line);

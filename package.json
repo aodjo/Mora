@@ -12,6 +12,8 @@
     "build": "corepack pnpm --filter @mora/songtitle build && tsc -p tsconfig.json && corepack pnpm --dir Admin build",
     "build:services": "corepack pnpm --filter @mora/songtitle build && tsc -p tsconfig.json",
     "check": "corepack pnpm --filter @mora/songtitle build && tsc -p tsconfig.json --noEmit && corepack pnpm --dir Admin check",
+    "format": "prettier --write \"{Admin,Collector,Generator,Server,packages,test}/**/*.{ts,tsx}\"",
+    "format:check": "prettier --check \"{Admin,Collector,Generator,Server,packages,test}/**/*.{ts,tsx}\"",
     "test": "npm run build:services && node --test dist/test/*.test.js",
     "start": "node dist/Generator/src/worker-cli.js",
     "dev": "npm run dev:generator",
@@ -20,7 +22,6 @@
     "collector": "corepack pnpm dev:collector",
     "generator": "corepack pnpm build:services && Generator/scripts/run-macos.sh",
     "dev:generator": "tsx Generator/src/worker-cli.ts",
-    "dev:generator-legacy": "tsx Generator/src/cli.ts",
     "generator:setup:mac": "Generator/scripts/setup-macos.sh",
     "generator:self-test:mac": "Generator/scripts/self-test-macos.sh",
     "generator:smoke:mac": "node Generator/scripts/smoke-test-macos.mjs",
@@ -42,6 +43,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.1.0",
+    "prettier": "^3.9.6",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",
     "wrangler": "^4.118.0"

@@ -29,8 +29,12 @@ export function tierForConfidence(confidence: number): Tier {
 }
 
 function matchFlat(source: Fingerprint, target: Fingerprint): MatchResult {
-  const sourceTokens = source.lens.flatMap((line, lineIndex) => line.map((length, index) => ({ length, type: source.types[lineIndex]?.[index] ?? 3 })));
-  const targetTokens = target.lens.flatMap((line, lineIndex) => line.map((length, index) => ({ length, type: target.types[lineIndex]?.[index] ?? 3 })));
+  const sourceTokens = source.lens.flatMap((line, lineIndex) =>
+    line.map((length, index) => ({ length, type: source.types[lineIndex]?.[index] ?? 3 })),
+  );
+  const targetTokens = target.lens.flatMap((line, lineIndex) =>
+    line.map((length, index) => ({ length, type: target.types[lineIndex]?.[index] ?? 3 })),
+  );
   const pairs = needlemanWunsch(sourceTokens, targetTokens, tokenScore, -1);
   const sourceToTargetTokens = new Map<number, number>();
   let exactTokens = 0;
@@ -92,12 +96,7 @@ export function matchFingerprints(source: Fingerprint, target: Fingerprint): Mat
       const targetToken = targetTokens[tokenPair.right];
       const sourceOffset = sourceOffsets[pair.left];
       const targetOffset = targetOffsets[pair.right];
-      if (
-        sourceToken === undefined ||
-        targetToken === undefined ||
-        sourceOffset === undefined ||
-        targetOffset === undefined
-      ) {
+      if (sourceToken === undefined || targetToken === undefined || sourceOffset === undefined || targetOffset === undefined) {
         continue;
       }
 

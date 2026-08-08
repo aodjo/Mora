@@ -17,21 +17,13 @@ function clampTime(value: number, start: number, end: number): number {
   return Math.max(start, Math.min(end, Math.round(value)));
 }
 
-function distribute(
-  tokenIndices: number[],
-  lengths: number[],
-  startMs: number,
-  endMs: number,
-): IndexedTimeSpan[] {
+function distribute(tokenIndices: number[], lengths: number[], startMs: number, endMs: number): IndexedTimeSpan[] {
   if (tokenIndices.length === 0) return [];
   const total = lengths.reduce((sum, length) => sum + Math.max(1, length), 0);
   let cursor = startMs;
   return tokenIndices.map((tokenIndex, index) => {
     const length = Math.max(1, lengths[index] ?? 1);
-    const next =
-      index === tokenIndices.length - 1
-        ? endMs
-        : clampTime(cursor + ((endMs - startMs) * length) / total, cursor, endMs);
+    const next = index === tokenIndices.length - 1 ? endMs : clampTime(cursor + ((endMs - startMs) * length) / total, cursor, endMs);
     const span: IndexedTimeSpan = [tokenIndex, cursor, next];
     cursor = next;
     return span;
@@ -60,10 +52,7 @@ function interpolateLine(
     }
 
     let nextKnownPosition = position + 1;
-    while (
-      nextKnownPosition < targetIndices.length &&
-      !known.has(targetIndices[nextKnownPosition] ?? -1)
-    ) {
+    while (nextKnownPosition < targetIndices.length && !known.has(targetIndices[nextKnownPosition] ?? -1)) {
       nextKnownPosition += 1;
     }
     const gapIndices = targetIndices.slice(position, nextKnownPosition);
@@ -83,7 +72,11 @@ function interpolateLine(
 
     const gapEnd = nextSpan?.[0] ?? lineSpan[1];
     if (gapEnd > cursor) {
-      output.push(...distribute(gapIndices, gapLengths, cursor, gapEnd).map(([index, start, end]) => [index, start, end, 1] as ProjectedIndexedTimeSpan));
+      output.push(
+        ...distribute(gapIndices, gapLengths, cursor, gapEnd).map(
+          ([index, start, end]) => [index, start, end, 1] as ProjectedIndexedTimeSpan,
+        ),
+      );
       cursor = gapEnd;
     } else {
       const previous = output.pop();
@@ -95,7 +88,11 @@ function interpolateLine(
           previous[1],
           Math.max(previous[2], lineSpan[1]),
         );
-        output.push(...divided.map(([token, start, end], dividedIndex) => [token, start, end, dividedIndex === 0 ? previous[3] : 1] as ProjectedIndexedTimeSpan));
+        output.push(
+          ...divided.map(
+            ([token, start, end], dividedIndex) => [token, start, end, dividedIndex === 0 ? previous[3] : 1] as ProjectedIndexedTimeSpan,
+          ),
+        );
         cursor = divided.at(-1)?.[2] ?? cursor;
       }
     }
@@ -104,10 +101,7 @@ function interpolateLine(
   return output;
 }
 
-function mappedLineSpans(
-  alignment: StoredAlignment,
-  match: MatchResult,
-): Map<number, TimeSpan> {
+function mappedLineSpans(alignment: StoredAlignment, match: MatchResult): Map<number, TimeSpan> {
   const result = new Map<number, TimeSpan>();
   for (const [sourceLine, targetLine] of match.sourceToTargetLines) {
     const span = alignment.lineSpans[sourceLine];
@@ -161,15 +155,21 @@ export function projectFingerprintAlignment(
     alignment_id: alignment.id,
     lines,
     spans: match.tier === "line" || match.tier === "none" ? [] : spans.sort((left, right) => left[0] - right[0]),
-    speaker_turns: match.tier === "none" ? [] : alignment.speakerTurns ?? [],
-    word_speakers: match.tier === "none" ? [] : (alignment.wordSpeakers ?? []).flatMap(([sourceIndex, speaker, confidence]) => {
-      const targetIndex = match.sourceToTargetTokens.get(sourceIndex);
-      return targetIndex === undefined ? [] : [[targetIndex, speaker, confidence]];
-    }),
-    line_speakers: match.tier === "none" ? [] : (alignment.lineSpeakers ?? []).flatMap(([sourceIndex, speaker, confidence]) => {
-      const targetIndex = match.sourceToTargetLines.get(sourceIndex);
-      return targetIndex === undefined ? [] : [[targetIndex, speaker, confidence]];
-    }),
+    speaker_turns: match.tier === "none" ? [] : (alignment.speakerTurns ?? []),
+    word_speakers:
+      match.tier === "none"
+        ? []
+        : (alignment.wordSpeakers ?? []).flatMap(([sourceIndex, speaker, confidence]) => {
+            const targetIndex = match.sourceToTargetTokens.get(sourceIndex);
+            return targetIndex === undefined ? [] : [[targetIndex, speaker, confidence]];
+          }),
+    line_speakers:
+      match.tier === "none"
+        ? []
+        : (alignment.lineSpeakers ?? []).flatMap(([sourceIndex, speaker, confidence]) => {
+            const targetIndex = match.sourceToTargetLines.get(sourceIndex);
+            return targetIndex === undefined ? [] : [[targetIndex, speaker, confidence]];
+          }),
   };
 }
 

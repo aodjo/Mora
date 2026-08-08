@@ -3,8 +3,16 @@ import { test } from "node:test";
 import { matchFingerprints, type Fingerprint } from "../packages/core/src/index.js";
 
 const source: Fingerprint = {
-  lens: [[2, 2, 2], [2, 4], [3, 3, 3]],
-  types: [[0, 0, 0], [0, 0], [0, 0, 0]],
+  lens: [
+    [2, 2, 2],
+    [2, 4],
+    [3, 3, 3],
+  ],
+  types: [
+    [0, 0, 0],
+    [0, 0],
+    [0, 0, 0],
+  ],
 };
 
 test("identical fingerprints produce an exact word match", () => {

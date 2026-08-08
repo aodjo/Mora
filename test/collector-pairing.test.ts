@@ -19,7 +19,10 @@ test("Collector starts pairing and polls with the private device code", async ()
     const url = String(input);
     calls.push({ url, method: init?.method ?? "GET", authorization: new Headers(init?.headers).get("authorization") });
     if (url.endsWith("/pairings")) {
-      return Response.json({ pairing_id: "pair-1", device_code: "private-device-code", pin: "1234567890", expires_at: Date.now() + 60_000, interval_ms: 1000 }, { status: 201 });
+      return Response.json(
+        { pairing_id: "pair-1", device_code: "private-device-code", pin: "1234567890", expires_at: Date.now() + 60_000, interval_ms: 1000 },
+        { status: 201 },
+      );
     }
     return Response.json({ status: "approved", api_key: "mora_collector_key" });
   };

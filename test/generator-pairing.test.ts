@@ -35,15 +35,26 @@ test("Generator sends capabilities and polls with its private device code", asyn
       ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) as unknown } : {}),
     });
     if (url.endsWith("/pairings")) {
-      return Response.json({ pairing_id: "pair-1", device_code: "private-device-code", pin: "1234567890", expires_at: Date.now() + 60_000, interval_ms: 1000 }, { status: 201 });
+      return Response.json(
+        { pairing_id: "pair-1", device_code: "private-device-code", pin: "1234567890", expires_at: Date.now() + 60_000, interval_ms: 1000 },
+        { status: 201 },
+      );
     }
     return Response.json({ status: "approved", worker_id: "worker-1", api_key: "mora_generator_key" });
   };
   const pairing = await startGeneratorPairing("https://mora.example/", "Mac Generator", capabilities, fetchImpl);
   assert.equal(pairing.pin, "1234567890");
-  assert.deepEqual(await pollGeneratorPairing("https://mora.example", pairing, fetchImpl), { worker_id: "worker-1", api_key: "mora_generator_key" });
+  assert.deepEqual(await pollGeneratorPairing("https://mora.example", pairing, fetchImpl), {
+    worker_id: "worker-1",
+    api_key: "mora_generator_key",
+  });
   assert.deepEqual(calls, [
-    { url: "https://mora.example/admin/api/generator/pairings", method: "POST", authorization: null, body: { name: "Mac Generator", capabilities } },
+    {
+      url: "https://mora.example/admin/api/generator/pairings",
+      method: "POST",
+      authorization: null,
+      body: { name: "Mac Generator", capabilities },
+    },
     { url: "https://mora.example/admin/api/generator/pairings/pair-1", method: "GET", authorization: "Pairing private-device-code" },
   ]);
 });

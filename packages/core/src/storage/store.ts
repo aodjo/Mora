@@ -2,13 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { ServiceError } from "../shared/errors.js";
-import type {
-  AlignmentSource,
-  Fingerprint,
-  IndexedTimeSpan,
-  StoredAlignment,
-  TimeSpan,
-} from "../shared/types.js";
+import type { AlignmentSource, Fingerprint, IndexedTimeSpan, StoredAlignment, TimeSpan } from "../shared/types.js";
 import type { AlignmentRepository, Contribution, RecordingIdentifier } from "./repository.js";
 import { validateContribution } from "./contribution.js";
 
@@ -100,17 +94,20 @@ export class AlignmentStore implements AlignmentRepository {
     transaction.run();
     try {
       this.#database
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO recording (isrc, mbid, duration_ms)
           VALUES (?, ?, ?)
           ON CONFLICT(isrc) DO UPDATE SET
             mbid = COALESCE(excluded.mbid, recording.mbid),
             duration_ms = COALESCE(excluded.duration_ms, recording.duration_ms)
-        `)
+        `,
+        )
         .run(value.isrc, value.mbid ?? null, value.durationMs ?? null);
 
       const result = this.#database
-        .prepare(`
+        .prepare(
+          `
           INSERT INTO alignment (
             isrc, text_hash, tokenizer, fp_lens, fp_types,
             line_spans, word_spans, speaker_turns, word_speakers, line_speakers,
@@ -129,7 +126,8 @@ export class AlignmentStore implements AlignmentRepository {
             contributor = excluded.contributor,
             created_at = excluded.created_at
           RETURNING id
-        `)
+        `,
+        )
         .get(
           value.isrc,
           value.textHash,
@@ -163,23 +161,31 @@ export class AlignmentStore implements AlignmentRepository {
     let rows: AlignmentRow[];
     if (identifier.isrc !== undefined) {
       rows = this.#database
-        .prepare(`
+        .prepare(
+          `
           SELECT a.*, r.duration_ms FROM alignment a
           JOIN recording r ON r.isrc = a.isrc
           WHERE a.isrc = ? ORDER BY a.created_at DESC
-        `)
+        `,
+        )
         .all(identifier.isrc as SQLInputValue) as unknown as AlignmentRow[];
     } else if (identifier.mbid !== undefined) {
       rows = this.#database
-        .prepare(`
+        .prepare(
+          `
           SELECT a.* FROM alignment a
           JOIN recording r ON r.isrc = a.isrc
           WHERE r.mbid = ?
           ORDER BY a.created_at DESC
-        `)
+        `,
+        )
         .all(identifier.mbid as SQLInputValue) as unknown as AlignmentRow[];
     } else if (identifier.artist !== undefined && identifier.title !== undefined && identifier.durationMs !== undefined) {
-      rows = this.#database.prepare(`SELECT a.*, r.duration_ms FROM alignment a JOIN recording r ON r.isrc=a.isrc WHERE r.artist_key=? AND r.title_key=? AND ABS(r.duration_ms-?)<=MAX(5000,r.duration_ms*0.02) ORDER BY a.created_at DESC`).all(identifier.artist, identifier.title, identifier.durationMs) as unknown as AlignmentRow[];
+      rows = this.#database
+        .prepare(
+          `SELECT a.*, r.duration_ms FROM alignment a JOIN recording r ON r.isrc=a.isrc WHERE r.artist_key=? AND r.title_key=? AND ABS(r.duration_ms-?)<=MAX(5000,r.duration_ms*0.02) ORDER BY a.created_at DESC`,
+        )
+        .all(identifier.artist, identifier.title, identifier.durationMs) as unknown as AlignmentRow[];
     } else {
       return [];
     }

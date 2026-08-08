@@ -16,8 +16,10 @@ test("unilab-v1 preserves original codepoint offsets", () => {
     ],
   );
   for (const token of result.tokens) {
-    assert.equal(Array.from(input).slice(token.start, token.end).join("").replace(/[!,]/gu, ""),
-      token.line === 0 && token.start === 2 ? "Café" : token.canonical);
+    assert.equal(
+      Array.from(input).slice(token.start, token.end).join("").replace(/[!,]/gu, ""),
+      token.line === 0 && token.start === 2 ? "Café" : token.canonical,
+    );
   }
 });
 
@@ -34,8 +36,14 @@ test("case, quote, punctuation, and bracketed backing vocals normalize away", ()
 test("standalone section headers and empty lines do not enter the fingerprint", () => {
   const result = tokenize("[Verse 1]\n\n첫 번째 줄\r\n(Chorus)\r둘째 줄");
   assert.equal(result.canonical, "첫 번째 줄\n둘째 줄");
-  assert.deepEqual(fingerprint(result).lens, [[1, 2, 1], [2, 1]]);
-  assert.deepEqual(result.tokens.map((token) => token.line), [2, 2, 2, 4, 4]);
+  assert.deepEqual(fingerprint(result).lens, [
+    [1, 2, 1],
+    [2, 1],
+  ]);
+  assert.deepEqual(
+    result.tokens.map((token) => token.line),
+    [2, 2, 2, 4, 4],
+  );
 });
 
 test("token types are stable numeric categories", () => {

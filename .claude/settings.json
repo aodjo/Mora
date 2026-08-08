@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'd=\"${CLAUDE_PROJECT_DIR:-$PWD}\"; \"$d/.claude/hooks/deploy-admin-if-changed.sh\"'",
+            "asyncRewake": true,
+            "timeout": 600,
+            "statusMessage": "Admin 변경 확인 후 Cloudflare 배포"
+          }
+        ]
+      }
+    ]
+  }
+}

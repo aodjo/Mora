@@ -14,7 +14,11 @@ try {
   if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 }
 
-interface CollectorCredentials { admin_url: string; api_key: string; created_at: number }
+interface CollectorCredentials {
+  admin_url: string;
+  api_key: string;
+  created_at: number;
+}
 
 const adminUrl = process.env.MORA_ADMIN_URL ?? "https://mora.junx.dev";
 const credentialFile = process.env.MORA_COLLECTOR_CREDENTIAL_FILE ?? resolve(process.cwd(), "Collector/.mora-collector.json");
@@ -24,8 +28,9 @@ let adminToken = storedCredentials?.admin_url === adminUrl ? storedCredentials.a
 
 let initialConfig: CollectorRuntimeConfig | undefined;
 if (adminToken !== undefined) {
-  try { initialConfig = await fetchCollectorRuntimeConfig(adminUrl, adminToken); }
-  catch (error) {
+  try {
+    initialConfig = await fetchCollectorRuntimeConfig(adminUrl, adminToken);
+  } catch (error) {
     if (!/COLLECTOR_CONFIG_(?:401|403)/u.test(error instanceof Error ? error.message : "")) throw error;
     adminToken = undefined;
   }
@@ -46,9 +51,10 @@ const collectorToken = adminToken;
 
 async function loadProvider(config: CollectorRuntimeConfig): Promise<LyricsProvider> {
   if (config.lyricsLibraryModule !== undefined) {
-    const loaded = await import(config.lyricsLibraryModule) as { default?: LyricsProvider; provider?: LyricsProvider };
+    const loaded = (await import(config.lyricsLibraryModule)) as { default?: LyricsProvider; provider?: LyricsProvider };
     const provider = loaded.default ?? loaded.provider;
-    if (provider === undefined || typeof provider.search !== "function") throw new Error("lyrics library must export a LyricsProvider as default or provider");
+    if (provider === undefined || typeof provider.search !== "function")
+      throw new Error("lyrics library must export a LyricsProvider as default or provider");
     return provider;
   }
   return createSongTitleProvider({
@@ -72,7 +78,7 @@ async function run(config: CollectorRuntimeConfig): Promise<void> {
     dailyBudget: config.dailyBudget,
     markets: config.markets,
     lyricsProvider: await loadProvider(config),
-    onProgress: progress => {
+    onProgress: (progress) => {
       if (progress.stage === "discovering") {
         process.stdout.write(`차트 후보를 수집하는 중: ${progress.markets.join(", ")}\n`);
       } else if (progress.stage === "selected") {
@@ -94,8 +100,10 @@ async function run(config: CollectorRuntimeConfig): Promise<void> {
 }
 
 process.stdout.write("Admin에서 Collector 설정을 불러오는 중…\n");
-let config = initialConfig ?? await fetchCollectorRuntimeConfig(adminUrl, collectorToken);
-process.stdout.write(`설정 완료: ${config.markets.join(", ")} · 최대 ${config.dailyBudget}곡 · ${config.once ? "1회 실행" : `${Math.round(config.intervalMs / 60_000)}분 간격`}\n`);
+let config = initialConfig ?? (await fetchCollectorRuntimeConfig(adminUrl, collectorToken));
+process.stdout.write(
+  `설정 완료: ${config.markets.join(", ")} · 최대 ${config.dailyBudget}곡 · ${config.once ? "1회 실행" : `${Math.round(config.intervalMs / 60_000)}분 간격`}\n`,
+);
 let lastRunAt = Date.now();
 await run(config);
 
@@ -116,7 +124,8 @@ function delay(milliseconds: number): Promise<void> {
 async function readCredentials(path: string): Promise<CollectorCredentials | undefined> {
   try {
     const value = JSON.parse(await readFile(path, "utf8")) as Partial<CollectorCredentials>;
-    if (typeof value.admin_url !== "string" || typeof value.api_key !== "string" || typeof value.created_at !== "number") throw new Error("invalid Collector credential file");
+    if (typeof value.admin_url !== "string" || typeof value.api_key !== "string" || typeof value.created_at !== "number")
+      throw new Error("invalid Collector credential file");
     return { admin_url: value.admin_url, api_key: value.api_key, created_at: value.created_at };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;

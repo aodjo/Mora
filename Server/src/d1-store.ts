@@ -1,16 +1,6 @@
-import type {
-  AlignmentSource,
-  Fingerprint,
-  IndexedTimeSpan,
-  StoredAlignment,
-  TimeSpan,
-} from "../../packages/core/src/shared/types.js";
+import type { AlignmentSource, Fingerprint, IndexedTimeSpan, StoredAlignment, TimeSpan } from "../../packages/core/src/shared/types.js";
 import { validateContribution } from "../../packages/core/src/storage/contribution.js";
-import type {
-  AlignmentRepository,
-  Contribution,
-  RecordingIdentifier,
-} from "../../packages/core/src/storage/repository.js";
+import type { AlignmentRepository, Contribution, RecordingIdentifier } from "../../packages/core/src/storage/repository.js";
 
 interface AlignmentRow {
   id: number;
@@ -75,28 +65,36 @@ export class D1AlignmentStore implements AlignmentRepository {
     let statement: D1PreparedStatement;
     if (identifier.isrc !== undefined) {
       statement = this.database
-        .prepare(`
+        .prepare(
+          `
           SELECT a.*, r.duration_ms FROM public_alignment a
           JOIN public_recording r ON r.isrc = a.isrc
           WHERE a.isrc = ?1 AND a.active = 1 ORDER BY a.created_at DESC
-        `)
+        `,
+        )
         .bind(identifier.isrc);
     } else if (identifier.mbid !== undefined) {
       statement = this.database
-        .prepare(`
+        .prepare(
+          `
           SELECT a.*, r.duration_ms FROM public_alignment a
           JOIN public_recording r ON r.isrc = a.isrc
           WHERE r.mbid = ?1 AND a.active = 1 ORDER BY a.created_at DESC
-        `)
+        `,
+        )
         .bind(identifier.mbid);
     } else if (identifier.artist !== undefined && identifier.title !== undefined && identifier.durationMs !== undefined) {
-      statement = this.database.prepare(`
+      statement = this.database
+        .prepare(
+          `
         SELECT a.*, r.duration_ms FROM public_alignment a
         JOIN public_recording r ON r.isrc = a.isrc
         WHERE r.artist_key = ?1 AND r.title_key = ?2 AND ABS(r.duration_ms - ?3) <= MAX(5000, r.duration_ms * 0.02)
           AND a.active = 1
         ORDER BY a.quality_score DESC, a.created_at DESC
-      `).bind(identifier.artist, identifier.title, identifier.durationMs);
+      `,
+        )
+        .bind(identifier.artist, identifier.title, identifier.durationMs);
     } else {
       return [];
     }
@@ -108,16 +106,19 @@ export class D1AlignmentStore implements AlignmentRepository {
   async contribute(value: Contribution): Promise<number> {
     validateContribution(value);
     const recording = this.database
-      .prepare(`
+      .prepare(
+        `
         INSERT INTO public_recording (isrc, mbid, duration_ms)
         VALUES (?1, ?2, ?3)
         ON CONFLICT(isrc) DO UPDATE SET
           mbid = COALESCE(excluded.mbid, public_recording.mbid),
           duration_ms = COALESCE(excluded.duration_ms, public_recording.duration_ms)
-      `)
+      `,
+      )
       .bind(value.isrc, value.mbid ?? null, value.durationMs ?? null);
     const alignment = this.database
-      .prepare(`
+      .prepare(
+        `
         INSERT INTO public_alignment (
           isrc, text_hash, tokenizer, fp_lens, fp_types,
           line_spans, word_spans, speaker_turns, word_speakers, line_speakers,
@@ -136,7 +137,8 @@ export class D1AlignmentStore implements AlignmentRepository {
           contributor = excluded.contributor,
           created_at = excluded.created_at
         RETURNING id
-      `)
+      `,
+      )
       .bind(
         value.isrc,
         value.textHash,

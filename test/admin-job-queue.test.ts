@@ -10,9 +10,15 @@ test("Generator consumes jobs through Mora Admin with its service key", async ()
     calls.push({
       path: url.pathname,
       authorization: new Headers(init?.headers).get("authorization"),
-      body: typeof init?.body === "string" ? JSON.parse(init.body) as unknown : undefined,
+      body: typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined,
     });
-    if (url.pathname.endsWith("/pull")) return Response.json({ id: "job-1", body: { schema_version: 1, job_id: "job-1", input_revision_id: "input-1" }, attempts: 1, leaseId: "job-1" });
+    if (url.pathname.endsWith("/pull"))
+      return Response.json({
+        id: "job-1",
+        body: { schema_version: 1, job_id: "job-1", input_revision_id: "input-1" },
+        attempts: 1,
+        leaseId: "job-1",
+      });
     return Response.json({ accepted: true });
   };
   const queue = new AdminJobQueue(new AdminClient("https://mora.example", "mora_generator_key", fetcher));
@@ -21,7 +27,11 @@ test("Generator consumes jobs through Mora Admin with its service key", async ()
   await queue.ack("job-1");
   assert.deepEqual(calls, [
     { path: "/admin/api/generator/queue/pull", authorization: "Bearer mora_generator_key", body: {} },
-    { path: "/admin/api/generator/queue/retry", authorization: "Bearer mora_generator_key", body: { lease_id: "job-1", delay_seconds: 30 } },
+    {
+      path: "/admin/api/generator/queue/retry",
+      authorization: "Bearer mora_generator_key",
+      body: { lease_id: "job-1", delay_seconds: 30 },
+    },
     { path: "/admin/api/generator/queue/ack", authorization: "Bearer mora_generator_key", body: { lease_id: "job-1" } },
   ]);
 });

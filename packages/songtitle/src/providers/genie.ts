@@ -22,14 +22,8 @@ export const genie: Provider = {
 
     let songId = query.trackId;
     if (!songId) {
-      const html = await getText(
-        `${BASE}/search/searchMain?query=${encodeURIComponent(q)}`,
-        opts,
-      );
-      songId =
-        html.match(/fnViewSongInfo\('(\d+)'/)?.[1] ??
-        html.match(/xgnm=(\d+)/)?.[1] ??
-        html.match(/songid["'=:\s]+(\d+)/i)?.[1];
+      const html = await getText(`${BASE}/search/searchMain?query=${encodeURIComponent(q)}`, opts);
+      songId = html.match(/fnViewSongInfo\('(\d+)'/)?.[1] ?? html.match(/xgnm=(\d+)/)?.[1] ?? html.match(/songid["'=:\s]+(\d+)/i)?.[1];
     }
     if (!songId) return null;
 
@@ -37,10 +31,7 @@ export const genie: Provider = {
     let lyrics = "";
 
     try {
-      const jsonp = await getText(
-        `https://dn.genie.co.kr/app/purchase/get_msl.asp?path=a&songid=${songId}`,
-        opts,
-      );
+      const jsonp = await getText(`https://dn.genie.co.kr/app/purchase/get_msl.asp?path=a&songid=${songId}`, opts);
       synced = parseGenieMsl(jsonp);
       lyrics = synced.map((l) => l.text).join("\n");
     } catch {
