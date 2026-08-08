@@ -7,6 +7,7 @@ import { fetchCollectorRuntimeConfig, type CollectorRuntimeConfig } from "./admi
 import { startCollectorPairing, waitForCollectorPairing } from "./pairing.js";
 import { CollectorService } from "./service.js";
 import { createSongTitleProvider } from "./songtitle-provider.js";
+import { SpotifyClient } from "./spotify.js";
 
 try {
   loadEnvFile(process.env.MORA_COLLECTOR_ENV_FILE ?? resolve(process.cwd(), "Collector/.env"));
@@ -78,6 +79,9 @@ async function run(config: CollectorRuntimeConfig): Promise<void> {
     dailyBudget: config.dailyBudget,
     markets: config.markets,
     lyricsProvider: await loadProvider(config),
+    ...(config.spotifyClientId !== undefined && config.spotifyClientSecret !== undefined
+      ? { spotify: new SpotifyClient(config.spotifyClientId, config.spotifyClientSecret) }
+      : {}),
     onProgress: (progress) => {
       if (progress.stage === "discovering") {
         process.stdout.write(`차트 후보를 수집하는 중: ${progress.markets.join(", ")}\n`);
@@ -105,7 +109,8 @@ async function run(config: CollectorRuntimeConfig): Promise<void> {
 process.stdout.write("Admin에서 Collector 설정을 불러오는 중…\n");
 let config = initialConfig ?? (await fetchCollectorRuntimeConfig(adminUrl, collectorToken));
 process.stdout.write(
-  `설정 완료: ${config.markets.join(", ")} · 최대 ${config.dailyBudget}곡 · ${config.once ? "1회 실행" : `${Math.round(config.intervalMs / 60_000)}분 간격`}\n`,
+  `설정 완료: ${config.markets.join(", ")} · 최대 ${config.dailyBudget}곡 · ${config.once ? "1회 실행" : `${Math.round(config.intervalMs / 60_000)}분 간격`}` +
+    ` · Spotify 식별 ${config.spotifyClientId !== undefined && config.spotifyClientSecret !== undefined ? "사용" : "미설정"}\n`,
 );
 let lastRunAt = Date.now();
 await run(config);

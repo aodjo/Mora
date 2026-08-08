@@ -8,6 +8,8 @@ export interface CollectorRuntimeConfig {
   songTitleTimeoutMs: number;
   songTitleBrowser: boolean;
   songTitleHeadful: boolean;
+  spotifyClientId?: string;
+  spotifyClientSecret?: string;
   geniusAccessToken?: string;
   lyricFindApiKey?: string;
   lyricFindTerritory: string;
@@ -54,6 +56,8 @@ export function parseCollectorRuntimeConfig(payload: ConfigResponse): CollectorR
     throw new Error("collector config has invalid COLLECTOR_MARKETS");
   const providerValue = optional(values, "SONGTITLE_PROVIDERS");
   const modulePath = optional(values, "LYRICS_LIBRARY_MODULE");
+  const spotifyClientId = optional(values, "SPOTIFY_CLIENT_ID");
+  const spotifyClientSecret = optional(values, "SPOTIFY_CLIENT_SECRET");
   const geniusAccessToken = optional(values, "GENIUS_ACCESS_TOKEN");
   const lyricFindApiKey = optional(values, "LYRICFIND_API_KEY");
   return {
@@ -66,6 +70,8 @@ export function parseCollectorRuntimeConfig(payload: ConfigResponse): CollectorR
     songTitleTimeoutMs: numberValue(values, "SONGTITLE_TIMEOUT_MS", 1000, 60_000),
     songTitleBrowser: booleanValue(values, "SONGTITLE_BROWSER"),
     songTitleHeadful: booleanValue(values, "SONGTITLE_HEADFUL"),
+    ...(spotifyClientId === undefined ? {} : { spotifyClientId }),
+    ...(spotifyClientSecret === undefined ? {} : { spotifyClientSecret }),
     ...(geniusAccessToken === undefined ? {} : { geniusAccessToken }),
     ...(lyricFindApiKey === undefined ? {} : { lyricFindApiKey }),
     lyricFindTerritory: required(values, "LYRICFIND_TERRITORY"),

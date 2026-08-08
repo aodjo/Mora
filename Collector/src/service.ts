@@ -33,6 +33,19 @@ export class CollectorService {
     this.#listenbrainz = new ListenBrainzClient(this.#fetch);
   }
 
+  /** Fills only what MusicBrainz left blank; a Spotify outage costs nothing but the gap. */
+  async #enrich(seed: RecordingSeed): Promise<RecordingSeed> {
+    if (this.config.spotify === undefined || (seed.isrc !== undefined && seed.duration_ms !== undefined)) return seed;
+    const found = await this.config.spotify.identify(seed).catch(() => undefined);
+    if (found === undefined) return seed;
+    return {
+      ...seed,
+      ...(seed.isrc === undefined && found.isrc !== undefined ? { isrc: found.isrc } : {}),
+      ...(seed.duration_ms === undefined && found.durationMs !== undefined ? { duration_ms: found.durationMs } : {}),
+      ...(seed.album === undefined && found.album !== undefined ? { album: found.album } : {}),
+    };
+  }
+
   async run(): Promise<CollectionReport> {
     const report: CollectionReport = { discovered: 0, identified: 0, submitted: 0, review: 0, skipped: 0, errors: [] };
     const pools: RecordingSeed[] = [];
@@ -72,7 +85,7 @@ export class CollectorService {
         continue;
       }
       try {
-        const identified = await this.#musicbrainz.identify(seed).catch(() => seed);
+        const identified = await this.#enrich(await this.#musicbrainz.identify(seed).catch(() => seed));
         if (identified.isrc) report.identified++;
         const sources = await (this.config.youtubeSearch ?? searchYoutubeMusic)(identified);
         const durationMs = resolveDurationMs(identified, sources);

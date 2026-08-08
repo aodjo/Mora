@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { hasNoLyricsToAlign, lyricsSearchInput, resolveDurationMs } from "../Collector/src/service.js";
+import { SpotifyClient } from "../Collector/src/spotify.js";
 import type { RecordingSeed, YoutubeCandidate } from "../Collector/src/types.js";
 
 const seed: RecordingSeed = { artist: "Artist", title: "Song", popularity: 1, freshness: 0, market: "KR" };
@@ -50,4 +51,30 @@ test("Collector drops tracks that announce they have no vocal", () => {
   for (const title of ["Song", "Instant Crush", "Ministry", "Mr. Blue Sky"]) {
     assert.equal(hasNoLyricsToAlign({ ...seed, title }), false, title);
   }
+});
+
+test("Spotify identification accepts only a track whose title and artist both agree", async () => {
+  const track = (name: string, artist: string, isrc: string) => ({
+    name,
+    duration_ms: 188_000,
+    artists: [{ name: artist }],
+    album: { name: "Album" },
+    external_ids: { isrc },
+  });
+  const client = (items: unknown[]) =>
+    new SpotifyClient("id", "secret", (async (url: string | URL) =>
+      String(url).includes("accounts.spotify.com")
+        ? Response.json({ access_token: "t", expires_in: 3600 })
+        : Response.json({ tracks: { items } })) as unknown as typeof fetch);
+
+  const seed: RecordingSeed = { artist: "송하예", title: "그대이길", popularity: 1, freshness: 0, market: "KR" };
+  // A same-titled song by someone else must not lend its ISRC: the identifier keys the public
+  // row, so a wrong one mislabels every alignment published under it.
+  assert.equal(await client([track("그대이길", "다른가수", "KRA111111111")]).identify(seed), undefined);
+  assert.equal(await client([track("완전히 다른 곡", "송하예", "KRA222222222")]).identify(seed), undefined);
+  assert.deepEqual(await client([track("그대이길", "송하예", "kra-333333333")]).identify(seed), {
+    isrc: "KRA333333333",
+    durationMs: 188_000,
+    album: "Album",
+  });
 });
