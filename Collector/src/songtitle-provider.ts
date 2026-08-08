@@ -27,6 +27,50 @@ function providerReference(result: LyricsResult): string | undefined {
   return undefined;
 }
 
+/**
+ * What a provider serves in place of lyrics when it has none. Stored verbatim it is
+ * indistinguishable from a successful fetch, so the no-lyrics skip never fired: 36 recordings
+ * carry Bugs' "가사 준비 중입니다" panel and 35 carry Genie's "가사 정보가 없습니다".
+ */
+const NOT_LYRICS = [
+  /가사\s*준비\s*중/u,
+  /가사\s*정보가\s*없/u,
+  /등록된?\s*가사가?\s*없/u,
+  /가사가\s*없습니다/u,
+  /청소년\s*보호법/u,
+  /성인\s*인증/u,
+  /lyrics?\s+(?:are\s+)?(?:not\s+available|unavailable)/iu,
+  /no\s+lyrics\s+found/iu,
+];
+
+/** A notice leads the page; real lyrics never open with one. */
+export function looksLikeLyrics(text: string): boolean {
+  const head = text.trim().slice(0, 120);
+  return head.length > 0 && !NOT_LYRICS.some((pattern) => pattern.test(head));
+}
+
+function normalizeTitle(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+/**
+ * Whether the provider answered about the song we asked for. Melon returned one Latin lyric for
+ * 88 different recordings — searching by title and artist is a best-effort match on their side,
+ * and an unchecked one lands the wrong words under a song that would then be timed against them.
+ * Genie and Vibe echo the query back as the title, so there is nothing to disagree with and the
+ * notice check above is what guards them.
+ */
+export function sameSong(found: string | undefined, wanted: string): boolean {
+  if (found === undefined) return true;
+  const provided = normalizeTitle(found);
+  const asked = normalizeTitle(wanted);
+  if (provided.length === 0 || asked.length === 0) return true;
+  return provided.includes(asked) || asked.includes(provided);
+}
+
 export function inferLyricsLanguage(text: string): string | undefined {
   if (/\p{Script=Hangul}/u.test(text)) return "ko";
   if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)) return "ja";
@@ -45,6 +89,8 @@ export class SongTitleLyricsProvider implements LyricsProvider {
 
     return response.results.flatMap((result): LyricsProviderResult[] => {
       if (result.lyrics.trim().length === 0) return [];
+      if (!looksLikeLyrics(result.lyrics)) return [];
+      if (!sameSong(result.title, input.title)) return [];
       const reference = providerReference(result);
       const language = inferLyricsLanguage(result.lyrics);
       return [
