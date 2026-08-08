@@ -35,6 +35,9 @@ const jsonHeaders = {
 } as const;
 // Human approvals required before the quality gate is allowed to promote on its own.
 const CALIBRATION_TARGET = 100;
+// How long a claimed job may go without a stage event before the queue treats it as abandoned.
+// Generous on purpose: separation is the longest stage and reports nothing while it runs.
+const WORKER_LEASE_MS = 30 * 60_000;
 const WORKER_STATES = ["active", "draining", "paused", "update"] as const;
 
 function json(value: unknown, status = 200, extra: HeadersInit = {}): Response {
@@ -695,32 +698,51 @@ async function generatorActorWorker(
   return worker;
 }
 
+/**
+ * A generator key proves which worker is calling, not which job it may touch. Without this the
+ * job id in the body is taken on trust, and one paired device could fail, fabricate candidates
+ * for, or attach artifacts to work it never claimed.
+ */
+async function requireOwnedJob(env: WorkerEnv, actor: Actor, jobId: string): Promise<void> {
+  const worker = await generatorActorWorker(env, actor);
+  const job = await env.ADMIN_DB.prepare("SELECT worker_id FROM jobs WHERE id=?1").bind(jobId).first<{ worker_id: string | null }>();
+  if (job === null || job.worker_id !== worker.id) throw new ServiceError(409, "CONFLICT");
+}
+
 async function generatorQueuePull(env: WorkerEnv, actor: Actor): Promise<Response> {
   requirePermission(actor, "generator.jobs.read");
   const worker = await generatorActorWorker(env, actor);
   if (worker.production_ready !== 1 || worker.desired_state !== "active") throw new ServiceError(409, "CONFLICT");
   const now = Date.now();
+  // A worker that dies mid-pipeline leaves its job claimed or running forever, and the queue
+  // only ever looked at queued and failed. A live worker touches updated_at at every stage, so
+  // going quiet for longer than the longest stage means the job is abandoned, not slow.
+  const stale = now - WORKER_LEASE_MS;
+  const claimable = `(state IN ('queued','failed') OR (state IN ('claimed','running') AND updated_at < ?4))
+      AND cancel_requested=0 AND available_at<=?2 AND attempt_count<max_attempts`;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const job = await env.ADMIN_DB.prepare(
       `
       SELECT id,input_revision_id,attempt_count
       FROM jobs
-      WHERE state IN ('queued','failed') AND cancel_requested=0 AND available_at<=?1 AND attempt_count<max_attempts
+      WHERE (state IN ('queued','failed') OR (state IN ('claimed','running') AND updated_at < ?2))
+        AND cancel_requested=0 AND available_at<=?1 AND attempt_count<max_attempts
       ORDER BY priority DESC,available_at ASC,created_at ASC LIMIT 1
     `,
     )
-      .bind(now)
+      .bind(now, stale)
       .first<{ id: string; input_revision_id: string; attempt_count: number }>();
     if (job === null) return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
-    const claimed = await env.ADMIN_DB.prepare(
-      `
-      UPDATE jobs SET state='claimed',worker_id=?1,updated_at=?2
-      WHERE id=?3 AND state IN ('queued','failed') AND cancel_requested=0 AND available_at<=?2 AND attempt_count<max_attempts
-    `,
-    )
-      .bind(worker.id, now, job.id)
+    const claimed = await env.ADMIN_DB.prepare(`UPDATE jobs SET state='claimed',worker_id=?1,updated_at=?2 WHERE id=?3 AND ${claimable}`)
+      .bind(worker.id, now, job.id, stale)
       .run();
     if ((claimed.meta.changes ?? 0) === 1) {
+      // The abandoned attempt, if there was one, is over; leave job_attempts honest about it.
+      await env.ADMIN_DB.prepare(
+        "UPDATE job_attempts SET state='failed',finished_at=COALESCE(finished_at,?1) WHERE job_id=?2 AND state='running'",
+      )
+        .bind(now, job.id)
+        .run();
       return json({
         id: job.id,
         body: { schema_version: JOB_SCHEMA_VERSION, job_id: job.id, input_revision_id: job.input_revision_id },
@@ -830,9 +852,42 @@ async function generatorJob(env: WorkerEnv, actor: Actor, jobId: string): Promis
   return json(output);
 }
 
+const PIPELINE_STAGES: readonly string[] = [
+  "probe",
+  "download",
+  "transcode",
+  "separate",
+  "coarse_asr",
+  "language_validate",
+  "forced_align",
+  "diarize",
+  "speaker_stems",
+  "index",
+  "quality_gate",
+  "candidate_submit",
+  "cleanup",
+];
+const STAGE_STATES: readonly string[] = ["started", "progress", "completed", "failed"];
+
 async function stageEvent(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "generator.events.write");
-  const item = value as unknown as StageEvent;
+  // The payload reached the database unchecked before, so a stage was whatever the body said.
+  const jobId = requiredString(value.job_id, 64);
+  await requireOwnedJob(env, actor, jobId);
+  if (!PIPELINE_STAGES.includes(requiredString(value.stage, 40))) throw new ServiceError(400, "INVALID_REQUEST");
+  if (!STAGE_STATES.includes(requiredString(value.state, 20))) throw new ServiceError(400, "INVALID_REQUEST");
+  const item: StageEvent = {
+    job_id: jobId,
+    attempt_id: requiredString(value.attempt_id, 64),
+    stage: value.stage as StageEvent["stage"],
+    state: value.state as StageEvent["state"],
+    ...(value.progress === undefined ? {} : { progress: numberValue(value.progress, 0, 1) }),
+    ...(value.code === undefined ? {} : { code: requiredString(value.code, 100) }),
+    ...(typeof value.metrics === "object" && value.metrics !== null && !Array.isArray(value.metrics)
+      ? { metrics: value.metrics as Record<string, number> }
+      : {}),
+    at: Date.now(),
+  };
   const now = Date.now();
   // A language the aligner cannot handle is not a retryable failure.
   const nextState = item.state === "failed" ? (item.code === "UNSUPPORTED_LANGUAGE" ? "unsupported_language" : "failed") : "running";
@@ -868,6 +923,13 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
   const submission = value as unknown as GeneratorCandidateSubmission;
   if (submission.schema_version !== JOB_SCHEMA_VERSION || !Array.isArray(submission.alignments))
     throw new ServiceError(400, "INVALID_REQUEST");
+  await requireOwnedJob(env, actor, requiredString(submission.job_id, 64));
+  // The revision has to be the one this job was handed, or a candidate lands against lyrics
+  // the job never processed — and with auto-promotion on, straight into the public data.
+  const owned = await env.ADMIN_DB.prepare("SELECT 1 FROM jobs WHERE id=?1 AND input_revision_id=?2")
+    .bind(submission.job_id, requiredString(submission.input_revision_id, 64))
+    .first();
+  if (owned === null) throw new ServiceError(409, "CONFLICT");
   const ids: string[] = [];
   const scores: Array<{ id: string; score: number; language: number }> = [];
   for (const candidate of submission.alignments) {
@@ -1196,8 +1258,10 @@ async function jobAction(env: WorkerEnv, actor: Actor, jobId: string, action: st
 
 async function registerArtifact(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "generator.artifacts.write");
+  const jobId = requiredString(value.job_id, 64);
+  await requireOwnedJob(env, actor, jobId);
   const id = crypto.randomUUID();
-  const r2Key = `jobs/${requiredString(value.job_id, 64)}/${id}`;
+  const r2Key = `jobs/${jobId}/${id}`;
   await env.ADMIN_DB.prepare(
     `INSERT INTO artifacts (id,job_id,kind,speaker_id,r2_key,content_type,byte_size,sha256,encryption,wrapped_key,chunk_size,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)`,
   )
