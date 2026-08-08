@@ -128,6 +128,27 @@ def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any
     return result, str(result.get("language", language))
 
 
+def alignable_languages() -> set[str] | None:
+    """Language codes the forced aligner has a model for, or None when unknown."""
+    try:
+        from whisperx import alignment
+        codes: set[str] = set()
+        for name in ("DEFAULT_ALIGN_MODELS_TORCH", "DEFAULT_ALIGN_MODELS_HF"):
+            codes.update(getattr(alignment, name, {}).keys())
+        return codes or None
+    except Exception:
+        return None
+
+
+def validate_language(detected: str, expected: str) -> None:
+    """Reject only what the aligner cannot process; a mere mismatch stays reviewable."""
+    supported = alignable_languages()
+    code = detected.split("-")[0]
+    if supported is not None and code not in supported:
+        raise RuntimeError("UNSUPPORTED_LANGUAGE")
+    notify("language_validate", "completed", 0.65, {"language_match": 1.0 if expected == "und" or code == expected.split("-")[0] else 0.0})
+
+
 def audio_bounds(asr: dict[str, Any], duration_ms: int) -> tuple[float, float]:
     segments = asr.get("segments") or []
     if not segments:
@@ -337,6 +358,8 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     notify("coarse_asr", "started", 0.55)
     asr, detected = coarse_asr(stems["vocals"], job["recording"].get("language", "und"), config["backend"])
     notify("coarse_asr", "completed", 0.64)
+    notify("language_validate", "started", 0.65)
+    validate_language(detected, str(job["recording"].get("language", "und")))
     notify("forced_align", "started", 0.66)
     variants = [align_variant(stems["vocals"], variant, asr, duration_ms, config["backend"]) for variant in job["lyrics"]]
     notify("forced_align", "completed", 0.8)
@@ -354,10 +377,13 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
         run_command(["ffmpeg", "-y", "-i", str(path), "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(encoded)], "STEM_ENCODE_FAILED")
         artifacts.append({"kind": name if name in ("vocals", "drums", "bass", "other") else "other", "path": str(encoded), "content_type": "audio/mp4"})
     artifacts.extend(speaker_artifacts)
+    notify("speaker_stems", "completed", 0.92)
+    notify("index", "started", 0.93)
     artifacts.append({"kind": "waveform", "path": str(waveform(mixture, directory)), "content_type": "application/json"})
     checkpoint = directory / "checkpoint.json"
     checkpoint.write_text(json.dumps({"pipeline": job["pipeline"], "detected": detected, "variants": variants}, separators=(",", ":")), encoding="utf-8")
     artifacts.append({"kind": "checkpoint", "path": str(checkpoint), "content_type": "application/json"})
+    notify("index", "completed", 0.95)
     notify("quality_gate", "completed", 0.96)
     quality = {"token_coverage": sum(item["quality"]["token_coverage"] for item in variants) / max(1, len(variants)), "monotonicity": 1.0, "duration_match": max(0.0, 1 - abs(duration_ms - int(job["recording"]["duration_ms"])) / 10000), "language_match": 1.0 if detected.split("-")[0] == str(job["recording"].get("language", "und")).split("-")[0] or job["recording"].get("language") == "und" else 0.0}
     return {"backend": config["backend"], "hardware": config["hardware"], "detected_languages": [detected], "variants": variants, "speaker_turns": turns, "word_speakers": word_speakers, "line_speakers": line_speakers, "artifacts": artifacts, "quality": quality, "work_dir": str(directory)}

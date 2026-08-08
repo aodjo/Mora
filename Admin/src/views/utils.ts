@@ -47,7 +47,8 @@ export function stateLabel(value: unknown): string {
     active: "활성", ambiguous: "확인 필요", approved: "승인됨", candidate_ready: "후보 생성됨",
     cancelled: "취소됨", claimed: "할당됨", draft: "초안", draining: "종료 준비", failed: "실패",
     paused: "일시정지", pending: "대기", published: "게시됨", queued: "대기 중", rejected: "반려됨",
-    review_required: "검수 필요", running: "실행 중", update: "업데이트 필요", verified: "확인됨", withdrawn: "철회됨",
+    review_required: "검수 필요", running: "실행 중", unsupported_language: "미지원 언어", update: "업데이트 필요",
+    verified: "확인됨", withdrawn: "철회됨",
   };
   const state = text(value, "unknown");
   return labels[state] ?? state;
@@ -58,6 +59,6 @@ export function stateTone(value: unknown): "good" | "warn" | "bad" | "neutral" |
   if (["active", "approved", "candidate_ready", "published", "verified"].includes(state)) return "good";
   if (["running", "claimed"].includes(state)) return "live";
   if (["ambiguous", "draining", "pending", "queued", "review_required", "update"].includes(state)) return "warn";
-  if (["cancelled", "failed", "rejected", "withdrawn"].includes(state)) return "bad";
+  if (["cancelled", "failed", "rejected", "unsupported_language", "withdrawn"].includes(state)) return "bad";
   return "neutral";
 }

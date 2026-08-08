@@ -119,6 +119,15 @@ async function assignRole(env:WorkerEnv,actor:Actor,userId:string,value:Record<s
 async function unassignRole(env:WorkerEnv,actor:Actor,userId:string,roleId:string):Promise<Response>{requirePermission(actor,"roles.manage");await env.ADMIN_DB.prepare("DELETE FROM user_roles WHERE user_id=?1 AND role_id=?2").bind(userId,roleId).run();await audit(env,actor,"user.role.unassign","user",userId,{role_id:roleId});return json({user_id:userId,role_id:roleId});}
 async function addNotification(env:WorkerEnv,actor:Actor,value:Record<string,unknown>):Promise<Response>{requirePermission(actor,"notifications.manage");const kind=requiredString(value.kind,20);if(kind!=="webhook"&&kind!=="discord")throw new ServiceError(400,"INVALID_REQUEST");const targetUrl=requiredString(value.url,4096);const parsed=new URL(targetUrl);if(parsed.protocol!=="https:")throw new ServiceError(400,"INVALID_REQUEST");const id=crypto.randomUUID();const events=Array.isArray(value.events)?value.events.filter(item=>typeof item==="string"):[];await env.ADMIN_DB.prepare("INSERT INTO notification_targets (id,kind,name,url_ciphertext,events,created_at) VALUES (?1,?2,?3,?4,?5,?6)").bind(id,kind,requiredString(value.name,100),await sealSecret(env,targetUrl),JSON.stringify(events),Date.now()).run();await audit(env,actor,"notification.create","notification",id,{kind,events});return json({id,kind,configured:true},201);}
 
+async function revokeServiceKey(env: WorkerEnv, actor: Actor, keyId: string): Promise<Response> {
+  requirePermission(actor, "service_keys.manage");
+  if (actor.type === "service" && actor.id === keyId) throw new ServiceError(409, "CONFLICT");
+  const revoked = await env.ADMIN_DB.prepare("UPDATE service_keys SET revoked_at=?1 WHERE id=?2 AND revoked_at IS NULL").bind(Date.now(), keyId).run();
+  if ((revoked.meta.changes ?? 0) !== 1) throw new ServiceError(404, "NOT_FOUND");
+  await audit(env, actor, "service_key.revoke", "service_key", keyId);
+  return json({ id: keyId, revoked: true });
+}
+
 async function createEnrollment(env: WorkerEnv, actor: Actor): Promise<Response> {
   requirePermission(actor, "workers.manage");
   const token = randomSecret();
@@ -369,9 +378,12 @@ async function stageEvent(env: WorkerEnv, actor: Actor, value: Record<string, un
   requirePermission(actor, "generator.events.write");
   const item = value as unknown as StageEvent;
   const now = Date.now();
+  // A language the aligner cannot handle is not a retryable failure.
+  const nextState = item.state === "failed" ? (item.code === "UNSUPPORTED_LANGUAGE" ? "unsupported_language" : "failed") : "running";
   await env.ADMIN_DB.batch([
     env.ADMIN_DB.prepare("INSERT INTO stage_events (job_id,attempt_id,stage,state,progress,code,metrics,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)").bind(item.job_id, item.attempt_id, item.stage, item.state, item.progress ?? null, item.code ?? null, JSON.stringify(item.metrics ?? {}), now),
-    env.ADMIN_DB.prepare("UPDATE jobs SET state=?1,current_stage=?2,progress=?3,error_code=?4,updated_at=?5 WHERE id=?6").bind(item.state === "failed" ? "failed" : "running", item.stage, item.progress ?? (item.state === "completed" ? 1 : 0), item.code ?? null, now, item.job_id),
+    // Stage events keep arriving after the job settles; they must not walk a finished job back to running.
+    env.ADMIN_DB.prepare("UPDATE jobs SET state=CASE WHEN state IN ('candidate_ready','published','cancelled','unsupported_language') THEN state ELSE ?1 END,current_stage=?2,progress=?3,error_code=?4,updated_at=?5 WHERE id=?6").bind(nextState, item.stage, item.progress ?? (item.state === "completed" ? 1 : 0), item.code ?? null, now, item.job_id),
   ]);
   await event(env, "job.stage", { job_id: item.job_id, stage: item.stage, state: item.state, progress: item.progress ?? null });
   return json({ accepted: true }, 202);
@@ -673,6 +685,7 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   match=url.pathname.match(/^\/admin\/api\/users\/([^/]+)\/roles$/u);if(request.method==="POST"&&match?.[1]!==undefined)return assignRole(env,actor,match[1],await body(request));
   match=url.pathname.match(/^\/admin\/api\/users\/([^/]+)\/roles\/([^/]+)$/u);if(request.method==="DELETE"&&match?.[1]!==undefined&&match[2]!==undefined)return unassignRole(env,actor,match[1],match[2]);
   match=url.pathname.match(/^\/admin\/api\/workers\/([^/]+)\/state$/u);if(request.method==="POST"&&match?.[1]!==undefined)return setWorkerState(env,actor,match[1],await body(request,16*1024));
+  match=url.pathname.match(/^\/admin\/api\/service-keys\/([^/]+)$/u);if(request.method==="DELETE"&&match?.[1]!==undefined)return revokeServiceKey(env,actor,match[1]);
   match=url.pathname.match(/^\/admin\/api\/settings\/([^/]+)$/u);
   if(request.method==="PUT"&&match?.[1]!==undefined)return putRuntimeConfig(env,actor,decodeURIComponent(match[1]),await body(request));
   if(request.method==="DELETE"&&match?.[1]!==undefined)return deleteRuntimeConfig(env,actor,decodeURIComponent(match[1]));

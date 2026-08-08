@@ -45,6 +45,11 @@
       }
     ]
   },
+  "triggers": {
+    "crons": [
+      "40 4 * * *"
+    ]
+  },
   "durable_objects": {
     "bindings": [
       {

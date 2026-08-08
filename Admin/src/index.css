@@ -473,6 +473,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .permission-chips .role-empty { border-style: dashed; color: var(--faint); }
 .user-card select { flex: 0 0 160px; }
 .key-meta { display: flex; flex-direction: column; gap: 2px; margin-left: auto; color: var(--faint); font-size: 11px; line-height: 16px; text-align: right; }
+.key-revoke { display: inline-flex; min-height: 30px; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 0 10px; color: var(--red); font-size: 12px; font-weight: 500; }
+.key-revoke:hover:enabled { border-color: color-mix(in srgb, var(--red) 40%, var(--border)); background: var(--red-soft); }
+.key-revoke:disabled { color: var(--disabled); }
 .issued-secret { display: grid; gap: 10px; margin-top: 16px; border: 1px solid var(--link); border-radius: 12px; background: var(--link-soft); padding: 16px; }
 .issued-secret strong { font-size: 13px; font-weight: 600; line-height: 18px; }
 .issued-secret p { margin: 2px 0 0; color: var(--muted); font-size: 12px; line-height: 16px; }

@@ -234,6 +234,14 @@ function ServiceKeysPanel() {
     finally { setBusy(false); }
   }
 
+  async function revoke(key: ServiceKeyItem): Promise<void> {
+    if (!window.confirm(`"${key.name}" 키를 폐기합니다. 이 키를 쓰는 연동은 즉시 인증에 실패하며 되돌릴 수 없습니다. 계속할까요?`)) return;
+    setBusy(true);
+    try { await api(`/service-keys/${encodeURIComponent(key.id)}`, { method: "DELETE" }); showToast("서비스 키를 폐기했습니다."); await load(); }
+    catch (reason) { showToast(reason instanceof Error ? reason.message : "서비스 키 폐기 실패", { variant: "error" }); }
+    finally { setBusy(false); }
+  }
+
   async function enrollment(): Promise<void> {
     setBusy(true);
     try {
@@ -270,6 +278,7 @@ function ServiceKeysPanel() {
       <div><strong>{text(key.name)}</strong><code>{text(key.prefix)}…</code></div>
       <div className="permission-chips">{parseArray(key.scopes).slice(0, 6).map((scope) => <span key={scope}>{scope}</span>)}</div>
       <div className="key-meta"><span>{key.revoked_at === null ? `마지막 사용 ${relativeTime(key.last_used_at)}` : "폐기됨"}</span><time>{time(key.created_at)}</time></div>
+      {key.revoked_at === null && <button disabled={busy} onClick={() => void revoke(key)} className="key-revoke"><Trash2 size={13}/>폐기</button>}
     </article>)}</div>}
   </section>;
 }

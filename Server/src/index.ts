@@ -8,6 +8,8 @@ import { D1AlignmentStore } from "./d1-store.js";
 import type { WorkerEnv } from "./env.js";
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+// Audit rows are kept indefinitely; stage events are diagnostics and expire after 30 days.
+const DIAGNOSTIC_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const securityHeaders = {
   "Cache-Control": "no-store",
   "Referrer-Policy": "no-referrer",
@@ -104,5 +106,8 @@ export default {
       if (error instanceof ServiceError) return json({ error: error.code }, error.status, new URL(request.url).pathname.startsWith("/v1/"));
       return json({ error: "INTERNAL" }, 500, new URL(request.url).pathname.startsWith("/v1/"));
     }
+  },
+  async scheduled(_controller: ScheduledController, env: WorkerEnv): Promise<void> {
+    await env.ADMIN_DB.prepare("DELETE FROM stage_events WHERE created_at < ?1").bind(Date.now() - DIAGNOSTIC_RETENTION_MS).run();
   },
 } satisfies ExportedHandler<WorkerEnv>;
