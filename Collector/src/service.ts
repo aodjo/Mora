@@ -9,7 +9,18 @@ export interface CollectionReport {
   identified: number;
   submitted: number;
   review: number;
+  skipped: number;
   errors: Array<{ song: string; code: string }>;
+}
+
+/**
+ * A track that announces it has no vocal to align. MR only counts inside brackets — bare "mr"
+ * is Mr. Blue Sky, not a backing track.
+ */
+const INSTRUMENTAL = /\b(?:instrumental|inst\.?|off\s*vocal|karaoke)\b|[([]\s*(?:inst|mr)\s*[)\]]|반주/iu;
+
+export function hasNoLyricsToAlign(seed: RecordingSeed): boolean {
+  return INSTRUMENTAL.test(seed.title);
 }
 
 export class CollectorService {
@@ -23,7 +34,7 @@ export class CollectorService {
   }
 
   async run(): Promise<CollectionReport> {
-    const report: CollectionReport = { discovered: 0, identified: 0, submitted: 0, review: 0, errors: [] };
+    const report: CollectionReport = { discovered: 0, identified: 0, submitted: 0, review: 0, skipped: 0, errors: [] };
     const pools: RecordingSeed[] = [];
     this.config.onProgress?.({ stage: "discovering", markets: this.config.markets });
     for (const market of this.config.markets) {
@@ -52,6 +63,14 @@ export class CollectorService {
     this.config.onProgress?.({ stage: "selected", total: ranked.length });
     for (const [index, seed] of ranked.entries()) {
       this.config.onProgress?.({ stage: "processing", current: index + 1, total: ranked.length, song: `${seed.artist} - ${seed.title}` });
+      const song = `${seed.artist} - ${seed.title}`;
+      // Nothing downstream can use a track with no words: the pipeline aligns lyrics to audio,
+      // so submitting one only parks a recording in review that no one can ever act on.
+      if (hasNoLyricsToAlign(seed)) {
+        report.skipped++;
+        this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "instrumental" });
+        continue;
+      }
       try {
         const identified = await this.#musicbrainz.identify(seed).catch(() => seed);
         if (identified.isrc) report.identified++;
@@ -60,6 +79,13 @@ export class CollectorService {
         if (durationMs === undefined) throw new Error("DURATION_UNAVAILABLE");
         const recording = { ...identified, duration_ms: durationMs };
         const lyrics: LyricsProviderResult[] = await this.config.lyricsProvider.search(lyricsSearchInput(identified));
+        // Every provider came back empty. Without a single line of text there is nothing to
+        // time, and the recording would sit in review blocked on lyrics that do not exist.
+        if (lyrics.length === 0) {
+          report.skipped++;
+          this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "no-lyrics" });
+          continue;
+        }
         const selected = sources[0]?.official === true && sources[0].score >= 0.9;
         const response = await this.#fetch(`${this.config.adminUrl.replace(/\/$/u, "")}/admin/api/collector/recordings`, {
           method: "POST",
