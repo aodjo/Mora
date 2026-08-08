@@ -39,9 +39,16 @@ export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCa
       const title = entry.track ?? entry.title;
       const artist = entry.artist ?? entry.uploader ?? entry.channel ?? "";
       if (/\b(?:live|cover|karaoke|instrumental|sped\s*up|slowed|remix)\b/iu.test(title)) return [];
-      if (/\b(?:official\s*)?(?:music\s*)?video\b/iu.test(entry.title)) return [];
+      // "Official MV" is how music videos are labelled here, and the video test alone missed it.
+      if (/\b(?:official\s*)?(?:music\s*)?video\b|\bm\.?v\.?\b/iu.test(entry.title)) return [];
       const titleScore = normalize(title) === normalize(seed.title) ? 1 : normalize(title).includes(normalize(seed.title)) ? 0.8 : 0;
-      const artistScore = normalize(artist).includes(normalize(seed.artist)) || normalize(seed.artist).includes(normalize(artist)) ? 1 : 0;
+      // Search results come back flat, without the artist field, so the fallback was the channel
+      // name — and a label or reupload channel is never named after the artist. The artist is in
+      // the video title instead, which is where this now looks.
+      const credited = normalize(`${artist} ${entry.title}`);
+      const wanted = normalize(seed.artist);
+      const artistScore =
+        wanted.length > 0 && (credited.includes(wanted) || (artist.length > 0 && wanted.includes(normalize(artist)))) ? 1 : 0;
       const durationMs = Math.round((entry.duration ?? 0) * 1000);
       const durationScore =
         seed.duration_ms === undefined || durationMs === 0 ? 0.5 : Math.max(0, 1 - Math.abs(seed.duration_ms - durationMs) / 10_000);

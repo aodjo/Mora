@@ -5,7 +5,7 @@ interface MbRecording {
   title?: string;
   length?: number;
   isrcs?: string[];
-  "artist-credit"?: Array<{ name?: string }>;
+  "artist-credit"?: Array<{ name?: string; joinphrase?: string }>;
   releases?: Array<{ title?: string; date?: string }>;
   score?: number;
 }
@@ -52,10 +52,7 @@ export class MusicBrainzClient {
     if (!response.ok) throw new Error(`MUSICBRAINZ_${response.status}`);
     const payload = (await response.json()) as { recordings?: MbRecording[] };
     return (payload.recordings ?? []).flatMap((item): RecordingSeed[] => {
-      const artist = item["artist-credit"]
-        ?.map((x) => x.name)
-        .filter(Boolean)
-        .join("");
+      const artist = creditedArtist(item);
       if (!item.title || !artist) return [];
       return [
         {
@@ -80,7 +77,7 @@ export class MusicBrainzClient {
         .toLowerCase()
         .replace(/[^\p{L}\p{N}]+/gu, "");
     const title = normalize(seed.title) === normalize(item.title ?? "") ? 1 : 0;
-    const artist = normalize(seed.artist) === normalize(item["artist-credit"]?.map((x) => x.name ?? "").join("") ?? "") ? 1 : 0;
+    const artist = normalize(seed.artist) === normalize(creditedArtist(item)) ? 1 : 0;
     const duration =
       seed.duration_ms === undefined || item.length === undefined
         ? 0.5
@@ -108,6 +105,18 @@ export class MusicBrainzClient {
       album: seed.album ?? item.releases?.[0]?.title,
     };
   }
+}
+
+/**
+ * MusicBrainz splits a credit into parts and carries the separator in joinphrase. Concatenating
+ * only the names ran them together — "SHIFT UP" + "Youngjee Lee" became "SHIFT UPYoungjee Lee",
+ * which then went out as the search query and matched nothing.
+ */
+function creditedArtist(item: MbRecording): string {
+  return (item["artist-credit"] ?? [])
+    .map((part) => `${part.name ?? ""}${part.joinphrase ?? ""}`)
+    .join("")
+    .trim();
 }
 
 function normalizeIsrc(value: string): string {
