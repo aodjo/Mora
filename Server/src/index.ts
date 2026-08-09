@@ -110,9 +110,13 @@ export default {
     try {
       return await route(request, env);
     } catch (error) {
+      const url = new URL(request.url);
+      if (error instanceof ServiceError) return json({ error: error.code }, error.status, url.pathname.startsWith("/v1/"));
       // Never log request bodies, caught values, or stacks: they can retain lyrics or credentials.
-      if (error instanceof ServiceError) return json({ error: error.code }, error.status, new URL(request.url).pathname.startsWith("/v1/"));
-      return json({ error: "INTERNAL" }, 500, new URL(request.url).pathname.startsWith("/v1/"));
+      // The route and the error's kind carry none of that, and without them a 500 is a dead end —
+      // the client is told INTERNAL and nothing anywhere says which handler failed.
+      console.error(`unhandled ${error instanceof Error ? error.name : typeof error} at ${request.method} ${url.pathname}`);
+      return json({ error: "INTERNAL" }, 500, url.pathname.startsWith("/v1/"));
     }
   },
   async scheduled(_controller: ScheduledController, env: WorkerEnv): Promise<void> {

@@ -24,7 +24,8 @@ export class AdminClient {
         ...init.headers,
       },
     });
-    if (!response.ok) throw new Error(`ADMIN_${response.status}_${(await response.text()).slice(0, 100)}`);
+    // The path is in the message because a failure that names no endpoint cannot be chased.
+    if (!response.ok) throw new Error(`ADMIN_${response.status}_${path}_${(await response.text()).slice(0, 100)}`);
     return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
   }
   job(id: string): Promise<GeneratorJobInput> {

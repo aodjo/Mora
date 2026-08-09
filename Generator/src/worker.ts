@@ -16,7 +16,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export type GeneratorWorkerStatus =
-  { state: "connected"; desiredState: string } | { state: "idle" } | { state: "processing"; jobId: string };
+  | { state: "connected"; desiredState: string }
+  | { state: "idle" }
+  | { state: "processing"; jobId: string }
+  /** Something went wrong that the run survived — worth saying, not worth stopping for. */
+  | { state: "warning"; message: string };
 export interface GeneratorWorkerOptions {
   workerId: string;
   version: string;
@@ -73,15 +77,25 @@ export class GeneratorWorker {
       input = await this.options.admin.job(leased.body.job_id);
       const current = input;
       this.options.daemon.onStage = (value) => {
-        void this.options.admin.event({
-          job_id: current.job_id,
-          attempt_id: current.attempt_id,
-          stage: value.stage as PipelineStage,
-          state: value.state as "started" | "progress" | "completed" | "failed",
-          progress: value.progress,
-          metrics: value.metrics,
-          at: Date.now(),
-        });
+        // Progress is telling the console what is happening; it is not the work. A rejected
+        // report used to leave an unhandled rejection, which takes the whole process down and
+        // loses the job that was mid-flight — a job that is running fine.
+        void this.options.admin
+          .event({
+            job_id: current.job_id,
+            attempt_id: current.attempt_id,
+            stage: value.stage as PipelineStage,
+            state: value.state as "started" | "progress" | "completed" | "failed",
+            progress: value.progress,
+            metrics: value.metrics,
+            at: Date.now(),
+          })
+          .catch((error: unknown) => {
+            this.options.onStatus?.({
+              state: "warning",
+              message: `단계 보고 실패 (${error instanceof Error ? error.message : "UNKNOWN"})`,
+            });
+          });
       };
       const prepared = {
         ...input,

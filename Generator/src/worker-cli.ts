@@ -87,6 +87,8 @@ try {
         process.stdout.write(`Admin 연결 완료: ${adminUrl}${suffix}\n`);
       } else if (status.state === "idle") {
         process.stdout.write("Generator 실행 중: 처리할 작업을 기다립니다. 종료하려면 Ctrl+C를 누르세요.\n");
+      } else if (status.state === "warning") {
+        process.stdout.write(`${status.message}\n`);
       } else {
         process.stdout.write(`작업 처리 시작: ${status.jobId}\n`);
       }
