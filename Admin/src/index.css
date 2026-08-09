@@ -3130,17 +3130,23 @@ textarea:focus-visible {
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+/* 커진 플레이어 옆은 비워두지 않는다 — 정보와 버튼이 오른쪽 열에 쌓인다. */
 .source-row.playing {
-  grid-template-columns: minmax(0, 1fr);
-  row-gap: 10px;
+  grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
   align-items: start;
+  row-gap: 10px;
+}
+.source-row.playing > .yt-frame {
+  grid-area: 1 / 1 / span 2 / auto;
 }
 .source-row.playing .source-row-main {
-  order: 2;
+  grid-area: 1 / 2 / auto / auto;
 }
 .source-row.playing > button:not(.yt-thumb),
 .source-row.playing > .state-badge {
-  order: 3;
+  grid-area: 2 / 2 / auto / auto;
+  align-self: start;
   justify-self: start;
 }
 .yt-search {
@@ -3158,6 +3164,19 @@ textarea:focus-visible {
 }
 .yt-search button {
   white-space: nowrap;
+}
+/* 좁아지면 플레이어 옆에 둘 자리가 없다 — 그때는 아래로 쌓는다. */
+@media (max-width: 900px) {
+  .source-row.playing {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+  }
+  .source-row.playing > .yt-frame,
+  .source-row.playing .source-row-main,
+  .source-row.playing > button:not(.yt-thumb),
+  .source-row.playing > .state-badge {
+    grid-area: auto;
+  }
 }
 @media (max-width: 640px) {
   .source-row {
