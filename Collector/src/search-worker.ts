@@ -1,4 +1,6 @@
 import { searchYoutube, type YoutubeSearchResult } from "./youtube.js";
+import { ALL_PROVIDERS, searchSong, type MergedHit, type SearchProvider } from "./song-search.js";
+import type { SpotifyClient } from "./spotify.js";
 
 const IDLE_POLL_MS = 1_500;
 const BACKOFF_MS = 15_000;
@@ -8,13 +10,23 @@ export interface SearchWorkerOptions {
   adminToken: string;
   fetch?: typeof globalThis.fetch;
   search?: (query: string, limit?: number) => Promise<YoutubeSearchResult[]>;
+  /** Song search across the streaming services; replaceable so tests need not go online. */
+  searchSongs?: (query: string, providers: SearchProvider[]) => Promise<MergedHit[]>;
+  spotify?: SpotifyClient | undefined;
   onLog?: (message: string) => void;
   signal?: AbortSignal;
   pollMs?: number;
 }
 
+interface ClaimedSearch {
+  id: string;
+  query: string;
+  kind?: string;
+  providers?: string[] | null;
+}
+
 interface ClaimResponse {
-  request?: { id: string; query: string } | null;
+  request?: ClaimedSearch | null;
 }
 
 /**
@@ -59,10 +71,10 @@ export function startSearchWorker(options: SearchWorkerOptions): () => void {
     }
   })();
 
-  async function answer(request: { id: string; query: string }): Promise<void> {
+  async function answer(request: ClaimedSearch): Promise<void> {
     let payload: Record<string, unknown>;
     try {
-      payload = { items: await search(request.query, 20) };
+      payload = { items: request.kind === "song" ? await songs(request) : await search(request.query, 20) };
     } catch (error) {
       payload = { error: error instanceof Error ? error.message : "SEARCH_FAILED" };
     }
@@ -71,6 +83,16 @@ export function startSearchWorker(options: SearchWorkerOptions): () => void {
       headers,
       body: JSON.stringify(payload),
     }).catch(() => undefined);
+  }
+
+  async function songs(request: ClaimedSearch): Promise<MergedHit[]> {
+    const asked = (request.providers ?? []).filter((name): name is SearchProvider => (ALL_PROVIDERS as string[]).includes(name));
+    const run = options.searchSongs;
+    if (run !== undefined) return run(request.query, asked.length > 0 ? asked : ALL_PROVIDERS);
+    return searchSong(request.query, {
+      providers: asked.length > 0 ? asked : ALL_PROVIDERS,
+      spotify: options.spotify,
+    });
   }
 
   return stop;

@@ -3264,3 +3264,153 @@ textarea:focus-visible {
 .job-actions {
   cursor: default;
 }
+
+/* 곡 추가 — 검색과 장바구니 */
+.add-songs {
+  display: grid;
+  gap: 16px;
+}
+.provider-picks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.provider-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.provider-pick.on {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.provider-pick i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.provider-hint {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.hit-list {
+  display: grid;
+  gap: 8px;
+}
+.hit-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.basket .hit-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+.hit-row.done {
+  opacity: 0.6;
+}
+.hit-row.failed {
+  border-color: var(--bad-border, var(--border-strong));
+}
+.hit-art {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--surface-muted);
+}
+.hit-art.placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+.hit-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.hit-main strong {
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hit-main span {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hit-error {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.provider-badges {
+  display: inline-flex;
+  gap: 4px;
+  margin-top: 2px;
+}
+.provider-badges i {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+}
+.basket-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (max-width: 640px) {
+  .hit-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .hit-row > button:last-child {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+/* 처리 버튼 옆 설명 — 경고가 아니라 안내다. */
+.basket-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.basket .icon-button {
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  padding: 4px;
+}
+.basket .icon-button:hover {
+  color: var(--text);
+}

@@ -7,6 +7,7 @@ import {
   KeyRound,
   ListChecks,
   LogOut,
+  Plus,
   Radio,
   RefreshCw,
   Settings,
@@ -23,14 +24,16 @@ import { JobsView } from "./views/JobsView";
 import { RecordingDetail } from "./views/RecordingDetail";
 import { RecordingsView } from "./views/RecordingsView";
 import { ReleasesView } from "./views/ReleasesView";
+import { AddSongsView } from "./views/AddSongsView";
 import { WorkersView } from "./views/WorkersView";
 
-type Page = "overview" | "jobs" | "workers" | "recordings" | "releases" | "connections" | "audit" | "settings";
+type Page = "overview" | "jobs" | "workers" | "recordings" | "add" | "releases" | "connections" | "audit" | "settings";
 const pages: Array<[Page, string, typeof Activity]> = [
   ["overview", "상황판", Activity],
   ["jobs", "작업 큐", ListChecks],
   ["workers", "워커", Radio],
   ["recordings", "곡과 리비전", Database],
+  ["add", "곡 추가", Plus],
   ["releases", "릴리스", Globe],
   ["connections", "기기 연결", KeyRound],
   ["audit", "감사 로그", FileClock],
@@ -41,6 +44,7 @@ const descriptions: Record<Page, string> = {
   jobs: "수집 및 생성 작업의 진행 상태를 관리합니다.",
   workers: "연결된 Generator 워커의 상태를 확인합니다.",
   recordings: "곡을 열어 음원을 확정하고 타이밍을 검수합니다.",
+  add: "스트리밍 서비스에서 곡을 찾아 담고 한 번에 수집합니다.",
   releases: "공개된 타이밍을 확인하고 필요하면 철회합니다.",
   connections: "Collector와 Generator의 10자리 PIN 연결을 승인합니다.",
   audit: "관리 작업과 보안 이벤트를 추적합니다.",
@@ -49,7 +53,8 @@ const descriptions: Record<Page, string> = {
 
 function pathFor(page: Page): string {
   // Settings and connections render their own panels; they only need the overview payload.
-  if (page === "settings" || page === "connections") return "/overview";
+  // 곡 추가 화면은 자기 데이터를 직접 불러온다.
+  if (page === "settings" || page === "connections" || page === "add") return "/overview";
   return `/${page}`;
 }
 
@@ -315,6 +320,8 @@ export default function App() {
                 refresh={refresh}
               />
             )
+          ) : page === "add" ? (
+            <AddSongsView />
           ) : page === "releases" ? (
             <ReleasesView items={items} refresh={refresh} />
           ) : page === "audit" ? (
@@ -424,6 +431,8 @@ const skeletons: Record<Page, SkeletonSpec | null> = {
   jobs: { view: "jobs-view", filters: 38, wrapper: "job-list", count: 4, height: 74 },
   workers: { wrapper: "worker-grid", count: 2, height: 316 },
   recordings: { view: "recordings-view", filters: 36, head: 41, wrapper: "table-wrap", count: 6, height: 62 },
+  // 이 화면은 자기 데이터를 직접 불러오므로 뼈대를 그릴 것이 없다.
+  add: null,
   releases: { view: "releases-view", wrapper: "release-list", count: 4, height: 88 },
   audit: { panel: 71, wrapper: "audit-list", count: 5, height: 75 },
   connections: null,

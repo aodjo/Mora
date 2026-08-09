@@ -11,7 +11,7 @@ interface SpotifyTrack {
   name?: string;
   duration_ms?: number;
   artists?: Array<{ name?: string }>;
-  album?: { name?: string };
+  album?: { name?: string; images?: Array<{ url?: string }> };
   external_ids?: { isrc?: string };
 }
 interface SearchResponse {
@@ -88,6 +88,39 @@ export class SpotifyClient {
     }
     if (!response.ok) throw new Error(`SPOTIFY_SEARCH_${response.status}`);
     return ((await response.json()) as SearchResponse).tracks?.items ?? [];
+  }
+
+  /** Free-text search for the console: candidates for these words, not a verdict. */
+  async searchTracks(
+    query: string,
+    limit = 20,
+  ): Promise<Array<{ title: string; artist: string; album?: string; durationMs?: number; isrc?: string; artwork?: string }>> {
+    if (this.blockedForMs > 0) return [];
+    const url = `${SEARCH_URL}?q=${encodeURIComponent(query)}&type=track&limit=${Math.min(50, limit)}`;
+    const response = await this.fetcher(url, { headers: { authorization: `Bearer ${await this.#accessToken()}` } });
+    if (response.status === 429) {
+      this.#noteRateLimit(response);
+      return [];
+    }
+    if (!response.ok) throw new Error(`SPOTIFY_SEARCH_${response.status}`);
+    const items = ((await response.json()) as SearchResponse).tracks?.items ?? [];
+    const found: Array<{ title: string; artist: string; album?: string; durationMs?: number; isrc?: string; artwork?: string }> = [];
+    for (const track of items) {
+      const artist = (track.artists ?? [])
+        .map((entry) => entry.name ?? "")
+        .filter(Boolean)
+        .join(", ");
+      if (track.name === undefined || artist.length === 0) continue;
+      found.push({
+        title: track.name,
+        artist,
+        ...(track.album?.name === undefined ? {} : { album: track.album.name }),
+        ...(track.duration_ms === undefined ? {} : { durationMs: track.duration_ms }),
+        ...(track.external_ids?.isrc === undefined ? {} : { isrc: track.external_ids.isrc.toUpperCase() }),
+        ...(track.album?.images?.[0]?.url === undefined ? {} : { artwork: track.album.images[0].url }),
+      });
+    }
+    return found;
   }
 
   /** The best match for the seed, or undefined when Spotify has nothing convincing. */

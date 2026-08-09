@@ -304,14 +304,135 @@ const SEARCH_REQUEST_TTL_MS = 5 * 60_000;
  * Ask for a search. The Worker cannot run yt-dlp and the Collectors can, so the query is left
  * here for whichever of them picks it up first — which is also the one with time to spare.
  */
+/**
+ * The basket: songs the console found and kept, waiting for someone to press the button.
+ *
+ * Searching and collecting are separate acts on purpose. A person sweeps several searches,
+ * keeps what they meant, then hands the lot over at once — so a mistaken hit is removed
+ * before it costs a download rather than after.
+ */
+async function addToBasket(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const artist = requiredString(value.artist, 500).trim();
+  const title = requiredString(value.title, 500).trim();
+  if (artist.length === 0 || title.length === 0) throw new ServiceError(400, "INVALID_REQUEST");
+  const providers = Array.isArray(value.providers)
+    ? value.providers.filter((entry): entry is string => typeof entry === "string").slice(0, 8)
+    : [];
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const optional = (key: string, limit: number): string | null =>
+    typeof value[key] === "string" && (value[key] as string).length > 0 ? (value[key] as string).slice(0, limit) : null;
+  const duration = typeof value.duration_ms === "number" && Number.isFinite(value.duration_ms) ? Math.round(value.duration_ms) : null;
+  // Keeping the same song twice is the same intent, so the second keep just refreshes it.
+  await env.ADMIN_DB.prepare(
+    `INSERT INTO song_basket (id,artist,title,album,duration_ms,isrc,artwork,providers,state,added_by,added_at)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'held',?9,?10)
+     ON CONFLICT(artist,title) DO UPDATE SET
+       album=COALESCE(excluded.album,album), duration_ms=COALESCE(excluded.duration_ms,duration_ms),
+       isrc=COALESCE(excluded.isrc,isrc), artwork=COALESCE(excluded.artwork,artwork),
+       providers=excluded.providers, state='held', error=NULL`,
+  )
+    .bind(
+      id,
+      artist,
+      title,
+      optional("album", 500),
+      duration,
+      optional("isrc", 20),
+      optional("artwork", 500),
+      JSON.stringify(providers),
+      actor.id,
+      now,
+    )
+    .run();
+  return json({ accepted: true }, 202);
+}
+
+async function readBasket(env: WorkerEnv, actor: Actor): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const { results } = await env.ADMIN_DB.prepare("SELECT * FROM song_basket ORDER BY added_at DESC LIMIT 300").all<
+    Record<string, unknown>
+  >();
+  return json({
+    items: results.map((row) => ({ ...row, providers: JSON.parse(String(row.providers ?? "[]")) as string[] })),
+  });
+}
+
+async function removeFromBasket(env: WorkerEnv, actor: Actor, id: string): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  await env.ADMIN_DB.prepare("DELETE FROM song_basket WHERE id=?1").bind(id).run();
+  return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+}
+
+/** Hand the basket to the collectors. Only held rows move; anything running stays put. */
+async function processBasket(env: WorkerEnv, actor: Actor): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const held = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM song_basket WHERE state='held'").first<{ n: number }>();
+  await env.ADMIN_DB.prepare("UPDATE song_basket SET error=NULL WHERE state IN ('held','failed')").run();
+  await env.ADMIN_DB.prepare("UPDATE song_basket SET state='held' WHERE state='failed'").run();
+  await event(env, "basket.released", { count: held?.n ?? 0 });
+  return json({ released: held?.n ?? 0 }, 202);
+}
+
+/** A collector taking the next basket song, the same atomic claim the search queue uses. */
+async function claimBasketSong(env: WorkerEnv, actor: Actor): Promise<Response> {
+  requirePermission(actor, "collector.submit");
+  const now = Date.now();
+  await env.ADMIN_DB.prepare("UPDATE song_basket SET state='held',claimed_by=NULL WHERE state='claimed' AND claimed_at < ?1")
+    .bind(now - 15 * 60_000)
+    .run();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const next = await env.ADMIN_DB.prepare(
+      "SELECT id,artist,title,album,duration_ms,isrc FROM song_basket WHERE state='held' ORDER BY added_at LIMIT 1",
+    ).first<{ id: string; artist: string; title: string; album: string | null; duration_ms: number | null; isrc: string | null }>();
+    if (next === null) return json({ song: null });
+    const claimed = await env.ADMIN_DB.prepare(
+      "UPDATE song_basket SET state='claimed',claimed_by=?1,claimed_at=?2 WHERE id=?3 AND state='held'",
+    )
+      .bind(actor.id, now, next.id)
+      .run();
+    if (claimed.meta.changes > 0)
+      return json({
+        song: {
+          id: next.id,
+          artist: next.artist,
+          title: next.title,
+          ...(next.album === null ? {} : { album: next.album }),
+          ...(next.duration_ms === null ? {} : { duration_ms: next.duration_ms }),
+          ...(next.isrc === null ? {} : { isrc: next.isrc }),
+        },
+      });
+  }
+  return json({ song: null });
+}
+
+async function completeBasketSong(env: WorkerEnv, actor: Actor, id: string, value: Record<string, unknown>): Promise<Response> {
+  requirePermission(actor, "collector.submit");
+  const failure = typeof value.error === "string" && value.error.length > 0 ? value.error.slice(0, 200) : null;
+  await env.ADMIN_DB.prepare("UPDATE song_basket SET state=?1,error=?2 WHERE id=?3 AND claimed_by=?4")
+    .bind(failure === null ? "done" : "failed", failure, id, actor.id)
+    .run();
+  return json({ accepted: true });
+}
+
+const SEARCH_KINDS = new Set(["youtube", "song"]);
+
 async function createSearchRequest(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "jobs.manage");
   const query = requiredString(value.query, 200).trim();
   if (query.length === 0) throw new ServiceError(400, "INVALID_REQUEST");
+  // Two searches share the queue: for a source to time against, and for a song to add.
+  const kind = typeof value.kind === "string" && SEARCH_KINDS.has(value.kind) ? value.kind : "youtube";
+  const providers = Array.isArray(value.providers)
+    ? value.providers.filter((entry): entry is string => typeof entry === "string").slice(0, 8)
+    : null;
   const id = crypto.randomUUID();
   const now = Date.now();
-  await env.ADMIN_DB.prepare("INSERT INTO search_requests (id,query,state,created_by,created_at) VALUES (?1,?2,'pending',?3,?4)")
-    .bind(id, query, actor.id, now)
+  await env.ADMIN_DB.prepare(
+    "INSERT INTO search_requests (id,query,kind,providers,state,created_by,created_at) VALUES (?1,?2,?3,?4,'pending',?5,?6)",
+  )
+    .bind(id, query, kind, providers === null || providers.length === 0 ? null : JSON.stringify(providers), actor.id, now)
     .run();
   await env.ADMIN_DB.prepare("DELETE FROM search_requests WHERE created_at < ?1")
     .bind(now - SEARCH_REQUEST_TTL_MS)
@@ -348,17 +469,25 @@ async function claimSearchRequest(env: WorkerEnv, actor: Actor): Promise<Respons
     .run();
   for (let attempt = 0; attempt < 3; attempt++) {
     const next = await env.ADMIN_DB.prepare(
-      "SELECT id,query FROM search_requests WHERE state='pending' AND created_at > ?1 ORDER BY created_at LIMIT 1",
+      "SELECT id,query,kind,providers FROM search_requests WHERE state='pending' AND created_at > ?1 ORDER BY created_at LIMIT 1",
     )
       .bind(now - SEARCH_REQUEST_TTL_MS)
-      .first<{ id: string; query: string }>();
+      .first<{ id: string; query: string; kind: string; providers: string | null }>();
     if (next === null) return json({ request: null });
     const claimed = await env.ADMIN_DB.prepare(
       "UPDATE search_requests SET state='claimed',claimed_by=?1,claimed_at=?2 WHERE id=?3 AND state='pending'",
     )
       .bind(actor.id, now, next.id)
       .run();
-    if (claimed.meta.changes > 0) return json({ request: { id: next.id, query: next.query } });
+    if (claimed.meta.changes > 0)
+      return json({
+        request: {
+          id: next.id,
+          query: next.query,
+          kind: next.kind,
+          providers: next.providers === null ? null : (JSON.parse(next.providers) as string[]),
+        },
+      });
   }
   return json({ request: null });
 }
@@ -1663,6 +1792,19 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "POST" && url.pathname === "/admin/api/roles") return upsertRole(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/notifications") return addNotification(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/workers/enrollment") return createEnrollment(env, actor);
+  if (request.method === "GET" && url.pathname === "/admin/api/basket") return readBasket(env, actor);
+  if (request.method === "POST" && url.pathname === "/admin/api/basket") return addToBasket(env, actor, await body(request));
+  if (request.method === "POST" && url.pathname === "/admin/api/basket/process") return processBasket(env, actor);
+  if (request.method === "DELETE" && url.pathname.startsWith("/admin/api/basket/"))
+    return removeFromBasket(env, actor, decodeURIComponent(url.pathname.slice("/admin/api/basket/".length)));
+  if (request.method === "POST" && url.pathname === "/admin/api/collector/basket/claim") return claimBasketSong(env, actor);
+  if (request.method === "POST" && url.pathname.startsWith("/admin/api/collector/basket/"))
+    return completeBasketSong(
+      env,
+      actor,
+      decodeURIComponent(url.pathname.slice("/admin/api/collector/basket/".length)),
+      await body(request),
+    );
   if (request.method === "POST" && url.pathname === "/admin/api/searches") return createSearchRequest(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/collector/searches/claim") return claimSearchRequest(env, actor);
   if (request.method === "POST" && url.pathname.startsWith("/admin/api/collector/searches/"))

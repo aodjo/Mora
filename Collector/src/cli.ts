@@ -8,6 +8,7 @@ import { startCollectorPairing, waitForCollectorPairing } from "./pairing.js";
 import { CollectorService } from "./service.js";
 import { createSongTitleProvider } from "./songtitle-provider.js";
 import { startSearchWorker } from "./search-worker.js";
+import { collectOne, startBasketWorker } from "./basket-worker.js";
 import { LyricFindCatalogue } from "./lyricfind.js";
 import { SpotifyClient } from "./spotify.js";
 
@@ -72,15 +73,15 @@ async function loadProvider(config: CollectorRuntimeConfig): Promise<LyricsProvi
   });
 }
 
-async function run(config: CollectorRuntimeConfig): Promise<void> {
+function build(config: CollectorRuntimeConfig, lyrics: LyricsProvider): CollectorService {
   let lastPrinted = 0;
-  const service = new CollectorService({
+  return new CollectorService({
     adminUrl,
     adminToken: collectorToken,
     userAgent: config.userAgent,
     dailyBudget: config.dailyBudget,
     markets: config.markets,
-    lyricsProvider: await loadProvider(config),
+    lyricsProvider: lyrics,
     ...(config.spotifyClientId !== undefined && config.spotifyClientSecret !== undefined
       ? {
           spotify: new SpotifyClient(config.spotifyClientId, config.spotifyClientSecret, fetch, (message) =>
@@ -122,7 +123,10 @@ async function run(config: CollectorRuntimeConfig): Promise<void> {
       }
     },
   });
-  const report = await service.run();
+}
+
+async function run(config: CollectorRuntimeConfig): Promise<void> {
+  const report = await build(config, await loadProvider(config)).run();
   process.stdout.write(`${JSON.stringify(report)}\n`);
 }
 
@@ -133,12 +137,24 @@ process.stdout.write(
     ` · Spotify 식별 ${config.spotifyClientId !== undefined && config.spotifyClientSecret !== undefined ? "사용" : "미설정"}\n`,
 );
 // 수집과 나란히, 콘솔이 올린 음원 검색을 집어간다. 여러 대가 떠 있으면 먼저 집는 쪽이 처리한다.
+const spotifyForSearch =
+  config.spotifyClientId !== undefined && config.spotifyClientSecret !== undefined
+    ? new SpotifyClient(config.spotifyClientId, config.spotifyClientSecret, fetch, (message) => process.stdout.write(`${message}\n`))
+    : undefined;
 startSearchWorker({
   adminUrl,
   adminToken: collectorToken,
+  spotify: spotifyForSearch,
   onLog: (message) => process.stdout.write(`${message}\n`),
 });
-process.stdout.write("Admin 음원 검색 대기 중\n");
+// 콘솔이 장바구니를 넘기면 차트 대기열보다 먼저 가져간다.
+startBasketWorker({
+  adminUrl,
+  adminToken: collectorToken,
+  collect: collectOne(build(config, await loadProvider(config))),
+  onLog: (message) => process.stdout.write(`${message}\n`),
+});
+process.stdout.write("Admin 음원 검색·장바구니 대기 중\n");
 
 let lastRunAt = Date.now();
 await run(config);
