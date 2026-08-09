@@ -16,7 +16,6 @@ import { bootstrapOptions, bootstrapVerify, credentialOptions, credentialVerify,
 import { serveArtifact } from "./artifacts.js";
 import { approveCollectorPairing, pollCollectorPairing, startCollectorPairing } from "./collector-pairing.js";
 import { approveGeneratorPairing, pollGeneratorPairing, startGeneratorPairing } from "./generator-pairing.js";
-import { searchYoutube } from "./youtube.js";
 import {
   collectorRuntimeConfig,
   deleteRuntimeConfig,
@@ -298,13 +297,81 @@ async function recordingDetail(env: WorkerEnv, actor: Actor, recordingId: string
   return json({ recording, sources, revisions, candidates });
 }
 
-/** Proxied so the key stays on the server; without one the screen falls back to a plain link. */
-async function youtubeSearch(env: WorkerEnv, actor: Actor, query: string): Promise<Response> {
+/** Stale once nobody is waiting on the answer; a claim that never came back is not worth keeping. */
+const SEARCH_REQUEST_TTL_MS = 5 * 60_000;
+
+/**
+ * Ask for a search. The Worker cannot run yt-dlp and the Collectors can, so the query is left
+ * here for whichever of them picks it up first — which is also the one with time to spare.
+ */
+async function createSearchRequest(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "jobs.manage");
-  const apiKey = await runtimeValue(env, "server.youtube_api_key");
-  if (apiKey === undefined || apiKey.length === 0) throw new ServiceError(409, "YOUTUBE_KEY_MISSING");
-  if (query.trim().length === 0) throw new ServiceError(400, "INVALID_REQUEST");
-  return json({ items: await searchYoutube(apiKey, query.trim()) });
+  const query = requiredString(value.query, 200).trim();
+  if (query.length === 0) throw new ServiceError(400, "INVALID_REQUEST");
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  await env.ADMIN_DB.prepare("INSERT INTO search_requests (id,query,state,created_by,created_at) VALUES (?1,?2,'pending',?3,?4)")
+    .bind(id, query, actor.id, now)
+    .run();
+  await env.ADMIN_DB.prepare("DELETE FROM search_requests WHERE created_at < ?1")
+    .bind(now - SEARCH_REQUEST_TTL_MS)
+    .run();
+  await event(env, "collector.search_requested", { search_id: id });
+  return json({ id, state: "pending" }, 202);
+}
+
+async function readSearchRequest(env: WorkerEnv, actor: Actor, id: string): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const row = await env.ADMIN_DB.prepare("SELECT id,state,result,error,claimed_by FROM search_requests WHERE id=?1")
+    .bind(id)
+    .first<{ id: string; state: string; result: string | null; error: string | null; claimed_by: string | null }>();
+  if (row === null) throw new ServiceError(404, "NOT_FOUND");
+  return json({
+    id: row.id,
+    state: row.state,
+    ...(row.claimed_by === null ? {} : { collector: row.claimed_by }),
+    ...(row.error === null ? {} : { error: row.error }),
+    items: row.result === null ? [] : (JSON.parse(row.result) as unknown[]),
+  });
+}
+
+/**
+ * A Collector taking the next query. Several are polling, so the claim has to be the write
+ * itself: whoever's UPDATE lands first owns it, and the others are told there is nothing.
+ */
+async function claimSearchRequest(env: WorkerEnv, actor: Actor): Promise<Response> {
+  requirePermission(actor, "collector.submit");
+  const now = Date.now();
+  // A claim that produced nothing within the timeout goes back to the queue.
+  await env.ADMIN_DB.prepare("UPDATE search_requests SET state='pending',claimed_by=NULL WHERE state='claimed' AND claimed_at < ?1")
+    .bind(now - 60_000)
+    .run();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const next = await env.ADMIN_DB.prepare(
+      "SELECT id,query FROM search_requests WHERE state='pending' AND created_at > ?1 ORDER BY created_at LIMIT 1",
+    )
+      .bind(now - SEARCH_REQUEST_TTL_MS)
+      .first<{ id: string; query: string }>();
+    if (next === null) return json({ request: null });
+    const claimed = await env.ADMIN_DB.prepare(
+      "UPDATE search_requests SET state='claimed',claimed_by=?1,claimed_at=?2 WHERE id=?3 AND state='pending'",
+    )
+      .bind(actor.id, now, next.id)
+      .run();
+    if (claimed.meta.changes > 0) return json({ request: { id: next.id, query: next.query } });
+  }
+  return json({ request: null });
+}
+
+async function completeSearchRequest(env: WorkerEnv, actor: Actor, id: string, value: Record<string, unknown>): Promise<Response> {
+  requirePermission(actor, "collector.submit");
+  const failure = typeof value.error === "string" && value.error.length > 0 ? value.error.slice(0, 200) : null;
+  const items = Array.isArray(value.items) ? value.items.slice(0, 40) : [];
+  await env.ADMIN_DB.prepare("UPDATE search_requests SET state=?1,result=?2,error=?3 WHERE id=?4 AND claimed_by=?5")
+    .bind(failure === null ? "done" : "failed", failure === null ? JSON.stringify(items) : null, failure, id, actor.id)
+    .run();
+  await event(env, "collector.search_answered", { search_id: id });
+  return json({ accepted: true }, 202);
 }
 
 /**
@@ -1546,8 +1613,8 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "GET" && url.pathname === "/admin/api/settings") return listRuntimeConfig(env, actor);
   if (request.method === "GET" && url.pathname === "/admin/api/collector/config") return collectorRuntimeConfig(env, actor);
   if (request.method === "GET" && url.pathname === "/admin/api/collector/collected") return collectorCollected(env, actor);
-  if (request.method === "GET" && url.pathname === "/admin/api/youtube/search")
-    return youtubeSearch(env, actor, url.searchParams.get("q") ?? "");
+  if (request.method === "GET" && url.pathname.startsWith("/admin/api/searches/"))
+    return readSearchRequest(env, actor, decodeURIComponent(url.pathname.slice("/admin/api/searches/".length)));
   if (request.method === "GET" && url.pathname.startsWith("/admin/api/recordings/"))
     return recordingDetail(env, actor, decodeURIComponent(url.pathname.slice("/admin/api/recordings/".length)));
   if (request.method === "POST" && url.pathname === "/admin/api/collector/pairings/approve")
@@ -1558,6 +1625,15 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "POST" && url.pathname === "/admin/api/roles") return upsertRole(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/notifications") return addNotification(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/workers/enrollment") return createEnrollment(env, actor);
+  if (request.method === "POST" && url.pathname === "/admin/api/searches") return createSearchRequest(env, actor, await body(request));
+  if (request.method === "POST" && url.pathname === "/admin/api/collector/searches/claim") return claimSearchRequest(env, actor);
+  if (request.method === "POST" && url.pathname.startsWith("/admin/api/collector/searches/"))
+    return completeSearchRequest(
+      env,
+      actor,
+      decodeURIComponent(url.pathname.slice("/admin/api/collector/searches/".length)),
+      await body(request),
+    );
   if (request.method === "POST" && url.pathname === "/admin/api/collector/recordings")
     return collectorSubmit(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/generator/events") return stageEvent(env, actor, await body(request));

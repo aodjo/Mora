@@ -1,5 +1,5 @@
 import { ArrowLeft, AudioLines, Check, ChevronRight, ExternalLink, Play, Save, Search, TriangleAlert } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useToast } from "../Toast";
 import { number, parseObject, stateLabel, stateTone, text, time, type AdminItem } from "./utils";
@@ -28,20 +28,32 @@ interface SearchHit {
   is_live?: boolean;
 }
 
-/**
- * The Collector's local search. It has yt-dlp and the Worker does not, so asking it costs
- * nothing — the Data API charges a hundred-a-day quota for the same answer. Loopback only,
- * so this works when the console and the Collector share a machine, which is where it runs.
- */
-const collectorSearch = `http://127.0.0.1:${window.localStorage.getItem("mora-collector-port") ?? "8710"}/search`;
+interface SearchState {
+  id: string;
+  state: "pending" | "claimed" | "done" | "failed";
+  items?: SearchHit[];
+  error?: string;
+  collector?: string;
+}
 
-async function searchViaCollector(query: string): Promise<SearchHit[]> {
-  const response = await fetch(`${collectorSearch}?q=${encodeURIComponent(query)}`, {
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!response.ok) throw new Error("COLLECTOR_SEARCH_FAILED");
-  const found = (await response.json()) as { items?: SearchHit[] };
-  return (found.items ?? []).filter((item) => item.is_live !== true);
+/**
+ * Hand the query to the Collectors and wait for one to answer.
+ *
+ * The Worker cannot run yt-dlp; every Collector can, and several are usually up. So the query
+ * goes on a queue and whichever Collector claims it first does the work — which is the one
+ * that had time to ask. Where it runs is not this screen's business.
+ */
+async function searchViaCollector(query: string, signal: AbortSignal): Promise<SearchHit[]> {
+  const created = await api<{ id: string }>("/searches", { method: "POST", body: JSON.stringify({ query }), signal });
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline) {
+    if (signal.aborted) throw new Error("ABORTED");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const status = await api<SearchState>(`/searches/${encodeURIComponent(created.id)}`, { signal });
+    if (status.state === "done") return (status.items ?? []).filter((item) => item.is_live !== true);
+    if (status.state === "failed") throw new Error(status.error ?? "SEARCH_FAILED");
+  }
+  throw new Error("NO_COLLECTOR");
 }
 
 function clock(ms: number): string {
@@ -107,6 +119,7 @@ export function RecordingDetail({
   const [isrc, setIsrc] = useState("");
   const [language, setLanguage] = useState<"auto" | "ko" | "en" | "ja">("auto");
   const [lyrics, setLyrics] = useState("");
+  const searchAbort = useRef<AbortController | null>(null);
 
   const load = useCallback(() => {
     api<Detail>(`/recordings/${encodeURIComponent(recordingId)}`)
@@ -183,24 +196,20 @@ export function RecordingDetail({
     if (query.trim().length === 0) return;
     setSearching(true);
     setSearchError("");
+    const controller = new AbortController();
+    searchAbort.current?.abort();
+    searchAbort.current = controller;
     try {
-      setHits(await searchViaCollector(query.trim()));
-    } catch {
-      // Collector가 꺼져 있으면 서버의 Data API로 넘어간다 — 키가 있을 때만 동작한다.
-      try {
-        const found = await api<{ items: SearchHit[] }>(`/youtube/search?q=${encodeURIComponent(query.trim())}`);
-        setHits(found.items);
-      } catch (reason) {
-        const code = reason instanceof Error ? reason.message : "";
-        setSearchError(
-          code === "YOUTUBE_KEY_MISSING"
-            ? "Collector가 실행 중이 아닙니다. Collector를 켜면 할당량 없이 바로 검색할 수 있습니다."
-            : code === "YOUTUBE_SEARCH_FAILED"
-              ? "Collector가 꺼져 있고 Data API 할당량도 소진되었습니다."
-              : "검색에 실패했습니다. Collector가 실행 중인지 확인하세요.",
-        );
-        setHits(null);
-      }
+      setHits(await searchViaCollector(query.trim(), controller.signal));
+    } catch (reason) {
+      const code = reason instanceof Error ? reason.message : "";
+      if (code === "ABORTED") return;
+      setSearchError(
+        code === "NO_COLLECTOR"
+          ? "응답한 Collector가 없습니다. 최소 한 대는 실행 중이어야 검색할 수 있습니다."
+          : `검색에 실패했습니다 (${code || "알 수 없는 오류"}).`,
+      );
+      setHits(null);
     } finally {
       setSearching(false);
     }

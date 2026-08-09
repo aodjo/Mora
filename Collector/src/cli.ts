@@ -7,7 +7,7 @@ import { fetchCollectorRuntimeConfig, type CollectorRuntimeConfig } from "./admi
 import { startCollectorPairing, waitForCollectorPairing } from "./pairing.js";
 import { CollectorService } from "./service.js";
 import { createSongTitleProvider } from "./songtitle-provider.js";
-import { DEFAULT_SEARCH_PORT, startSearchServer } from "./search-server.js";
+import { startSearchWorker } from "./search-worker.js";
 import { SpotifyClient } from "./spotify.js";
 
 try {
@@ -117,14 +117,13 @@ process.stdout.write(
   `설정 완료: ${config.markets.join(", ")} · 최대 ${config.dailyBudget}곡 · ${config.once ? "1회 실행" : `${Math.round(config.intervalMs / 60_000)}분 간격`}` +
     ` · Spotify 식별 ${config.spotifyClientId !== undefined && config.spotifyClientSecret !== undefined ? "사용" : "미설정"}\n`,
 );
-// 콘솔이 곡 상세에서 음원을 직접 찾을 때 부르는 곳. Worker는 yt-dlp를 돌릴 수 없다.
-const searchPort = Number(process.env.MORA_COLLECTOR_SEARCH_PORT ?? DEFAULT_SEARCH_PORT);
-startSearchServer({
-  origin: new URL(adminUrl).origin,
-  port: searchPort,
+// 수집과 나란히, 콘솔이 올린 음원 검색을 집어간다. 여러 대가 떠 있으면 먼저 집는 쪽이 처리한다.
+startSearchWorker({
+  adminUrl,
+  adminToken: collectorToken,
   onLog: (message) => process.stdout.write(`${message}\n`),
 });
-process.stdout.write(`Admin 음원 검색 대기: http://127.0.0.1:${searchPort}\n`);
+process.stdout.write("Admin 음원 검색 대기 중\n");
 
 let lastRunAt = Date.now();
 await run(config);

@@ -47,15 +47,6 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
     component: "server",
   },
   {
-    key: "server.youtube_api_key",
-    label: "YouTube Data API 키 (예비)",
-    description:
-      "곡 상세의 음원 검색은 Collector의 yt-dlp가 처리하므로 보통 필요 없습니다. Collector를 꺼둔 채 검색해야 할 때만 쓰이며, 하루 약 100회 할당량이 적용됩니다.",
-    type: "secret",
-    secret: true,
-    component: "server",
-  },
-  {
     key: "quality_threshold",
     label: "자동 승격 품질 임계치",
     description: "캘리브레이션 완료 후 자동 공개할 최소 품질 점수입니다.",
