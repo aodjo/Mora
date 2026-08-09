@@ -85,6 +85,9 @@ async function run(config: CollectorRuntimeConfig): Promise<void> {
     onProgress: (progress) => {
       if (progress.stage === "discovering") {
         process.stdout.write(`차트 후보를 수집하는 중: ${progress.markets.join(", ")}\n`);
+      } else if (progress.stage === "discovered") {
+        const already = progress.alreadyCollected > 0 ? ` (이미 수집한 ${progress.alreadyCollected}곡 제외)` : "";
+        process.stdout.write(`차트에서 ${progress.total}곡 확인${already}\n`);
       } else if (progress.stage === "selected") {
         process.stdout.write(`후보 ${progress.total}곡 선정. 한 곡씩 수집하고 즉시 Generator 작업으로 보냅니다.\n`);
       } else if (progress.stage === "delivered") {

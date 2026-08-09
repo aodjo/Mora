@@ -117,8 +117,16 @@ export class CollectorService {
     }
   }
 
-  /** The day's shortlist: every market's charts folded together and cut to the budget. */
-  async discover(): Promise<RecordingSeed[]> {
+  /**
+   * The day's shortlist: every market's charts folded together, everything already collected
+   * dropped, and only then cut to the budget.
+   *
+   * The order matters. Cutting first and skipping afterwards spends the whole budget on songs
+   * the catalogue already has, so a second run works through 300 skips and collects nothing —
+   * the charts hardly move between days. Dropping them before the cut lets each run take the
+   * next 300 it does not have, so repeated runs walk down the chart instead of standing still.
+   */
+  async discover(collected: CollectedIndex = new CollectedIndex([])): Promise<RecordingSeed[]> {
     const pools: RecordingSeed[] = [];
     this.config.onProgress?.({ stage: "discovering", markets: this.config.markets });
     for (const market of this.config.markets) {
@@ -140,18 +148,21 @@ export class CollectorService {
           freshness: Math.max(old.freshness, seed.freshness),
         });
     }
-    return [...unique.values()]
+    const fresh = [...unique.values()].filter((seed) => !collected.hasName(seed));
+    this.config.onProgress?.({ stage: "discovered", total: unique.size, alreadyCollected: unique.size - fresh.length });
+    return fresh
       .sort((a, b) => b.popularity * 0.65 + b.freshness * 0.35 - (a.popularity * 0.65 + a.freshness * 0.35))
       .slice(0, this.config.dailyBudget);
   }
 
   async run(): Promise<CollectionReport> {
-    return this.collect(await this.discover());
+    const collected = await this.#collected();
+    return this.collect(await this.discover(collected), collected);
   }
 
-  async collect(ranked: RecordingSeed[]): Promise<CollectionReport> {
+  async collect(ranked: RecordingSeed[], known?: CollectedIndex): Promise<CollectionReport> {
     const report: CollectionReport = { discovered: 0, identified: 0, submitted: 0, review: 0, skipped: 0, errors: [] };
-    const collected = await this.#collected();
+    const collected = known ?? (await this.#collected());
     report.discovered = ranked.length;
     this.config.onProgress?.({ stage: "selected", total: ranked.length });
     for (const [index, seed] of ranked.entries()) {

@@ -48,6 +48,7 @@ export interface CollectorConfig {
 
 export type CollectorProgress =
   | { stage: "discovering"; markets: Array<"KR" | "US" | "JP"> }
+  | { stage: "discovered"; total: number; alreadyCollected: number }
   | { stage: "selected"; total: number }
   | { stage: "processing"; current: number; total: number; song: string }
   | {
