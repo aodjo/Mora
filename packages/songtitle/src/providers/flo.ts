@@ -1,11 +1,17 @@
 import type { LyricLine, Provider } from "../types.js";
 import { getJson, type HttpOptions } from "../http.js";
 import { parseLrc, plainFrom } from "../util/lyrics.js";
+import { pickTrack } from "../util/match.js";
 
 const BASE = "https://www.music-flo.com";
 
+interface FloTrackItem {
+  id?: number | string;
+  name?: string;
+  artistList?: Array<{ name?: string }>;
+}
 interface FloSearchResp {
-  data?: { list?: Array<{ type?: string; list?: Array<{ id?: number | string }> }> };
+  data?: { list?: Array<{ type?: string; list?: FloTrackItem[] }> };
 }
 interface FloTrackResp {
   data?: {
@@ -16,8 +22,8 @@ interface FloTrackResp {
 }
 
 /**
- * FLO — JSON 검색 API로 trackId를 얻고, 트랙 상세(/api/meta/v1/track/{id})의
- * lyrics 필드에서 가사를 받는다. lyrics 안에 LRC 타임태그가 있으면 싱크로 파싱.
+ * FLO — JSON 검색 API의 name·artistList로 질의와 일치하는 트랙을 고르고, 트랙 상세
+ * (/api/meta/v1/track/{id})의 lyrics 필드에서 가사를 받는다. LRC 타임태그가 있으면 싱크로 파싱.
  * (검색은 keyword 파라미터만 붙여야 결과가 나온다 — 부가 파라미터는 빈 결과)
  */
 export const flo: Provider = {
@@ -32,11 +38,16 @@ export const flo: Provider = {
     const q = [query.title, query.artist].filter(Boolean).join(" ");
 
     let trackId = query.trackId;
+    let matched: FloTrackItem | undefined;
     if (!trackId) {
       const search = await getJson<FloSearchResp>(`${BASE}/api/search/v2/search?keyword=${encodeURIComponent(q)}`, opts);
       const groups = search.data?.list ?? [];
       const trackGroup = groups.find((g) => g.type === "TRACK") ?? groups[0];
-      trackId = trackGroup?.list?.[0]?.id?.toString();
+      matched = pickTrack(trackGroup?.list ?? [], query, (item) => ({
+        title: item.name,
+        artist: (item.artistList ?? []).map((artist) => artist.name ?? "").join(", "),
+      }));
+      trackId = matched?.id?.toString();
     }
     if (!trackId) return null;
 
@@ -56,10 +67,11 @@ export const flo: Provider = {
     const lyrics = plainFrom(data.lyrics?.replace(/\[[^\]]*\]/g, "").trim(), synced);
     if (!lyrics) return null;
 
+    const credited = (matched?.artistList ?? []).map((artist) => artist.name ?? "").filter(Boolean);
     return {
       provider: "flo",
-      title: data.name ?? query.title,
-      artist: query.artist,
+      title: data.name ?? matched?.name ?? query.title,
+      artist: credited.length ? credited.join(", ") : query.artist,
       lyrics,
       synced: synced && synced.length ? synced : undefined,
       url: `${BASE}/detail/track/${trackId}/detailinfo`,

@@ -1,4 +1,5 @@
 import type { LyricsResult, Provider, ProviderContext, SearchQuery } from "../types.js";
+import { sameTitle } from "../util/match.js";
 
 /**
  * Shazam — 브라우저 폴백 전용에 가깝다.
@@ -55,7 +56,9 @@ async function shazamViaBrowser(query: SearchQuery, ctx: ProviderContext): Promi
     lyrics = lyrics.replace(/^lyrics\s*/i, "").trim(); // 맨 앞 "Lyrics" 라벨 제거
     if (!lyrics) return null;
 
+    // 자동완성 첫 항목이 다른 곡이었으면 여기서 걸러진다.
     const title = (await page.title()).replace(/\s*[-:].*$/, "").trim();
+    if (title && !sameTitle(title, query.title)) return null;
     return {
       provider: "shazam",
       title: title || query.title,

@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import type { LyricsResult, Provider, ProviderContext, SearchQuery } from "../types.js";
 import { getJson, getText, type HttpOptions } from "../http.js";
+import { pickTrack, sameTitle } from "../util/match.js";
 
 interface GeniusSearchResp {
   response?: {
@@ -53,7 +54,9 @@ async function geniusViaApi(query: SearchQuery, ctx: ProviderContext, token: str
     ...opts,
     headers: { Authorization: `Bearer ${token}` },
   });
-  const hit = search.response?.hits?.find((h) => h.type === "song")?.result;
+  // 검색 상위 hit이 늘 질의한 곡은 아니다 — 제목이 일치하는 hit만 후보로 삼는다.
+  const songs = (search.response?.hits ?? []).filter((h) => h.type === "song");
+  const hit = pickTrack(songs, query, (h) => ({ title: h.result?.title, artist: h.result?.primary_artist?.name }))?.result;
   if (!hit?.url) return null;
 
   const lyrics = scrapeLyricsHtml(await getText(hit.url, opts));
@@ -88,7 +91,9 @@ async function geniusViaBrowser(query: SearchQuery, ctx: ProviderContext): Promi
     const lyrics = scrapeLyricsHtml(await page.content());
     if (!lyrics) return null;
 
+    // 검색 카드 첫 항목이 다른 곡이었으면 여기서 걸러진다.
     const pageTitle = (await page.title()).replace(/\s*Lyrics\s*\|\s*Genius.*$/i, "").trim();
+    if (pageTitle && !sameTitle(pageTitle, query.title)) return null;
     return {
       provider: "genius",
       title: pageTitle || query.title,

@@ -1,11 +1,18 @@
 import type { LyricLine, Provider } from "../types.js";
 import { getJson, type HttpOptions } from "../http.js";
 import { plainFrom } from "../util/lyrics.js";
+import { pickTrack } from "../util/match.js";
 
 const API = "https://apis.naver.com/vibeWeb/musicapiweb";
 
+interface VibeTrack {
+  trackId?: number | string;
+  trackTitle?: string;
+  artists?: Array<{ artistName?: string }>;
+  album?: { albumTitle?: string };
+}
 interface VibeSearchResp {
-  response?: { result?: { tracks?: Array<{ trackId?: number | string }> } };
+  response?: { result?: { tracks?: VibeTrack[] } };
 }
 interface VibeLyricResp {
   response?: {
@@ -19,8 +26,9 @@ interface VibeLyricResp {
 }
 
 /**
- * Vibe (Naver) — musicapiweb JSON API. 검색 후 lyric 엔드포인트에서
- * normalLyric(평문) + syncLyric(싱크)를 받는다.
+ * Vibe (Naver) — musicapiweb JSON API. 검색 결과의 trackTitle·artistName으로 질의와
+ * 일치하는 트랙을 고른 뒤 lyric 엔드포인트에서 normalLyric(평문) + syncLyric(싱크)를 받는다.
+ * 첫 트랙을 검증 없이 집으면 같은 제목의 다른 곡·무관한 곡이 질의 제목을 달고 나간다.
  */
 export const vibe: Provider = {
   name: "vibe",
@@ -34,12 +42,17 @@ export const vibe: Provider = {
     const q = [query.title, query.artist].filter(Boolean).join(" ");
 
     let trackId = query.trackId;
+    let matched: VibeTrack | undefined;
     if (!trackId) {
       const search = await getJson<VibeSearchResp>(
         `${API}/v3/search/track?query=${encodeURIComponent(q)}` + `&start=1&display=10&sort=RELEVANCE`,
         opts,
       );
-      trackId = search.response?.result?.tracks?.[0]?.trackId?.toString();
+      matched = pickTrack(search.response?.result?.tracks ?? [], query, (track) => ({
+        title: track.trackTitle,
+        artist: (track.artists ?? []).map((artist) => artist.artistName ?? "").join(", "),
+      }));
+      trackId = matched?.trackId?.toString();
     }
     if (!trackId) return null;
 
@@ -58,10 +71,12 @@ export const vibe: Provider = {
     const lyrics = plainFrom(lyric.normalLyric?.text, synced);
     if (!lyrics) return null;
 
+    const credited = (matched?.artists ?? []).map((artist) => artist.artistName ?? "").filter(Boolean);
     return {
       provider: "vibe",
-      title: query.title,
-      artist: query.artist,
+      title: matched?.trackTitle ?? query.title,
+      artist: credited.length ? credited.join(", ") : query.artist,
+      album: matched?.album?.albumTitle,
       lyrics,
       synced: synced && synced.length ? synced : undefined,
       url: `https://vibe.naver.com/track/${trackId}`,

@@ -3,10 +3,10 @@ export const DEFAULT_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 export interface HttpOptions {
-  headers?: Record<string, string>;
+  headers?: Record<string, string> | undefined;
   timeoutMs: number;
-  signal?: AbortSignal;
-  fetchImpl?: typeof fetch;
+  signal?: AbortSignal | undefined;
+  fetchImpl?: typeof fetch | undefined;
 }
 
 /**
