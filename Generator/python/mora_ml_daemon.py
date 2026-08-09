@@ -286,6 +286,51 @@ def anchored_windows(counts: list[int], words: list[str], heard: list[dict[str, 
     return windows
 
 
+def fill_unaligned(words: list[dict[str, Any]], window_start: float, window_end: float) -> list[dict[str, Any]]:
+    """
+    Keep every word of the line, giving the ones the aligner skipped a place between their
+    neighbours.
+
+    The phoneme aligner returns a word per written word but leaves start and end off the ones
+    it could not place — short unstressed words, mostly, "we" and "다" and the like. Dropping
+    those was worse than it looks: what remains is projected onto the line's tokens by
+    position, so losing one word slides every other word along. "we gonna" became two halves
+    of "gonna", and the highlight for "we" appeared over a word it is not.
+
+    A skipped word is not a missing word, only an untimed one. It sits between the word before
+    and the word after, so that is where it goes; a run of them splits the gap evenly. Its
+    score says it was placed rather than heard.
+    """
+    if not words:
+        return []
+    placed: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    cursor = window_start
+    for word in words:
+        if "start" in word and "end" in word:
+            start, end = float(word["start"]), float(word["end"])
+            if pending:
+                # Share the silence in front of this word among the ones with no time of their own.
+                span = max(0.0, start - cursor)
+                step = span / (len(pending) + 1)
+                for index, gap_word in enumerate(pending):
+                    gap_start = cursor + step * index
+                    placed.append({**gap_word, "start": gap_start, "end": gap_start + step, "score": 0.3})
+                pending = []
+            placed.append({**word, "start": start, "end": end})
+            cursor = end
+            continue
+        pending.append(word)
+    if pending:
+        span = max(0.0, window_end - cursor)
+        step = span / len(pending) if span > 0 else 0.08
+        for index, gap_word in enumerate(pending):
+            gap_start = cursor + step * index
+            placed.append({**gap_word, "start": gap_start, "end": gap_start + step, "score": 0.3})
+    # A word can only be placed if something around it was heard.
+    return placed if any("score" not in word or float(word.get("score", 0)) > 0.3 for word in placed) else []
+
+
 def interpolate_boundaries(candidates: list[dict[str, Any]], count: int) -> list[list[int | float]]:
     """Project aligned ASR words onto the canonical tokenizer count without using text."""
     if count <= 0 or not candidates:
@@ -442,10 +487,9 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
             # list by token count instead assumed every line takes time in proportion to its
             # length, which is the guess this function exists to stop making.
             segment = aligned_segments[line_index] if line_index < len(aligned_segments) else {}
-            candidates = sorted(
-                [word for word in segment.get("words", []) if "start" in word and "end" in word],
-                key=lambda word: float(word["start"]),
-            )
+            # Every word of the line, in the order it is written — including the ones the
+            # aligner could not place, which are given a spot between their neighbours.
+            candidates = fill_unaligned(segment.get("words", []), line_windows[line_index][0] / 1000, line_windows[line_index][1] / 1000)
             if candidates:
                 projected = interpolate_boundaries(candidates, count)
                 for token_offset, word_start, word_end, score in projected:

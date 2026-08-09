@@ -142,6 +142,42 @@ lines7 = [[9000, 11000]]
 daemon.snap_line_starts(words7, lines7, [1], {})
 check("증인이 없으면 그대로 둔다", words7[0][1] == 9000, f"{words7[0][1]}")
 
+
+# ── 정렬기가 못 맞춘 짧은 단어: "we", "다" 같은 것들 ──
+# 버리면 남은 단어들의 매핑이 통째로 밀린다 — "we gonna"가 "gonna"의 두 조각이 됐다.
+line = [
+    {"word": "we"},                                   # 정렬기가 자리를 못 잡은 단어
+    {"word": "gonna", "start": 12.4, "end": 12.9, "score": 0.9},
+    {"word": "ride", "start": 13.0, "end": 13.6, "score": 0.9},
+]
+filled = daemon.fill_unaligned(line, 12.0, 14.0)
+check("못 맞춘 단어도 줄에 남는다", len(filled) == 3, f"{len(filled)}개")
+check("앞 단어는 다음 단어보다 먼저 온다", filled[0]["end"] <= filled[1]["start"] + 1e-6, f"{filled[0]}")
+check("앞 단어가 gonna 자리를 뺏지 않는다", filled[0]["end"] <= 12.4 + 1e-6, f"{filled[0]['end']}")
+check("맞춘 단어의 시간은 그대로다", filled[1]["start"] == 12.4 and filled[1]["end"] == 12.9)
+check("자리만 잡아준 단어는 낮은 점수를 갖는다", filled[0]["score"] == 0.3, str(filled[0].get("score")))
+
+# 줄 끝에서 못 맞춘 경우 — 창의 끝까지를 나눠 갖는다.
+tail = [{"word": "사랑", "start": 20.0, "end": 20.6, "score": 0.9}, {"word": "다"}]
+filled_tail = daemon.fill_unaligned(tail, 19.8, 21.0)
+check("끝에서 빠진 단어도 자리를 얻는다", len(filled_tail) == 2 and filled_tail[1]["start"] >= 20.6, str(filled_tail[1]))
+check("끝 단어가 창 밖으로 나가지 않는다", filled_tail[1]["end"] <= 21.0 + 1e-6, str(filled_tail[1]["end"]))
+
+# 연달아 빠지면 사이를 고르게 나눈다.
+run = [{"word": "a"}, {"word": "b"}, {"word": "c", "start": 5.0, "end": 5.4, "score": 0.9}]
+filled_run = daemon.fill_unaligned(run, 4.0, 6.0)
+check("연달아 빠진 단어는 사이를 고르게 나눈다", len(filled_run) == 3 and abs((filled_run[0]["end"] - filled_run[0]["start"]) - (filled_run[1]["end"] - filled_run[1]["start"])) < 1e-6)
+check("순서는 지켜진다", filled_run[0]["start"] <= filled_run[1]["start"] <= filled_run[2]["start"])
+
+# 아무것도 못 맞춘 줄은 자리를 지어내지 않는다.
+check("전부 못 맞춘 줄은 비운다", daemon.fill_unaligned([{"word": "a"}, {"word": "b"}], 1.0, 2.0) == [])
+check("빈 줄은 빈 채로", daemon.fill_unaligned([], 1.0, 2.0) == [])
+
+# 밀림이 실제로 사라지는지 — 세 단어짜리 줄을 세 토큰에 투영한다.
+projected = daemon.interpolate_boundaries(filled, 3)
+check("we 가 gonna 자리로 밀려나지 않는다", projected[0][2] <= 12_500, f"we 끝 {projected[0][2]}ms")
+check("gonna 는 자기 자리를 지킨다", 12_300 <= projected[1][1] <= 12_700, f"gonna 시작 {projected[1][1]}ms")
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
