@@ -849,6 +849,24 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     notify("speaker_stems", "completed", 0.92)
     notify("index", "started", 0.93)
     artifacts.append({"kind": "waveform", "path": str(waveform(mixture, directory)), "content_type": "application/json"})
+    # 받아쓰기는 가사가 아니라 "그 말이 몇 초에 나왔나"를 대는 증인이다. 정렬이 이상할 때
+    # 물어야 할 첫 질문이 "무엇을 들었나"인데, 그 답이 체크포인트 안에 묻혀 있어서 매번
+    # 파이프라인을 손으로 다시 돌려야 했다. 사람이 읽을 수 있게 따로 남긴다.
+    heard = asr_words(asr)
+    transcript = directory / "transcript.json"
+    transcript.write_text(
+        json.dumps(
+            {
+                "detected": detected,
+                "text": " ".join(word["text"] for word in heard),
+                "words": [{"t": round(word["start"], 2), "e": round(word["end"], 2), "w": word["text"]} for word in heard],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    artifacts.append({"kind": "transcript", "path": str(transcript), "content_type": "application/json"})
     checkpoint = directory / "checkpoint.json"
     checkpoint.write_text(json.dumps({"pipeline": job["pipeline"], "detected": detected, "variants": variants}, separators=(",", ":")), encoding="utf-8")
     artifacts.append({"kind": "checkpoint", "path": str(checkpoint), "content_type": "application/json"})

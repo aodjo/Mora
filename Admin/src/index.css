@@ -3480,3 +3480,43 @@ textarea:focus-visible {
 .detail-section-head h3 {
   margin: 0;
 }
+
+/* 받아쓴 내용 — 시각과 함께 읽어야 어디가 어긋났는지 보인다. */
+.transcript {
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 12px;
+}
+.transcript-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.transcript-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.transcript-words span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  border-radius: 6px;
+  background: var(--surface-muted);
+  padding: 2px 7px;
+  font-size: 13px;
+}
+.transcript-words em {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}

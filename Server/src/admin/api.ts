@@ -310,7 +310,17 @@ async function recordingDetail(env: WorkerEnv, actor: Actor, recordingId: string
      WHERE i.recording_id=?1 ORDER BY c.quality_score DESC,c.created_at DESC`,
     [recordingId],
   );
-  return json({ recording, sources, revisions, candidates });
+  // 받아쓰기가 있으면 함께 준다 — 정렬이 이상할 때 가장 먼저 물어야 할 것이 "무엇을 들었나"다.
+  const transcript = await env.ADMIN_DB.prepare(
+    `SELECT a.id FROM artifacts a
+     JOIN jobs j ON j.id=a.job_id
+     JOIN input_revisions i ON i.id=j.input_revision_id
+     WHERE i.recording_id=?1 AND a.kind='transcript' AND a.deleted_at IS NULL
+     ORDER BY a.created_at DESC LIMIT 1`,
+  )
+    .bind(recordingId)
+    .first<{ id: string }>();
+  return json({ recording, sources, revisions, candidates, transcript_id: transcript?.id ?? null });
 }
 
 /** Stale once nobody is waiting on the answer; a claim that never came back is not worth keeping. */
@@ -2160,6 +2170,9 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
 
   let match = url.pathname.match(/^\/admin\/api\/generator\/jobs\/([^/]+)$/u);
   if (request.method === "GET" && match?.[1] !== undefined) return generatorJob(env, actor, match[1]);
+  // 콘솔도 아티팩트를 읽는다 — 받아쓴 내용을 보려면 필요하다. 쓰기는 Generator 경로에만 있다.
+  match = url.pathname.match(/^\/admin\/api\/artifacts\/([^/]+)\/content$/u);
+  if (request.method === "GET" && match?.[1] !== undefined) return artifactContent(request, env, actor, match[1]);
   match = url.pathname.match(/^\/admin\/api\/generator\/artifacts\/([^/]+)\/content$/u);
   if ((request.method === "PUT" || request.method === "GET") && match?.[1] !== undefined)
     return artifactContent(request, env, actor, match[1]);

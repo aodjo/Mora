@@ -9,6 +9,65 @@ interface Detail {
   sources: AdminItem[];
   revisions: AdminItem[];
   candidates: AdminItem[];
+  /** 이 곡을 정렬할 때 Whisper 가 실제로 들은 것. 없으면 아직 만들어지지 않았다. */
+  transcript_id: string | null;
+}
+
+interface Transcript {
+  detected: string;
+  text: string;
+  words: Array<{ t: number; e: number; w: string }>;
+}
+
+/**
+ * 받아쓰기를 보여준다.
+ *
+ * Whisper 는 가사를 쓰지 않는다 — 가사는 서비스에서 받아온다. 하는 일은 "그 말이 몇 초에
+ * 나왔나"를 대는 것이고, 정렬이 이상할 때 가장 먼저 물어야 할 것이 그것이다. 그 답이 암호화된
+ * 아티팩트 안에만 있어서, 확인하려면 매번 파이프라인을 손으로 다시 돌려야 했다.
+ */
+function TranscriptPanel({ artifactId }: { artifactId: string }) {
+  const [open, setOpen] = useState(false);
+  const [heard, setHeard] = useState<Transcript | null>(null);
+  const [failure, setFailure] = useState("");
+  async function show(): Promise<void> {
+    setOpen(true);
+    if (heard !== null) return;
+    try {
+      setHeard(await api<Transcript>(`/artifacts/${encodeURIComponent(artifactId)}/content`));
+    } catch (reason) {
+      setFailure(reason instanceof Error ? reason.message : "받아쓰기를 불러오지 못했습니다");
+    }
+  }
+  if (!open)
+    return (
+      <button className="secondary-button" onClick={() => void show()}>
+        <AudioLines size={13} />
+        받아쓴 내용 보기
+      </button>
+    );
+  return (
+    <div className="transcript">
+      <div className="transcript-head">
+        <span>Whisper가 들은 내용{heard !== null && ` · ${heard.detected} · ${heard.words.length}단어`}</span>
+        <button className="secondary-button" onClick={() => setOpen(false)}>
+          닫기
+        </button>
+      </div>
+      {failure !== "" && <p className="detail-note warn">{failure}</p>}
+      {heard === null && failure === "" && <p className="detail-empty">불러오는 중…</p>}
+      {heard !== null && (
+        <div className="transcript-words">
+          {heard.words.map((word, index) => (
+            <span key={`${word.t}-${index}`} title={`${word.t.toFixed(2)}s ~ ${word.e.toFixed(2)}s`}>
+              <em>{clock(word.t * 1000)}</em>
+              {word.w}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 const qualityNames: Record<string, string> = {
@@ -373,6 +432,7 @@ export function RecordingDetail({
             정렬을 고친 뒤 이 곡만 다시 만들고 싶을 때, 작업 큐를 찾아가 그 행을 고르게 하는 것은
             먼 길이다. 결과를 보고 있는 자리에서 다시 만들 수 있어야 한다.
           */}
+          {detail.transcript_id !== null && <TranscriptPanel artifactId={detail.transcript_id} />}
           {finishedJob !== null && (
             <button className="secondary-button" onClick={() => void rebuild(finishedJob)} disabled={busy}>
               <RotateCcw size={13} />
