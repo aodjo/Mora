@@ -377,7 +377,8 @@ BACKING_HEARD = spoken_words([
     ("나는", 104.0, 104.4), ("니가", 104.5, 104.9), ("나랑", 105.0, 105.4),
     ("결혼", 105.5, 106.0), ("안해줄걸", 106.1, 106.7), ("아는데", 106.8, 107.4),
 ])
-flags = [daemon.is_backing_line(line) for line in BACKING_DISPLAY]
+# 창을 나눌 때 빠지는 것은 줄이 아니라 낱말이다 — 괄호가 줄 꼬리에만 붙어 있을 수도 있다.
+flags = [flag for line in BACKING_DISPLAY for flag in daemon.bracket_mask(line)]
 folded = daemon.anchored_windows(BACKING_COUNTS, BACKING_WORDS, BACKING_HEARD, 99.8, 108.0, 0.0, backing=flags)
 check("백보컬을 접어도 창이 만들어진다", folded is not None)
 assert folded is not None
@@ -386,9 +387,28 @@ check("앞 줄이 자기 시간을 지킨다", (folded[0][1] - folded[0][0]) >= 
 check("뒷 줄이 자기 시간을 지킨다", (folded[2][1] - folded[2][0]) >= 3000, f"{(folded[2][1] - folded[2][0]) / 1000:.1f}초")
 check("창이 거꾸로 되지 않는다", all(w[1] >= w[0] for w in folded), str(folded))
 
+# 괄호가 줄 꼬리에만 붙은 경우 — 실측한 "그래도 제발 나를 사랑해줄래? (꺼져)".
+# (꺼져) 를 낱말로 세면 그 몫만큼 줄이 늘어나, 메인 보컬이 이미 끝난 자리까지 창이 걸친다.
+INLINE_DISPLAY = ["그래도 제발 나를 사랑해줄래? (꺼져)", "넌 뭔데 내 맘에 흉터를"]
+INLINE_COUNTS = [len(line.split()) for line in INLINE_DISPLAY]
+INLINE_WORDS = [daemon.comparable(word) for line in INLINE_DISPLAY for word in line.split()]
+INLINE_HEARD = spoken_words([
+    ("그래도", 97.32, 97.86), ("제발", 97.86, 98.56), ("나를", 98.56, 98.98), ("사랑해줄래", 98.98, 99.94),
+    ("넌", 100.20, 100.60), ("뭔데", 100.60, 101.00), ("내", 101.00, 101.34), ("맘에", 101.34, 101.80), ("흉터를", 101.80, 102.36),
+])
+inline_flags = [flag for line in INLINE_DISPLAY for flag in daemon.bracket_mask(line)]
+check("꼬리 괄호는 그 낱말만 백보컬이다", inline_flags == [False, False, False, False, True, False, False, False, False, False], str(inline_flags))
+inline = daemon.anchored_windows(INLINE_COUNTS, INLINE_WORDS, INLINE_HEARD, 97.32, 102.36, 0.0, backing=inline_flags)
+counted = daemon.anchored_windows(INLINE_COUNTS, INLINE_WORDS, INLINE_HEARD, 97.32, 102.36, 0.0)
+check("꼬리 괄호가 있어도 창이 만들어진다", inline is not None and counted is not None)
+assert inline is not None and counted is not None
+check("창은 메인 보컬이 끝난 데서 끝난다", inline[0][1] == 99_940, f"{inline[0][1]}ms (들은 끝 99940ms)")
+check("낱말로 세면 그 뒤까지 늘어난다 (회귀 대비)", counted[0][1] > inline[0][1], f"세면 {counted[0][1]}ms")
+check("다음 줄은 제자리에 있다", inline[1][0] == counted[1][0] == 100_200, f"{inline[1][0]} vs {counted[1][0]}")
+
 # 백보컬이 마지막 줄이면 앞줄과 함께 간다.
-tail_flags = [False, False, True]
 tail_display = ["넌 뭔데 내 맘에 흉터를 남기는건데", "나는 니가 나랑 결혼 안해줄걸 아는데", "(꺼지라고)"]
+tail_flags = [flag for line in tail_display for flag in daemon.bracket_mask(line)]
 tail_lines = [line.strip("()") for line in tail_display]
 tail_counts = [len(line.split()) for line in tail_lines]
 tail_words = [daemon.comparable(w) for line in tail_lines for w in line.split()]

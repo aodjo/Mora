@@ -377,35 +377,40 @@ def match_tokens(lyric: list[str], heard: list[dict[str, Any]]) -> dict[int, dic
     return anchors
 
 
-def is_backing_line(line: str) -> bool:
-    """
-    A line that is nothing but a bracketed aside — "(꺼져)", "(나 너 싫으니까 꺼지라고)".
+BRACKETS = {"(": ")", "[": "]", "{": "}", "（": "）", "［": "］"}
 
-    These are the second voice, sung over the line beside them rather than after it. Counting
-    them as ordinary lines gives them a stretch of the song of their own, and the stretch comes
-    out of their neighbours: on the measured song a four-word backing line held 1.9 seconds
-    while the eight-word line before it was crushed into 0.8.
+
+def bracket_mask(line: str) -> list[bool]:
     """
-    stripped = line.strip()
-    if len(stripped) < 3:
-        return False
-    pairs = {"(": ")", "[": "]", "{": "}", "（": "）", "［": "］"}
-    close = pairs.get(stripped[0])
-    if close is None or not stripped.endswith(close):
-        return False
-    # 안이 비었으면 부르는 말이 없다 — 백보컬이 아니라 그냥 기호다.
-    if not re.search(r"[^\W_]", stripped[1:-1], re.UNICODE):
-        return False
-    # 여는 괄호가 중간에 닫히면 줄 전체를 감싼 것이 아니다: "(가) 그리고 (나)".
+    Which written words of the line are a bracketed aside — the second voice.
+
+    "(꺼져)", "(나 너 싫으니까 꺼지라고)" are sung over the words beside them, not after them.
+    Counted as ordinary words they are given a stretch of the song of their own, and the
+    stretch comes out of their neighbours: on the measured song the aside took 1.3 seconds
+    at the end of its line, the six words it was shouted over were squeezed into the 0.9
+    before it, and the next line was pushed half a second late.
+
+    A word is inside when the brackets around it are open, whether they opened on this word
+    or an earlier one. Brackets holding no letters are punctuation, not a voice.
+    """
+    mask: list[bool] = []
     depth = 0
-    for index, character in enumerate(stripped):
-        if character in pairs:
-            depth += 1
-        elif character in pairs.values():
-            depth -= 1
-            if depth == 0 and index != len(stripped) - 1:
-                return False
-    return depth == 0
+    for word in line.split():
+        inside = depth > 0
+        for character in word:
+            if character in BRACKETS:
+                depth += 1
+                inside = True
+            elif character in BRACKETS.values() and depth > 0:
+                depth -= 1
+        mask.append(inside and re.search(r"[^\W_]", word, re.UNICODE) is not None)
+    return mask
+
+
+def is_backing_line(line: str) -> bool:
+    """A line that is nothing but a bracketed aside, so it has no voice of its own to time."""
+    mask = bracket_mask(line)
+    return len(mask) > 0 and all(mask)
 
 
 def anchored_windows(
@@ -426,28 +431,22 @@ def anchored_windows(
     and the aligner cannot escape the window it was given. Returns None when too little of the
     lyric was recognised to place anything, leaving the proportional guess as the fallback.
     """
-    # 백보컬 줄의 단어는 자리를 차지하지 않는다 — 시간을 나눌 때 아예 빼고 센 뒤, 창은 옆줄에
-    # 겹쳐 준다. 빼지 않으면 그 단어들 몫으로 벌어진 간격이 이웃의 시간이 된다.
-    sung = [True] * len(words)
-    if backing is not None:
+    # 백보컬 단어는 자리를 차지하지 않는다 — 옆에서 함께 부르지, 뒤이어 부르지 않는다. 시간을
+    # 나눌 때 아예 빼고 센다. 빼지 않으면 그 단어들 몫으로 벌어진 간격이 이웃의 시간이 되고,
+    # 다음 줄까지 밀린다. 줄 전체가 백보컬이면 셀 것이 남지 않으므로 옆줄의 창을 그대로 쓴다.
+    if backing is not None and any(backing):
+        voiced = [word for index, word in enumerate(words) if index >= len(backing) or not backing[index]]
+        voiced_counts: list[int] = []
         cursor = 0
-        for line_index, count in enumerate(counts):
-            if line_index < len(backing) and backing[line_index]:
-                for offset in range(count):
-                    if cursor + offset < len(sung):
-                        sung[cursor + offset] = False
+        for count in counts:
+            voiced_counts.append(sum(1 for offset in range(count) if cursor + offset >= len(backing) or not backing[cursor + offset]))
             cursor += count
-    if backing is not None and not all(sung):
-        voiced = [word for index, word in enumerate(words) if sung[index]]
-        voiced_counts = [
-            0 if (line_index < len(backing) and backing[line_index]) else count for line_index, count in enumerate(counts)
-        ]
         placed = anchored_windows(voiced_counts, voiced, heard, start, end, floor)
         if placed is None:
             return None
-        # 백보컬 줄은 뒤따르는 진짜 줄과 같은 시간을 쓴다. 마지막이라면 앞줄과.
-        for line_index, count in enumerate(counts):
-            if not (line_index < len(backing) and backing[line_index]):
+        # 부를 목소리가 없는 줄은 뒤따르는 진짜 줄과 같은 시간을 쓴다. 마지막이라면 앞줄과.
+        for line_index in range(len(counts)):
+            if voiced_counts[line_index] > 0:
                 continue
             neighbour = next((i for i in range(line_index + 1, len(counts)) if voiced_counts[i] > 0), None)
             if neighbour is None:
@@ -875,7 +874,7 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
         start,
         end,
         floor=audio_bounds(asr, duration_ms)[0],
-        backing=[is_backing_line(line) for line in text_lines],
+        backing=[flag for line in text_lines for word, flag in zip(line.split(), bracket_mask(line)) if comparable(word)],
     )
     # When was each line's first word heard — the counter-witness against leading noise.
     anchors = match_sequences(lyric_words, heard_words)
