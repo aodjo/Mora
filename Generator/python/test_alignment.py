@@ -183,31 +183,57 @@ check("we 가 gonna 자리로 밀려나지 않는다", projected[0][2] <= 12_500
 check("gonna 는 자기 자리를 지킨다", 12_300 <= projected[1][1] <= 12_700, f"gonna 시작 {projected[1][1]}ms")
 
 
-# ── 너무 짧게 잡힌 단어: 실측한 "사막같은 몸에서 겨우 날 떼어" ──
-# 날이 40ms 를 받아 눈에 보이지 않았다. 음절 하나가 40ms 일 수는 없다.
-real = [
-    [0, 13344, 14058, 0.9],
-    [1, 14058, 14863, 0.9],
-    [2, 14863, 15528, 0.9],
-    [3, 15528, 15568, 0.9],   # 날
-    [4, 15568, 15900, 0.9],
+# ── 음절 수 세기: 시간을 나눌 몫이므로 정확할 필요는 없고 공평하면 된다 ──
+check("한글은 글자마다 한 음절", daemon.syllables("도망쳐") == 3)
+check("한 글자 낱말은 한 몫", daemon.syllables("날") == 1)
+check("괄호는 세지 않는다", daemon.syllables("(보다)") == 2)
+check("라틴 문자는 모음 덩어리로 센다", daemon.syllables("we") == 1 and daemon.syllables("hachiware") == 4)
+check("숫자도 한 몫", daemon.syllables("3") == 1)
+check("셀 것이 없어도 한 몫은 준다", daemon.syllables("!!") == 1)
+
+check("토큰이 낱말이면 음절대로", daemon.token_weights(["못 도망쳐"], [2]) == [1.0, 3.0])
+check("토큰이 낱말이 아니면 같은 몫", daemon.token_weights(["못 도망쳐"], [5]) == [1.0] * 5)
+
+
+# ── 짓눌린 낱말: 실측한 "출근하는 아빠옆에 못 남아 난 도망쳐" ──
+# 앞 낱말이 1429ms 를 쥐고, 뒤의 일곱 음절이 300ms 를 나눠 가졌다. 초당 스무 음절은
+# 노래가 아니다 — 가장 빠른 랩이 열 음절이다.
+CRUSHED_LINE = "출근하는 아빠옆에 못 남아 난 도망쳐"
+crushed = [
+    [0, 57320, 57843, 0.62],
+    [1, 58510, 59939, 0.81],
+    [2, 60043, 60104, 0.66],   # 못
+    [3, 60124, 60164, 0.00],   # 남아
+    [4, 60224, 60264, 0.48],   # 난
+    [5, 60284, 60344, 0.00],   # 도망쳐
 ]
-real_lines = [[13344, 15900]]
-daemon.widen_thin_words(real, real_lines, [5])
-nal = real[3]
-check("날이 볼 수 있는 길이를 갖는다", nal[2] - nal[1] >= 120, f"{nal[2] - nal[1]}ms")
-check("시간은 앞 단어에서 나온다", real[2][2] == nal[1], f"겨우 끝 {real[2][2]} vs 날 시작 {nal[1]}")
-check("앞 단어도 최소는 지킨다", real[2][2] - real[2][1] >= 120, f"{real[2][2] - real[2][1]}ms")
-check("줄 길이는 그대로다", real_lines[0] == [13344, 15900], str(real_lines[0]))
-check("순서가 뒤집히지 않는다", all(real[i][2] <= real[i + 1][1] for i in range(len(real) - 1)))
-check("총 길이가 늘어나지 않는다", real[0][1] == 13344 and real[-1][2] == 15900)
+crushed_lines = [[57320, 60344]]
+weights = daemon.token_weights([CRUSHED_LINE], [6])
+daemon.spread_crushed_words(crushed, crushed_lines, [6], weights)
+check("몫은 음절 수를 따른다", weights == [4.0, 4.0, 1.0, 2.0, 1.0, 3.0], str(weights))
+check("짓눌린 낱말이 모두 바닥을 넘는다", all(w[2] - w[1] >= 100 for w in crushed[2:]), str([w[2] - w[1] for w in crushed[2:]]))
+check("긴 낱말이 더 긴 시간을 갖는다", (crushed[5][2] - crushed[5][1]) > (crushed[4][2] - crushed[4][1]), f"도망쳐 {crushed[5][2]-crushed[5][1]}ms vs 난 {crushed[4][2]-crushed[4][1]}ms")
+check("삼킨 앞 낱말이 시간을 내놓는다", (crushed[1][2] - crushed[1][1]) < 1429, f"{crushed[1][2] - crushed[1][1]}ms")
+check("줄 길이는 그대로다", crushed_lines[0] == [57320, 60344], str(crushed_lines[0]))
+check("순서가 뒤집히지 않는다", all(crushed[i][2] <= crushed[i + 1][1] for i in range(len(crushed) - 1)), str(crushed))
+check("시간을 새로 만들지 않는다", crushed[0][1] == 57320 and crushed[-1][2] == 60344)
+# 받아쓰기는 못 59.08, 남아 59.32, 도망쳐 59.88 이라 했다 — 독립된 증인과 0.3초 안에서 만난다.
+check("독립된 증인과 만난다", abs(crushed[3][1] - 59320) < 400, f"남아 {crushed[3][1]}ms")
+
+single = [[0, 13344, 14058, 0.9], [1, 14058, 14863, 0.9], [2, 14863, 15528, 0.9], [3, 15528, 15568, 0.9], [4, 15568, 15900, 0.9]]
+single_lines = [[13344, 15900]]
+daemon.spread_crushed_words(single, single_lines, [5], daemon.token_weights(["사막같은 몸에서 겨우 날 떼어"], [5]))
+check("날이 볼 수 있는 길이를 갖는다", single[3][2] - single[3][1] >= 120, f"{single[3][2] - single[3][1]}ms")
+check("시간은 앞 단어에서 나온다", single[2][2] == single[3][1], f"겨우 끝 {single[2][2]} vs 날 시작 {single[3][1]}")
+check("멀쩡한 이웃은 건드리지 않는다", single[0] == [0, 13344, 14058, 0.9], str(single[0]))
 
 tight = [[0, 1000, 1120, 0.9], [1, 1120, 1160, 0.9], [2, 1160, 1280, 0.9]]
-daemon.widen_thin_words(tight, [[1000, 1280]], [3])
-check("여유 없는 이웃에게서는 뺏지 않는다", tight[0][2] - tight[0][1] >= 120 and tight[2][2] - tight[2][1] >= 120, str(tight))
+daemon.spread_crushed_words(tight, [[1000, 1280]], [3], [1.0, 1.0, 1.0])
+check("자리가 없으면 있는 만큼 고르게 나눈다", all(abs((w[2] - w[1]) - 93) <= 2 for w in tight), str([w[2] - w[1] for w in tight]))
+check("자리가 없어도 줄 밖으로 나가지 않는다", tight[0][1] == 1000 and tight[2][2] == 1280, str(tight))
 
 fine = [[0, 0, 500, 0.9], [1, 500, 900, 0.9]]
-daemon.widen_thin_words(fine, [[0, 900]], [2])
+daemon.spread_crushed_words(fine, [[0, 900]], [2], [2.0, 2.0])
 check("충분한 단어는 그대로 둔다", fine == [[0, 0, 500, 0.9], [1, 500, 900, 0.9]], str(fine))
 
 

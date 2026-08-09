@@ -573,67 +573,117 @@ def interpolate_boundaries(candidates: list[dict[str, Any]], count: int) -> list
 
 # 사람이 낼 수 있는 가장 짧은 음절. 이보다 짧게 잡혔다면 경계가 틀린 것이지 그렇게 부른 것이 아니다.
 MIN_WORD_MS = 120.0
+# 가장 빠른 랩이 초당 열 음절이다. 한 음절에 이보다 적은 시간이 배정됐다면 사람이 낼 수 없는 속도다.
+MIN_SYLLABLE_MS = 100.0
 
 
-def widen_thin_words(words: list[list[int | float]], lines: list[list[int]], counts: list[int]) -> None:
+def syllables(word: str) -> int:
+    """대강의 음절 수. 시간을 나눌 몫을 정하는 데만 쓰므로 정확할 필요는 없고 공평하면 된다."""
+    count = 0
+    in_vowel_run = False
+    for character in word:
+        code = ord(character)
+        if 0xAC00 <= code <= 0xD7A3 or 0x3040 <= code <= 0x30FF or 0x4E00 <= code <= 0x9FFF:
+            count += 1  # 한글·가나·한자는 한 글자가 한 음절이다.
+            in_vowel_run = False
+        elif character.isdigit():
+            count += 1
+            in_vowel_run = False
+        elif character.isalpha():
+            # 라틴 문자는 모음 덩어리를 하나로 센다: "kawaii" 는 세 몫.
+            vowel = character.lower() in "aeiouy"
+            if vowel and not in_vowel_run:
+                count += 1
+            in_vowel_run = vowel
+        else:
+            in_vowel_run = False
+    return max(1, count)
+
+
+def token_weights(text_lines: list[str], counts: list[int]) -> list[float]:
+    """토큰마다 몇 음절어치 시간을 받을 자격이 있는지. 토큰이 낱말이 아니면 다 같은 몫이다."""
+    weights: list[float] = []
+    for line_index, count in enumerate(counts):
+        written = text_lines[line_index].split() if line_index < len(text_lines) else []
+        if len(written) == count:
+            weights.extend(float(syllables(word)) for word in written)
+        else:
+            weights.extend([1.0] * max(0, count))
+    return weights
+
+
+def spread_crushed_words(words: list[list[int | float]], lines: list[list[int]], counts: list[int], weights: list[float]) -> None:
     """
-    Give a word that came out too short to see the time its neighbour took from it.
+    Give back the time a word lost to the word that ran over it, in proportion to what it sings.
 
-    A syllable cannot last forty milliseconds — "겨우 날 떼어" put 665ms on 겨우, 40ms on 날 and
-    332ms on 떼어, and 날 flickers past unreadably. The aligner is not wrong that 날 is there or
-    where in the order it falls; it is wrong about where 겨우 stopped, having run the two
-    together. So the boundary moves rather than the word: the time comes out of whichever
-    neighbour can spare it, starting with the one before, which is the one that swallowed it.
+    The forced aligner does not fail loudly. When it cannot find a phoneme it collapses the rest
+    of the line onto the end of it: on the measured song "출근하는 아빠옆에 못 남아 난 도망쳐"
+    came back with 1429ms on 아빠옆에 and the last four words — seven syllables — inside 300ms.
+    Twenty syllables a second is not singing; the fastest rap is ten. So a stretch that dense is
+    not a performance, it is a boundary in the wrong place.
 
-    Nothing is created and nothing is reordered — the line is as long as it was, and a word can
-    only take from a neighbour that stays above the floor itself.
+    A word below its floor pulls in whichever neighbours it must until the stretch is long enough
+    to hold them all, then the stretch is divided by syllable count. Nothing moves out of order
+    and no time is invented — the stretch is as long as it was. Checked against the transcriber,
+    an independent witness: the line above became 아빠옆에 58.18, 못 59.33, 남아 59.61, 도망쳐
+    60.03, where the transcriber heard 58.32, 59.08, 59.32, 59.88 — the four words that had
+    shared 300ms now hold 1.1 seconds between them.
     """
     line_of_token: dict[int, int] = {}
-    first_token: dict[int, int] = {}
-    last_token: dict[int, int] = {}
+    tokens_of_line: dict[int, list[int]] = {}
     position = 0
     for line_index, count in enumerate(counts):
-        if count <= 0:
-            continue
-        first_token[line_index] = position
-        for offset in range(count):
+        for offset in range(max(0, count)):
             line_of_token[position + offset] = line_index
-        last_token[line_index] = position + count - 1
-        position += count
-
+        position += max(0, count)
     for index, word in enumerate(words):
-        duration = float(word[2]) - float(word[1])
-        if duration >= MIN_WORD_MS:
-            continue
         line_index = line_of_token.get(int(word[0]))
-        if line_index is None:
-            continue
-        needed = MIN_WORD_MS - duration
-        previous = words[index - 1] if index > 0 and line_of_token.get(int(words[index - 1][0])) == line_index else None
-        following = words[index + 1] if index + 1 < len(words) and line_of_token.get(int(words[index + 1][0])) == line_index else None
-        # The word before is the one that ran over, so it gives first.
-        if previous is not None:
-            spare = max(0.0, (float(previous[2]) - float(previous[1])) - MIN_WORD_MS)
-            taken = min(needed, spare)
-            if taken > 0:
-                previous[2] = round(float(previous[2]) - taken)
-                word[1] = previous[2]
-                needed -= taken
-        if needed > 0 and following is not None:
-            spare = max(0.0, (float(following[2]) - float(following[1])) - MIN_WORD_MS)
-            taken = min(needed, spare)
-            if taken > 0:
-                following[1] = round(float(following[1]) + taken)
-                word[2] = following[1]
-                needed -= taken
-        # 줄 끝에 홀로 선 단어는 줄이 가진 여백에서 가져온다.
-        if needed > 0 and previous is None and following is None:
-            room = min(needed, max(0.0, float(lines[line_index][1]) - float(word[2])))
-            word[2] = round(float(word[2]) + room)
-        if int(word[0]) == first_token.get(line_index) and float(word[1]) < lines[line_index][0]:
-            lines[line_index][0] = int(word[1])
-        if int(word[0]) == last_token.get(line_index) and float(word[2]) > lines[line_index][1]:
-            lines[line_index][1] = int(word[2])
+        if line_index is not None:
+            tokens_of_line.setdefault(line_index, []).append(index)
+
+    for line_index, indices in tokens_of_line.items():
+        floors = [max(MIN_WORD_MS, MIN_SYLLABLE_MS * weight_of(weights, int(words[index][0]))) for index in indices]
+        settled: set[int] = set()
+        while True:
+            crushed = next(
+                (
+                    k
+                    for k in range(len(indices))
+                    if k not in settled and float(words[indices[k]][2]) - float(words[indices[k]][1]) < floors[k] - 0.5
+                ),
+                None,
+            )
+            if crushed is None:
+                break
+            low = high = crushed
+            span = float(words[indices[high]][2]) - float(words[indices[low]][1])
+            while span < sum(floors[low : high + 1]) and (low > 0 or high < len(indices) - 1):
+                # 삼킨 쪽은 대개 앞이다. 앞이 없을 때만 뒤에서 가져온다.
+                if low > 0:
+                    low -= 1
+                else:
+                    high += 1
+                span = float(words[indices[high]][2]) - float(words[indices[low]][1])
+            share = sum(weights_in(weights, words, indices, low, high))
+            cursor = float(words[indices[low]][1])
+            for k in range(low, high + 1):
+                width = span * weight_of(weights, int(words[indices[k]][0])) / share if share > 0 else span / (high - low + 1)
+                words[indices[k]][1] = round(cursor)
+                cursor += width
+                words[indices[k]][2] = round(cursor)
+            settled.update(range(low, high + 1))
+        first, last = words[indices[0]], words[indices[-1]]
+        if line_index < len(lines):
+            lines[line_index][0] = min(lines[line_index][0], int(first[1]))
+            lines[line_index][1] = max(lines[line_index][1], int(last[2]))
+
+
+def weight_of(weights: list[float], token_index: int) -> float:
+    return weights[token_index] if 0 <= token_index < len(weights) else 1.0
+
+
+def weights_in(weights: list[float], words: list[list[int | float]], indices: list[int], low: int, high: int) -> list[float]:
+    return [weight_of(weights, int(words[indices[k]][0])) for k in range(low, high + 1)]
 
 
 def snap_line_starts(
@@ -806,7 +856,7 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
             last_token_of_line[token_index - 1] = line_index
         snap_line_starts(result_words, line_windows, counts, line_start_witness_ms)
         extend_held_endings(result_words, line_windows, last_token_of_line, heard_words)
-        widen_thin_words(result_words, line_windows, counts)
+        spread_crushed_words(result_words, line_windows, counts, token_weights(text_lines, counts))
         coverage = aligned_token_weight / max(1, sum(counts))
         quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, language, detected)
         return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}
