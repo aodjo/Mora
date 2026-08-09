@@ -2,7 +2,7 @@ import { ArrowLeft, AudioLines, Check, ChevronRight, ExternalLink, Play, RotateC
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useToast } from "../Toast";
-import { number, parseObject, stateLabel, stateTone, text, time, type AdminItem } from "./utils";
+import { number, parseObject, stageLabel, stateLabel, stateTone, text, time, type AdminItem } from "./utils";
 
 interface Detail {
   recording: AdminItem;
@@ -235,13 +235,22 @@ export function RecordingDetail({
         ? "소스를 확정할 수 있는 리비전이 없습니다."
         : "";
 
-  // 더 진행되지 않는 작업만 다시 시작할 수 있다 — 돌고 있는 것을 두 번 돌릴 이유는 없다.
-  const finishedJob = (() => {
-    const revision = detail.revisions.find((item) =>
+  /*
+    다시 시작할 수 있는 작업: 끝난 것, 그리고 몇 분째 조용한 것. 돌고 있는 작업을 두 번 돌릴
+    이유는 없지만, 워커가 죽으면 상태는 running 인 채 멈춘다 — 그때 버튼이 사라지면 이 화면에는
+    탈출구가 없다.
+  */
+  const restartable = (() => {
+    const finished = detail.revisions.find((item) =>
       ["candidate_ready", "failed", "cancelled", "unsupported_language"].includes(text(item.job_state)),
     );
-    return revision === undefined ? null : text(revision.job_id);
+    if (finished !== undefined) return { jobId: text(finished.job_id), stalled: false };
+    const quiet = detail.revisions.find(
+      (item) => ["claimed", "running", "queued"].includes(text(item.job_state)) && Date.now() - number(item.job_updated_at) > 3 * 60_000,
+    );
+    return quiet === undefined ? null : { jobId: text(quiet.job_id), stalled: true };
   })();
+  const runningJob = detail.revisions.find((item) => ["claimed", "running", "queued"].includes(text(item.job_state)));
 
   async function rebuild(jobId: string): Promise<void> {
     setBusy(true);
@@ -437,10 +446,10 @@ export function RecordingDetail({
             먼 길이다. 결과를 보고 있는 자리에서 다시 만들 수 있어야 한다.
           */}
           {detail.transcript_id !== null && <TranscriptPanel artifactId={detail.transcript_id} />}
-          {finishedJob !== null && (
-            <button className="secondary-button" onClick={() => void rebuild(finishedJob)} disabled={busy}>
+          {restartable !== null && (
+            <button className="secondary-button" onClick={() => void rebuild(restartable.jobId)} disabled={busy}>
               <RotateCcw size={13} />
-              다시 만들기
+              {restartable.stalled ? "멈춘 작업 다시 시작" : "다시 만들기"}
             </button>
           )}
         </div>
@@ -448,7 +457,11 @@ export function RecordingDetail({
           <p className="detail-empty">
             {selected === undefined
               ? "음원을 확정하면 Generator가 정렬을 시작합니다."
-              : "Generator가 정렬을 마치면 품질 지표와 함께 표시됩니다."}
+              : runningJob !== undefined
+                ? `Generator 처리 중 · ${stageLabel(runningJob.current_stage) || text(runningJob.job_state)}${
+                    restartable?.stalled === true ? " — 몇 분째 소식이 없습니다. 워커가 죽었다면 위 버튼으로 다시 시작하세요." : ""
+                  }`
+                : "Generator가 정렬을 마치면 품질 지표와 함께 표시됩니다."}
           </p>
         ) : (
           detail.candidates.map((candidate) => {

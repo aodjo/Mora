@@ -295,7 +295,8 @@ async function recordingDetail(env: WorkerEnv, actor: Actor, recordingId: string
        (SELECT COUNT(*) FROM lyric_texts l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count,
        (SELECT j.id FROM jobs j WHERE j.input_revision_id=i.id) job_id,
        (SELECT j.state FROM jobs j WHERE j.input_revision_id=i.id) job_state,
-       (SELECT j.current_stage FROM jobs j WHERE j.input_revision_id=i.id) current_stage
+       (SELECT j.current_stage FROM jobs j WHERE j.input_revision_id=i.id) current_stage,
+       (SELECT j.updated_at FROM jobs j WHERE j.input_revision_id=i.id) job_updated_at
      FROM input_revisions i WHERE i.recording_id=?1 ORDER BY i.created_at DESC`,
     [recordingId],
   );
@@ -1820,11 +1821,16 @@ async function jobAction(env: WorkerEnv, actor: Actor, jobId: string, action: st
       .bind(now, jobId)
       .run();
   else if (action === "retry") {
-    const row = await env.ADMIN_DB.prepare("SELECT input_revision_id,state FROM jobs WHERE id=?1")
+    const row = await env.ADMIN_DB.prepare("SELECT input_revision_id,state,updated_at FROM jobs WHERE id=?1")
       .bind(jobId)
-      .first<{ input_revision_id: string; state: string }>();
+      .first<{ input_revision_id: string; state: string; updated_at: number }>();
     if (row === null) throw new ServiceError(404, "NOT_FOUND");
-    if (!["failed", "unsupported_language", "candidate_ready", "cancelled"].includes(row.state)) throw new ServiceError(409, "CONFLICT");
+    // 끝난 작업뿐 아니라 조용해진 작업도. 살아 있는 워커는 단계마다 updated_at 을 만지므로,
+    // 몇 분째 조용한 running 은 죽은 워커가 두고 간 것이다 — 큐의 자동 구조는 30분을 기다리고
+    // 시도 한도를 다 쓴 작업은 아예 줍지 않으니, 사람이 누른 재시작이 그 둘의 탈출구다.
+    const finished = ["failed", "unsupported_language", "candidate_ready", "cancelled"].includes(row.state);
+    const abandoned = ["claimed", "running", "queued"].includes(row.state) && now - row.updated_at > 3 * 60_000;
+    if (!finished && !abandoned) throw new ServiceError(409, "CONFLICT");
     // 순서대로, 한 문장씩. batch 는 한 묶음으로 보내므로 외래키가 걸린 삭제의 앞뒤를
     // 이 코드가 정한 대로 지켜준다고 기대할 수 없다 — 잠금을 먼저 놓아주고 나서 후보를 지운다.
     const doomed = "SELECT id FROM alignment_candidates WHERE job_id=?1 AND status IN ('draft','pending','rejected')";
