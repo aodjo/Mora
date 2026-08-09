@@ -114,6 +114,34 @@ words3[2][1] = 13.0e3
 daemon.extend_held_endings(words3, lines3, last3, heard3)
 check("늘려도 다음 줄 시작 직전에서 멈춘다", words3[1][2] == 12960, f"{words3[1][2]}")
 
+
+# ── 줄 시작의 소음: 정렬기가 앞 소음을 첫 단어로 삼키면 ASR이 들은 시작이 이긴다 ──
+# 실측: "이상한 소음 다음에 단어" — 하이라이트가 소음에서 켜졌다.
+words4: list[list[int | float]] = [[0, 9.0e3, 11.0e3, 0.5], [1, 11.2e3, 11.9e3, 0.9]]
+lines4 = [[9000, 11900]]
+daemon.snap_line_starts(words4, lines4, [2], {0: 10.55e3})  # ASR은 10.55초에 첫 단어를 들었다
+check("소음을 삼킨 첫 단어는 들은 시작으로 당겨진다", words4[0][1] == 10470, f"{words4[0][1]}")
+check("줄 스팬 시작도 함께 온다", lines4[0][0] == 10470, f"{lines4[0][0]}")
+check("줄 안 두 번째 단어는 건드리지 않는다", words4[1][1] == 11200, f"{words4[1][1]}")
+
+# 250ms 이내 차이는 정렬기의 미세한 판정이 우선이다.
+words5: list[list[int | float]] = [[0, 10.4e3, 11.0e3, 0.9]]
+lines5 = [[10400, 11000]]
+daemon.snap_line_starts(words5, lines5, [1], {0: 10.55e3})
+check("작은 차이는 그대로 둔다", words5[0][1] == 10400, f"{words5[0][1]}")
+
+# 당기더라도 단어 몸통은 남긴다.
+words6: list[list[int | float]] = [[0, 9.0e3, 10.6e3, 0.5]]
+lines6 = [[9000, 10600]]
+daemon.snap_line_starts(words6, lines6, [1], {0: 10.65e3})
+check("끝 직전까지만 당긴다", words6[0][1] == 10480, f"{words6[0][1]}")
+
+# ASR이 첫 단어를 못 들었으면(앵커 없음) 손대지 않는다.
+words7: list[list[int | float]] = [[0, 9.0e3, 11.0e3, 0.5]]
+lines7 = [[9000, 11000]]
+daemon.snap_line_starts(words7, lines7, [1], {})
+check("증인이 없으면 그대로 둔다", words7[0][1] == 9000, f"{words7[0][1]}")
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")

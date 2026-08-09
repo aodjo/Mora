@@ -319,6 +319,46 @@ def interpolate_boundaries(candidates: list[dict[str, Any]], count: int) -> list
     return projected
 
 
+def snap_line_starts(
+    words: list[list[int | float]],
+    lines: list[list[int]],
+    counts: list[int],
+    witness_ms: dict[int, float],
+) -> None:
+    """
+    Pull a line's opening word off the noise in front of it.
+
+    CTC alignment absorbs whatever sound precedes a line's first word into that word — a
+    breath, a click, a synth swell reads as its opening consonant, and the highlight lights
+    up on the noise. The transcriber is the counter-witness: it stamps a word where it heard
+    it spoken, and noise rarely transcribes into the exact lyric word. So when the aligner
+    starts a line well before the word was heard, the heard start wins; a small gap is
+    ordinary jitter and stays with the aligner, which is the finer instrument.
+    """
+    first_token: dict[int, int] = {}
+    position = 0
+    for line_index, count in enumerate(counts):
+        first_token[position] = line_index
+        position += count
+    for word in words:
+        line_index = first_token.get(int(word[0]))
+        if line_index is None:
+            continue
+        heard = witness_ms.get(line_index)
+        if heard is None:
+            continue
+        start, end = float(word[1]), float(word[2])
+        corrected = heard - 80.0  # a hair of onset grace
+        if corrected - start < 250:
+            continue  # disagreement small enough to be jitter, not noise
+        corrected = min(corrected, end - 120.0)  # the word keeps a body
+        if corrected <= start:
+            continue
+        word[1] = round(corrected)
+        if line_index < len(lines) and lines[line_index][0] < word[1]:
+            lines[line_index][0] = int(word[1])
+
+
 def extend_held_endings(
     words: list[list[int | float]],
     lines: list[list[int]],
@@ -368,7 +408,18 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
     proportional_windows, fallback_words = proportional_spans(counts, start, end)
     # Where the transcriber actually heard these words beats dividing the song by word count.
     lyric_words = [comparable(word) for line in text_lines for word in line.split() if comparable(word)]
-    anchored = anchored_windows(counts, lyric_words, asr_words(asr), start, end)
+    heard_words = asr_words(asr)
+    anchored = anchored_windows(counts, lyric_words, heard_words, start, end)
+    # When was each line's first word heard — the counter-witness against leading noise.
+    anchors = match_sequences(lyric_words, heard_words)
+    line_start_witness_ms: dict[int, float] = {}
+    word_offset = 0
+    for line_index, line in enumerate(text_lines):
+        line_word_count = len([word for word in line.split() if comparable(word)])
+        opening = anchors.get(word_offset)
+        if line_word_count > 0 and opening is not None:
+            line_start_witness_ms[line_index] = float(opening["start"]) * 1000
+        word_offset += line_word_count
     line_windows = anchored or [span[:] for span in proportional_windows]
     anchored_by_asr = anchored is not None
     try:
@@ -409,7 +460,8 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
                 result_words.extend(fallback)
             token_index += count
             last_token_of_line[token_index - 1] = line_index
-        extend_held_endings(result_words, line_windows, last_token_of_line, asr_words(asr))
+        snap_line_starts(result_words, line_windows, counts, line_start_witness_ms)
+        extend_held_endings(result_words, line_windows, last_token_of_line, heard_words)
         coverage = aligned_token_weight / max(1, sum(counts))
         quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, language, detected)
         return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}
