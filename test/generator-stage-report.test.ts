@@ -27,7 +27,7 @@ function jobInput() {
  * Node ended the process — losing a job that was, by every other measure, running fine. This
  * drives the real worker with an admin whose event() always rejects.
  */
-function harness(): {
+function harness(options: { ackFails?: boolean } = {}): {
   worker: GeneratorWorker;
   seen: GeneratorWorkerStatus[];
   submitted: unknown[];
@@ -63,6 +63,7 @@ function harness(): {
         return { leaseId: "lease-1", attempts: 1, body: jobInput() } as unknown as LeasedMessage;
       },
       ack: async (leaseId: string) => {
+        if (options.ackFails === true) throw new Error('ADMIN_409_/generator/queue/ack_{"error":"CONFLICT"}');
         acked.push(leaseId);
       },
       retry: async () => undefined,
@@ -120,4 +121,30 @@ test("a failing stage report neither stops the job nor kills the process", async
   assert.match(warnings[0]!.message, /단계 보고 실패/u);
   // 어느 엔드포인트였는지가 메시지에 남아야 다음에 쫓아갈 수 있다.
   assert.match(warnings[0]!.message, /\/generator\/events/u);
+});
+
+test("a lease that cannot be closed does not stop the Generator", async () => {
+  // ack 는 이미 끝난 일에 대한 마지막 한 마디다. 리스가 만료됐거나, 네트워크가 끊겼거나,
+  // 작업이 지워졌을 수 있다 — 어느 쪽이든 타이밍은 이미 서버에 있다.
+  const raised: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => {
+    raised.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  const { worker, seen, submitted } = harness({ ackFails: true });
+  try {
+    const running = worker.run();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    worker.stop();
+    await running;
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  assert.deepEqual(raised, []);
+  assert.equal(submitted.length, 1, "후보는 이미 제출됐다");
+  const warnings = seen.filter((status) => status.state === "warning");
+  assert.ok(
+    warnings.some((status) => /큐 정리 실패/u.test(status.message)),
+    "정리 실패는 조용히 넘어가지 않고 알려져야 한다",
+  );
 });

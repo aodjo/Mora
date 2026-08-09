@@ -175,14 +175,15 @@ export class GeneratorWorker {
       await this.sendStage(input, "candidate_submit", "started", 0.97);
       await this.options.admin.candidates(submission);
       await this.sendStage(input, "candidate_submit", "completed", 0.99);
-      await this.options.queue.ack(leased.leaseId);
+      await this.settle(() => this.options.queue.ack(leased.leaseId));
       succeeded = true;
     } catch (error) {
       if (input !== undefined) await this.sendFailure(input, error);
       // A language the aligner has no model for will fail again on every attempt.
       retrying = leased.attempts < 3 && safeCode(error) !== "UNSUPPORTED_LANGUAGE";
-      if (retrying) await this.options.queue.retry(leased.leaseId, Math.min(300, 30 * 2 ** Math.max(0, leased.attempts - 1)));
-      else await this.options.queue.ack(leased.leaseId);
+      if (retrying)
+        await this.settle(() => this.options.queue.retry(leased.leaseId, Math.min(300, 30 * 2 ** Math.max(0, leased.attempts - 1))));
+      else await this.settle(() => this.options.queue.ack(leased.leaseId));
     } finally {
       this.options.daemon.onStage = undefined;
       if (!retrying) await fs.rm(workDir, { recursive: true, force: true });
@@ -190,6 +191,26 @@ export class GeneratorWorker {
       if (succeeded && input !== undefined) await this.sendStage(input, "cleanup", "completed", 1);
     }
   }
+  /**
+   * Closing the lease is the last word about work that is already finished.
+   *
+   * It can fail for reasons that say nothing about the job — the lease outlived a long song,
+   * the network blinked, the job was deleted while it ran — and the timings are on the server
+   * either way. Ending the process there stopped a Generator that was working, and left every
+   * queued song waiting for someone to start it again. An unclosed lease returns to the queue
+   * on its own, so this is worth a line in the log and nothing more.
+   */
+  private async settle(close: () => Promise<unknown>): Promise<void> {
+    try {
+      await close();
+    } catch (error) {
+      this.options.onStatus?.({
+        state: "warning",
+        message: `큐 정리 실패 (${error instanceof Error ? error.message : "UNKNOWN"}) — 작업은 끝났고, 리스는 서버에서 회수됩니다.`,
+      });
+    }
+  }
+
   private async sendStage(
     input: GeneratorJobInput,
     stage: PipelineStage,
