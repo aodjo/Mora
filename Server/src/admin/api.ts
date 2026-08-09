@@ -1815,15 +1815,22 @@ async function jobAction(env: WorkerEnv, actor: Actor, jobId: string, action: st
       .first<{ input_revision_id: string; state: string }>();
     if (row === null) throw new ServiceError(404, "NOT_FOUND");
     if (!["failed", "unsupported_language", "candidate_ready", "cancelled"].includes(row.state)) throw new ServiceError(409, "CONFLICT");
-    await env.ADMIN_DB.batch([
-      // 사람이 누른 재시작이다. 자동 재시도 한도는 실패가 반복되는 것을 막으려는 것이지,
-      // 코드를 고친 뒤 다시 만드는 일을 막으려는 것이 아니다.
-      env.ADMIN_DB.prepare(
-        "UPDATE jobs SET state='queued',cancel_requested=0,error_code=NULL,attempt_count=0,current_stage=NULL,progress=0,worker_id=NULL,available_at=?1,updated_at=?1 WHERE id=?2",
-      ).bind(now, jobId),
-      // 아직 아무도 손대지 않은 후보는 곧 대체된다. 승인했거나 공개한 것은 남긴다.
-      env.ADMIN_DB.prepare("DELETE FROM alignment_candidates WHERE job_id=?1 AND status IN ('draft','pending','rejected')").bind(jobId),
-    ]);
+    // 순서대로, 한 문장씩. batch 는 한 묶음으로 보내므로 외래키가 걸린 삭제의 앞뒤를
+    // 이 코드가 정한 대로 지켜준다고 기대할 수 없다 — 잠금을 먼저 놓아주고 나서 후보를 지운다.
+    const doomed = "SELECT id FROM alignment_candidates WHERE job_id=?1 AND status IN ('draft','pending','rejected')";
+    await env.ADMIN_DB.prepare(`DELETE FROM edit_leases WHERE candidate_id IN (${doomed})`).bind(jobId).run();
+    await env.ADMIN_DB.prepare(`DELETE FROM draft_edits WHERE candidate_id IN (${doomed})`).bind(jobId).run();
+    // 승인했거나 공개한 것, 공개 기록이 가리키는 것은 남긴다.
+    await env.ADMIN_DB.prepare(`DELETE FROM alignment_candidates WHERE id IN (${doomed}) AND id NOT IN (SELECT candidate_id FROM releases)`)
+      .bind(jobId)
+      .run();
+    // 사람이 누른 재시작이다. 자동 재시도 한도는 실패가 반복되는 것을 막으려는 것이지,
+    // 코드를 고친 뒤 다시 만드는 일을 막으려는 것이 아니다.
+    await env.ADMIN_DB.prepare(
+      "UPDATE jobs SET state='queued',cancel_requested=0,error_code=NULL,attempt_count=0,current_stage=NULL,progress=0,worker_id=NULL,available_at=?1,updated_at=?1 WHERE id=?2",
+    )
+      .bind(now, jobId)
+      .run();
   } else throw new ServiceError(404, "NOT_FOUND");
   await audit(env, actor, `job.${action}`, "job", jobId);
   await event(env, `job.${action}`, { job_id: jobId });
