@@ -277,7 +277,7 @@ async function recordingDetail(env: WorkerEnv, actor: Actor, recordingId: string
   const revisions = await list(
     env.ADMIN_DB,
     `SELECT i.id,i.state,i.source_id,i.created_at,
-       (SELECT COUNT(*) FROM lyric_revisions l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count,
+       (SELECT COUNT(*) FROM lyric_texts l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count,
        (SELECT j.id FROM jobs j WHERE j.input_revision_id=i.id) job_id,
        (SELECT j.state FROM jobs j WHERE j.input_revision_id=i.id) job_state,
        (SELECT j.current_stage FROM jobs j WHERE j.input_revision_id=i.id) current_stage
@@ -288,9 +288,10 @@ async function recordingDetail(env: WorkerEnv, actor: Actor, recordingId: string
   const candidates = await list(
     env.ADMIN_DB,
     `SELECT c.id,c.job_id,c.input_revision_id,c.status,c.tokenizer,c.quality,c.quality_score,c.created_at,
-       l.provider,l.language
+       (SELECT group_concat(s.provider) FROM lyric_sources s WHERE s.text_id=l.id) provider,
+       l.language
      FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id
-     JOIN lyric_revisions l ON l.id=c.variant_id
+     JOIN lyric_texts l ON l.id=c.variant_id
      WHERE i.recording_id=?1 ORDER BY c.quality_score DESC,c.created_at DESC`,
     [recordingId],
   );
@@ -594,6 +595,64 @@ async function setCollectionTarget(env: WorkerEnv, actor: Actor, value: Record<s
   await env.ADMIN_DB.prepare("UPDATE collection_lease SET finished_at=0,added=1 WHERE id='discovery' AND finished_at IS NOT NULL").run();
   await audit(env, actor, "collection.target", "collection_queue", "all", { target });
   return json({ target }, 202);
+}
+
+/**
+ * Stores one lyric text once, and records who supplied it.
+ *
+ * The Korean services syndicate the same words, so five providers hand back one lyric five
+ * times. Keeping the text per provider meant the Generator force-aligned identical words once
+ * per provider — a third of the alignment work measured was that. The text is written once and
+ * the provider is written against it, so four services agreeing costs four small rows rather
+ * than four alignments, and the agreement is still on record.
+ */
+async function storeLyricText(
+  env: WorkerEnv,
+  inputId: string,
+  provider: string,
+  providerRef: string | null,
+  variant: {
+    layer: string;
+    language: string;
+    text: string;
+    text_hash: string;
+    preprocessor: string;
+    confidence: number;
+    review_required: boolean;
+    offset_map: unknown;
+    rules: unknown;
+  },
+  now: number,
+): Promise<void> {
+  const id = crypto.randomUUID();
+  await env.ADMIN_DB.prepare(
+    `INSERT OR IGNORE INTO lyric_texts (id,input_revision_id,layer,language,text,text_hash,preprocessor,confidence,review_required,offset_map,rules,created_at)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)`,
+  )
+    .bind(
+      id,
+      inputId,
+      variant.layer,
+      variant.language,
+      variant.text,
+      variant.text_hash,
+      variant.preprocessor,
+      variant.confidence,
+      variant.review_required ? 1 : 0,
+      JSON.stringify(variant.offset_map),
+      JSON.stringify(variant.rules),
+      now,
+    )
+    .run();
+  // The insert is ignored when these words are already here, so the id to attribute against is
+  // whichever row holds them — not necessarily the one just generated.
+  const held = await env.ADMIN_DB.prepare("SELECT id FROM lyric_texts WHERE input_revision_id=?1 AND layer=?2 AND text_hash=?3")
+    .bind(inputId, variant.layer, variant.text_hash)
+    .first<{ id: string }>();
+  if (held === null) return;
+  await env.ADMIN_DB.prepare("INSERT OR IGNORE INTO lyric_sources (text_id,provider,provider_ref,fetched_at) VALUES (?1,?2,?3,?4)")
+    .bind(held.id, provider, providerRef, now)
+    .run();
 }
 
 const SEARCH_KINDS = new Set(["youtube", "song"]);
@@ -920,45 +979,47 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
     const provider = requiredString(item.provider, 100);
     const language =
       typeof item.language === "string" ? item.language : typeof recording.language === "string" ? recording.language : "und";
-    const rawHash = await sha256(raw);
-    await env.ADMIN_DB.prepare(
-      `INSERT OR IGNORE INTO lyric_revisions (id,input_revision_id,provider,provider_ref,layer,language,text,text_hash,preprocessor,confidence,review_required,offset_map,rules,created_at) VALUES (?1,?2,?3,?4,'raw',?5,?6,?7,'raw-v1',1,0,'[]','[]',?8)`,
-    )
-      .bind(
-        crypto.randomUUID(),
-        inputId,
-        provider,
-        typeof item.provider_ref === "string" ? item.provider_ref : null,
+    const providerRef = typeof item.provider_ref === "string" ? item.provider_ref : null;
+    await storeLyricText(
+      env,
+      inputId,
+      provider,
+      providerRef,
+      {
+        layer: "raw",
         language,
-        raw,
-        rawHash,
-        now,
-      )
-      .run();
+        text: raw,
+        text_hash: await sha256(raw),
+        preprocessor: "raw-v1",
+        confidence: 1,
+        review_required: false,
+        offset_map: [],
+        rules: [],
+      },
+      now,
+    );
     const processed = preprocessLyrics(raw, language);
     for (const variant of processed.variants) {
       const tokenization = tokenizeV2(variant.text, variant.language);
       if (tokenization.tokens.length === 0) continue;
-      await env.ADMIN_DB.prepare(
-        `INSERT OR IGNORE INTO lyric_revisions (id,input_revision_id,provider,provider_ref,layer,language,text,text_hash,preprocessor,confidence,review_required,offset_map,rules,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)`,
-      )
-        .bind(
-          crypto.randomUUID(),
-          inputId,
-          provider,
-          typeof item.provider_ref === "string" ? item.provider_ref : null,
-          variant.layer,
-          variant.language,
-          variant.text,
-          textHash(tokenization.canonical),
-          processed.version,
-          variant.confidence,
-          variant.review_required ? 1 : 0,
-          JSON.stringify(variant.offset_map),
-          JSON.stringify(variant.rules),
-          now,
-        )
-        .run();
+      await storeLyricText(
+        env,
+        inputId,
+        provider,
+        providerRef,
+        {
+          layer: variant.layer,
+          language: variant.language,
+          text: variant.text,
+          text_hash: textHash(tokenization.canonical),
+          preprocessor: processed.version,
+          confidence: variant.confidence,
+          review_required: variant.review_required,
+          offset_map: variant.offset_map,
+          rules: variant.rules,
+        },
+        now,
+      );
     }
   }
 
@@ -995,7 +1056,7 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
 async function updateSourceReview(env: WorkerEnv, actor: Actor, inputId: string, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "jobs.manage");
   const input = await env.ADMIN_DB.prepare(
-    `SELECT i.id,i.recording_id,i.state,r.isrc,r.language,(SELECT COUNT(*) FROM lyric_revisions l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count FROM input_revisions i JOIN recordings r ON r.id=i.recording_id WHERE i.id=?1`,
+    `SELECT i.id,i.recording_id,i.state,r.isrc,r.language,(SELECT COUNT(*) FROM lyric_texts l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count FROM input_revisions i JOIN recordings r ON r.id=i.recording_id WHERE i.id=?1`,
   )
     .bind(inputId)
     .first<{ id: string; recording_id: string; state: string; isrc: string | null; language: string; lyrics_count: number }>();
@@ -1028,35 +1089,46 @@ async function updateSourceReview(env: WorkerEnv, actor: Actor, inputId: string,
   if (raw.length > 0) {
     const now = Date.now();
     const provider = "manual-admin";
-    const rawHash = await sha256(raw);
-    await env.ADMIN_DB.prepare(
-      `INSERT OR IGNORE INTO lyric_revisions (id,input_revision_id,provider,provider_ref,layer,language,text,text_hash,preprocessor,confidence,review_required,offset_map,rules,created_at) VALUES (?1,?2,?3,NULL,'raw',?4,?5,?6,'raw-v1',1,0,'[]','[]',?7)`,
-    )
-      .bind(crypto.randomUUID(), inputId, provider, language, raw, rawHash, now)
-      .run();
+    await storeLyricText(
+      env,
+      inputId,
+      provider,
+      null,
+      {
+        layer: "raw",
+        language,
+        text: raw,
+        text_hash: await sha256(raw),
+        preprocessor: "raw-v1",
+        confidence: 1,
+        review_required: false,
+        offset_map: [],
+        rules: [],
+      },
+      now,
+    );
     const processed = preprocessLyrics(raw, language);
     for (const variant of processed.variants) {
       const tokenization = tokenizeV2(variant.text, variant.language);
       if (tokenization.tokens.length === 0) continue;
-      await env.ADMIN_DB.prepare(
-        `INSERT OR IGNORE INTO lyric_revisions (id,input_revision_id,provider,provider_ref,layer,language,text,text_hash,preprocessor,confidence,review_required,offset_map,rules,created_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)`,
-      )
-        .bind(
-          crypto.randomUUID(),
-          inputId,
-          provider,
-          variant.layer,
-          variant.language,
-          variant.text,
-          textHash(tokenization.canonical),
-          processed.version,
-          variant.confidence,
-          variant.review_required ? 1 : 0,
-          JSON.stringify(variant.offset_map),
-          JSON.stringify(variant.rules),
-          now,
-        )
-        .run();
+      await storeLyricText(
+        env,
+        inputId,
+        provider,
+        null,
+        {
+          layer: variant.layer,
+          language: variant.language,
+          text: variant.text,
+          text_hash: textHash(tokenization.canonical),
+          preprocessor: processed.version,
+          confidence: variant.confidence,
+          review_required: variant.review_required,
+          offset_map: variant.offset_map,
+          rules: variant.rules,
+        },
+        now,
+      );
     }
   }
   await audit(env, actor, "source.metadata_update", "input_revision", inputId, {
@@ -1072,7 +1144,7 @@ async function updateSourceReview(env: WorkerEnv, actor: Actor, inputId: string,
 async function selectSourceReview(env: WorkerEnv, actor: Actor, inputId: string, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "jobs.manage");
   const input = await env.ADMIN_DB.prepare(
-    `SELECT i.id,i.recording_id,i.state,r.isrc,(SELECT COUNT(*) FROM lyric_revisions l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count FROM input_revisions i JOIN recordings r ON r.id=i.recording_id WHERE i.id=?1`,
+    `SELECT i.id,i.recording_id,i.state,r.isrc,(SELECT COUNT(*) FROM lyric_texts l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count FROM input_revisions i JOIN recordings r ON r.id=i.recording_id WHERE i.id=?1`,
   )
     .bind(inputId)
     .first<{ id: string; recording_id: string; state: string; isrc: string | null; lyrics_count: number }>();
@@ -1256,7 +1328,10 @@ async function generatorJob(env: WorkerEnv, actor: Actor, jobId: string): Promis
     .bind(attemptId, jobId, worker.id, startedAt)
     .run();
   const lyrics = await env.ADMIN_DB.prepare(
-    "SELECT id,provider,provider_ref,language,text,preprocessor FROM lyric_revisions WHERE input_revision_id=?1 AND layer!='raw'",
+    `SELECT l.id, l.language, l.text, l.preprocessor,
+            (SELECT group_concat(s.provider) FROM lyric_sources s WHERE s.text_id=l.id) provider,
+            (SELECT MIN(s.provider_ref) FROM lyric_sources s WHERE s.text_id=l.id) provider_ref
+     FROM lyric_texts l WHERE l.input_revision_id=?1 AND l.layer!='raw' ORDER BY l.created_at`,
   )
     .bind(String(row.input_revision_id))
     .all<Record<string, unknown>>();
@@ -1530,7 +1605,7 @@ async function withdrawRelease(env: WorkerEnv, actor: Actor, releaseId: string):
 async function candidateDetail(env: WorkerEnv, actor: Actor, candidateId: string): Promise<Response> {
   requirePermission(actor, "candidates.read");
   const candidate = await env.ADMIN_DB.prepare(
-    `SELECT c.*,l.text lyric_text,l.language lyric_language,l.provider lyric_provider,l.layer lyric_layer,r.artist recording_artist,r.title recording_title FROM alignment_candidates c JOIN lyric_revisions l ON l.id=c.variant_id JOIN input_revisions i ON i.id=c.input_revision_id JOIN recordings r ON r.id=i.recording_id WHERE c.id=?1`,
+    `SELECT c.*,l.text lyric_text,l.language lyric_language,(SELECT group_concat(s.provider) FROM lyric_sources s WHERE s.text_id=l.id) lyric_provider,l.layer lyric_layer,r.artist recording_artist,r.title recording_title FROM alignment_candidates c JOIN lyric_texts l ON l.id=c.variant_id JOIN input_revisions i ON i.id=c.input_revision_id JOIN recordings r ON r.id=i.recording_id WHERE c.id=?1`,
   )
     .bind(candidateId)
     .first<Record<string, unknown>>();
