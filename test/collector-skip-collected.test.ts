@@ -55,17 +55,6 @@ function harness(
       skips.push(JSON.parse(String(init?.body)) as { artist: string; title: string; reason: string });
       return Response.json({ accepted: true });
     }
-    if (url.startsWith("https://api.listenbrainz.org/")) {
-      return Response.json({
-        payload: {
-          recordings: CHART.map((row, rank) => ({
-            track_name: row.title,
-            artist_name: row.artist,
-            listen_count: CHART.length - rank,
-          })),
-        },
-      });
-    }
     if (url.startsWith("https://musicbrainz.org/")) return Response.json({ recordings: [] });
     if (url.endsWith("/admin/api/collector/recordings")) {
       const sent = JSON.parse(String(init?.body)) as { recording: { artist: string; title: string } };
@@ -82,6 +71,8 @@ function harness(
     dailyBudget: 2,
     markets: ["KR"],
     fetch: fetchImpl,
+    chartSource: async (market) =>
+      market === "KR" ? CHART.map((row, rank) => ({ ...row, popularity: 1 - rank / CHART.length, freshness: 0, market: "KR" })) : [],
     youtubeSearch: async (seed): Promise<YoutubeCandidate[]> => {
       searched.push(`${seed.artist} - ${seed.title}`);
       if (sourceBox.none) return [];

@@ -1,5 +1,5 @@
 import type { LyricsProvider, LyricsProviderResult } from "../../packages/contracts/src/index.js";
-import { ListenBrainzClient } from "./listenbrainz.js";
+import { chartSeeds } from "./charts.js";
 import { MusicBrainzClient } from "./musicbrainz.js";
 import type { CollectorConfig, RecordingSeed, YoutubeCandidate } from "./types.js";
 import { searchYoutubeMusic } from "./youtube.js";
@@ -73,11 +73,10 @@ export class CollectedIndex {
 export class CollectorService {
   readonly #fetch: typeof fetch;
   readonly #musicbrainz: MusicBrainzClient;
-  readonly #listenbrainz: ListenBrainzClient;
+
   constructor(readonly config: CollectorConfig) {
     this.#fetch = config.fetch ?? fetch;
     this.#musicbrainz = new MusicBrainzClient(config.userAgent, this.#fetch);
-    this.#listenbrainz = new ListenBrainzClient(this.#fetch);
   }
 
   /**
@@ -144,13 +143,8 @@ export class CollectorService {
   async discover(collected: CollectedIndex = new CollectedIndex([])): Promise<RecordingSeed[]> {
     const pools: RecordingSeed[] = [];
     this.config.onProgress?.({ stage: "discovering", markets: this.config.markets });
-    for (const market of this.config.markets) {
-      const [popular, fresh] = await Promise.all([
-        this.#listenbrainz.popular(market, 100).catch(() => []),
-        this.#musicbrainz.fresh(market, 14, 100).catch(() => []),
-      ]);
-      pools.push(...popular, ...fresh);
-    }
+    const source = this.config.chartSource ?? ((market) => chartSeeds(market, this.#fetch));
+    for (const market of this.config.markets) pools.push(...(await source(market).catch(() => [])));
     const unique = new Map<string, RecordingSeed>();
     for (const seed of pools) {
       const key = songKey(seed.artist, seed.title);
@@ -189,14 +183,20 @@ export class CollectorService {
     const collected = known ?? (await this.#collected());
     report.discovered = ranked.length;
     this.config.onProgress?.({ stage: "selected", total: ranked.length });
-    for (const [index, seed] of ranked.entries()) {
-      this.config.onProgress?.({ stage: "processing", current: index + 1, total: ranked.length, song: `${seed.artist} - ${seed.title}` });
+    const queue = [...ranked];
+    // Album expansion fills whatever the charts left of the budget. Day one the charts take
+    // all of it; once the catalogue holds them, runs spend the rest walking albums.
+    const expandedReleases = new Set<string>();
+    let expansionCapacity = Math.max(0, this.config.dailyBudget - queue.length);
+    for (let index = 0; index < queue.length; index++) {
+      const seed = queue[index]!;
+      this.config.onProgress?.({ stage: "processing", current: index + 1, total: queue.length, song: `${seed.artist} - ${seed.title}` });
       const song = `${seed.artist} - ${seed.title}`;
       // Already in the catalogue. Checked before anything is spent, because this is most of a
       // second run: the charts barely move between days.
       if (collected.hasName(seed)) {
         report.skipped++;
-        this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "collected" });
+        this.config.onProgress?.({ stage: "skipped", current: index + 1, total: queue.length, song, reason: "collected" });
         continue;
       }
       // Nothing downstream can use a track with no words: the pipeline aligns lyrics to audio,
@@ -205,7 +205,7 @@ export class CollectorService {
         report.skipped++;
         collected.remember(seed);
         await this.#remember(seed, "instrumental");
-        this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "instrumental" });
+        this.config.onProgress?.({ stage: "skipped", current: index + 1, total: queue.length, song, reason: "instrumental" });
         continue;
       }
       try {
@@ -216,7 +216,7 @@ export class CollectorService {
         // ahead of the YouTube search and the lyrics providers.
         if (collected.hasIsrc(identified)) {
           report.skipped++;
-          this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "collected" });
+          this.config.onProgress?.({ stage: "skipped", current: index + 1, total: queue.length, song, reason: "collected" });
           continue;
         }
         const sources = await (this.config.youtubeSearch ?? searchYoutubeMusic)(identified);
@@ -229,7 +229,7 @@ export class CollectorService {
           collected.remember(identified);
           collected.remember(seed);
           await this.#remember(seed, "no-source");
-          this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "no-source" });
+          this.config.onProgress?.({ stage: "skipped", current: index + 1, total: queue.length, song, reason: "no-source" });
           continue;
         }
         const recording = { ...identified, duration_ms: durationMs };
@@ -241,7 +241,7 @@ export class CollectorService {
           collected.remember(identified);
           collected.remember(seed);
           await this.#remember(seed, "no-lyrics");
-          this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "no-lyrics" });
+          this.config.onProgress?.({ stage: "skipped", current: index + 1, total: queue.length, song, reason: "no-lyrics" });
           continue;
         }
         const selected = canAutoSelect(sources[0]);
@@ -262,10 +262,35 @@ export class CollectorService {
         collected.remember(seed);
         if (result.job_id) report.submitted++;
         else report.review++;
+        // A chart names an album's one hit; the rest of that album is what listeners search
+        // for next, and no chart will ever surface it.
+        if (expansionCapacity > 0 && identified.release_mbid !== undefined && !expandedReleases.has(identified.release_mbid)) {
+          expandedReleases.add(identified.release_mbid);
+          const siblings = await this.#musicbrainz.albumTracks(identified.release_mbid).catch(() => []);
+          let added = 0;
+          for (const track of siblings) {
+            if (expansionCapacity === 0) break;
+            const sibling: RecordingSeed = {
+              artist: track.artist,
+              title: track.title,
+              ...(track.mbid === undefined ? {} : { mbid: track.mbid }),
+              // Half a step below the hit that named it, so chart songs keep their place in line.
+              popularity: seed.popularity * 0.8,
+              freshness: seed.freshness,
+              market: seed.market,
+            };
+            if (collected.hasName(sibling)) continue;
+            if (queue.some((queued) => songKey(queued.artist, queued.title) === songKey(sibling.artist, sibling.title))) continue;
+            queue.push(sibling);
+            expansionCapacity--;
+            added++;
+          }
+          if (added > 0) this.config.onProgress?.({ stage: "expanded", album: identified.album ?? seed.title, added, total: queue.length });
+        }
         this.config.onProgress?.({
           stage: "delivered",
           current: index + 1,
-          total: ranked.length,
+          total: queue.length,
           song: `${seed.artist} - ${seed.title}`,
           destination: result.job_id ? "generator" : "review",
           ...(result.job_id ? { jobId: result.job_id } : { reason: reviewReason(result.blocked_by ?? [], sources) }),
@@ -277,7 +302,7 @@ export class CollectorService {
         this.config.onProgress?.({
           stage: "failed",
           current: index + 1,
-          total: ranked.length,
+          total: queue.length,
           song: `${seed.artist} - ${seed.title}`,
           code,
         });

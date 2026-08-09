@@ -112,6 +112,8 @@ async function run(config: CollectorRuntimeConfig): Promise<void> {
                 ? "재생할 음원 없음"
                 : "가사를 찾지 못함";
         process.stdout.write(`[${progress.current}/${progress.total}] 건너뜀 (${why}): ${progress.song}\n`);
+      } else if (progress.stage === "expanded") {
+        process.stdout.write(`앨범 확장: ${progress.album} +${progress.added}곡 (대기 ${progress.total}곡)\n`);
       } else if (progress.stage === "failed") {
         process.stdout.write(`[${progress.current}/${progress.total}] 수집 실패 (${progress.code}): ${progress.song}\n`);
       } else if (progress.current === 1 || progress.current === progress.total || progress.current - lastPrinted >= 10) {

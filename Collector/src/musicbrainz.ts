@@ -6,7 +6,7 @@ interface MbRecording {
   length?: number;
   isrcs?: string[];
   "artist-credit"?: Array<{ name?: string; joinphrase?: string }>;
-  releases?: Array<{ title?: string; date?: string }>;
+  releases?: Array<{ id?: string; title?: string; date?: string }>;
   score?: number;
 }
 
@@ -40,36 +40,6 @@ export class MusicBrainzClient {
     return this.enrich(seed, item);
   }
 
-  async fresh(market: "KR" | "US" | "JP", days = 14, limit = 100): Promise<RecordingSeed[]> {
-    const end = new Date();
-    const start = new Date(end.getTime() - days * 86_400_000);
-    const date = (value: Date) => value.toISOString().slice(0, 10);
-    const url = new URL("https://musicbrainz.org/ws/2/recording/");
-    url.searchParams.set("query", `firstreleasedate:[${date(start)} TO ${date(end)}] AND country:${market}`);
-    url.searchParams.set("fmt", "json");
-    url.searchParams.set("limit", String(Math.min(100, limit)));
-    const response = await this.fetcher(url, { headers: { "user-agent": this.userAgent, accept: "application/json" } });
-    if (!response.ok) throw new Error(`MUSICBRAINZ_${response.status}`);
-    const payload = (await response.json()) as { recordings?: MbRecording[] };
-    return (payload.recordings ?? []).flatMap((item): RecordingSeed[] => {
-      const artist = creditedArtist(item);
-      if (!item.title || !artist) return [];
-      return [
-        {
-          artist,
-          title: item.title,
-          album: item.releases?.[0]?.title,
-          duration_ms: item.length,
-          mbid: item.id,
-          isrc: item.isrcs?.[0],
-          popularity: 0,
-          freshness: 1,
-          market,
-        },
-      ];
-    });
-  }
-
   private score(seed: RecordingSeed, item: MbRecording): number {
     const normalize = (value: string) =>
       value
@@ -97,13 +67,40 @@ export class MusicBrainzClient {
 
   private enrich(seed: RecordingSeed, item: MbRecording): RecordingSeed {
     const isrc = item.isrcs?.[0];
+    const release = item.releases?.[0];
     return {
       ...seed,
       ...(item.id === undefined ? {} : { mbid: item.id }),
       ...(isrc === undefined ? {} : { isrc: normalizeIsrc(isrc) }),
       duration_ms: item.length ?? seed.duration_ms,
-      album: seed.album ?? item.releases?.[0]?.title,
+      album: seed.album ?? release?.title,
+      ...(release?.id === undefined ? {} : { release_mbid: release.id }),
     };
+  }
+
+  /**
+   * Everything else on the release a song came from. A chart names an album's one hit; the
+   * rest of that album is music people will search for that no chart will ever surface.
+   */
+  async albumTracks(releaseMbid: string): Promise<Array<{ artist: string; title: string; mbid?: string }>> {
+    const url = new URL(`https://musicbrainz.org/ws/2/release/${encodeURIComponent(releaseMbid)}`);
+    url.searchParams.set("fmt", "json");
+    url.searchParams.set("inc", "recordings+artist-credits");
+    const response = await this.fetcher(url, { headers: { "user-agent": this.userAgent, accept: "application/json" } });
+    if (!response.ok) throw new Error(`MUSICBRAINZ_${response.status}`);
+    const payload = (await response.json()) as {
+      media?: Array<{ tracks?: Array<{ title?: string; "artist-credit"?: MbRecording["artist-credit"]; recording?: { id?: string } }> }>;
+    };
+    const tracks: Array<{ artist: string; title: string; mbid?: string }> = [];
+    for (const medium of payload.media ?? []) {
+      for (const track of medium.tracks ?? []) {
+        if (typeof track.title !== "string" || track.title.length === 0) continue;
+        const artist = creditedArtist({ "artist-credit": track["artist-credit"] ?? [] });
+        if (artist.length === 0) continue;
+        tracks.push({ artist, title: track.title, ...(track.recording?.id === undefined ? {} : { mbid: track.recording.id }) });
+      }
+    }
+    return tracks;
   }
 }
 

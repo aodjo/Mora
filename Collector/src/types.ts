@@ -12,6 +12,8 @@ export interface RecordingSeed {
    */
   catalogue_duration_ms?: number | undefined;
   mbid?: string | undefined;
+  /** The release this recording was found on — the door to the rest of its album. */
+  release_mbid?: string | undefined;
   isrc?: string | undefined;
   language?: string | undefined;
   popularity: number;
@@ -43,6 +45,8 @@ export interface CollectorConfig {
   fetch?: typeof globalThis.fetch;
   youtubeSearch?: (seed: RecordingSeed) => Promise<YoutubeCandidate[]>;
   spotify?: { identify: (seed: RecordingSeed) => Promise<{ isrc?: string; durationMs?: number; album?: string } | undefined> };
+  /** Chart lookup per market — replaceable in tests so they need not serve chart HTML. */
+  chartSource?: (market: RecordingSeed["market"]) => Promise<RecordingSeed[]>;
   /** Keyless catalogue fallback; fills whatever Spotify could not. */
   lyricfind?: { identify: (seed: RecordingSeed) => Promise<{ isrc?: string; durationMs?: number; album?: string } | undefined> };
   onProgress?: (progress: CollectorProgress) => void;
@@ -64,4 +68,5 @@ export type CollectorProgress =
       deduplicated: boolean;
     }
   | { stage: "skipped"; current: number; total: number; song: string; reason: "instrumental" | "no-lyrics" | "no-source" | "collected" }
+  | { stage: "expanded"; album: string; added: number; total: number }
   | { stage: "failed"; current: number; total: number; song: string; code: string };
