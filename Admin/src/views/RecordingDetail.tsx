@@ -552,12 +552,12 @@ export function RecordingDetail({
             hits.map((hit) => {
               const gap = drift(catalogueMs, hit.duration_ms);
               return (
-                <div key={hit.video_id} className={`source-row ${playing === hit.video_id ? "playing" : ""}`}>
+                <div key={hit.video_id} className={`source-row ${playing === `hit:${hit.video_id}` ? "playing" : ""}`}>
                   <Player
                     videoId={hit.video_id}
                     title={hit.title}
-                    active={playing === hit.video_id}
-                    onPlay={() => setPlaying(hit.video_id)}
+                    active={playing === `hit:${hit.video_id}`}
+                    onPlay={() => setPlaying(`hit:${hit.video_id}`)}
                   />
                   <div className="source-row-main">
                     <strong>{hit.title}</strong>
@@ -599,16 +599,20 @@ function SourceRow({
   busy: boolean;
   onChoose: (value: { source_id: string }) => void;
   playing: string | null;
-  onPlay: (videoId: string) => void;
+  onPlay: (rowId: string) => void;
   confirmed?: boolean;
 }) {
   const metadata = parseObject(source.metadata);
   const videoId = text(source.video_id);
   const title = text(metadata.title, `YouTube ${videoId}`);
   const gap = drift(catalogueMs, number(source.duration_ms) || number(metadata.duration_ms));
+  // 어느 행이 재생 중인지는 행으로 기억한다. 영상으로 기억하면 같은 영상을 가진 두 행이 —
+  // 확정된 음원과 후보 목록의 같은 업로드가 — 한 번의 클릭에 둘 다 열린다.
+  const rowId = text(source.id, videoId);
+  const active = playing === rowId;
   return (
-    <div className={`source-row ${confirmed ? "confirmed" : ""} ${playing === videoId ? "playing" : ""}`}>
-      <Player videoId={videoId} title={title} active={playing === videoId} onPlay={() => onPlay(videoId)} />
+    <div className={`source-row ${confirmed ? "confirmed" : ""} ${active ? "playing" : ""}`}>
+      <Player videoId={videoId} title={title} active={active} onPlay={() => onPlay(rowId)} />
       <div className="source-row-main">
         <strong>{title}</strong>
         <span>
