@@ -44,10 +44,9 @@ export interface CollectorConfig {
   lyricsProvider: LyricsProvider;
   fetch?: typeof globalThis.fetch;
   youtubeSearch?: (seed: RecordingSeed) => Promise<YoutubeCandidate[]>;
-  spotify?: { identify: (seed: RecordingSeed) => Promise<{ isrc?: string; durationMs?: number; album?: string } | undefined> };
   /** Chart lookup per market — replaceable in tests so they need not serve chart HTML. */
   chartSource?: (market: RecordingSeed["market"]) => Promise<RecordingSeed[]>;
-  /** Keyless catalogue fallback; fills whatever Spotify could not. */
+  /** The catalogue: ISRC and track length, keyless. */
   lyricfind?: { identify: (seed: RecordingSeed) => Promise<{ isrc?: string; durationMs?: number; album?: string } | undefined> };
   onProgress?: (progress: CollectorProgress) => void;
 }

@@ -1,6 +1,5 @@
 import { searchYoutube, type YoutubeSearchResult } from "./youtube.js";
 import { ALL_PROVIDERS, searchSong, type MergedHit, type SearchProvider } from "./song-search.js";
-import type { SpotifyClient } from "./spotify.js";
 
 const IDLE_POLL_MS = 1_500;
 const BACKOFF_MS = 15_000;
@@ -12,7 +11,6 @@ export interface SearchWorkerOptions {
   search?: (query: string, limit?: number) => Promise<YoutubeSearchResult[]>;
   /** Song search across the streaming services; replaceable so tests need not go online. */
   searchSongs?: (query: string, providers: SearchProvider[]) => Promise<MergedHit[]>;
-  spotify?: SpotifyClient | undefined;
   onLog?: (message: string) => void;
   signal?: AbortSignal;
   pollMs?: number;
@@ -89,10 +87,7 @@ export function startSearchWorker(options: SearchWorkerOptions): () => void {
     const asked = (request.providers ?? []).filter((name): name is SearchProvider => (ALL_PROVIDERS as string[]).includes(name));
     const run = options.searchSongs;
     if (run !== undefined) return run(request.query, asked.length > 0 ? asked : ALL_PROVIDERS);
-    return searchSong(request.query, {
-      providers: asked.length > 0 ? asked : ALL_PROVIDERS,
-      spotify: options.spotify,
-    });
+    return searchSong(request.query, { providers: asked.length > 0 ? asked : ALL_PROVIDERS });
   }
 
   return stop;

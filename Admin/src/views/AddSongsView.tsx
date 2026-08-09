@@ -17,7 +17,6 @@ const PROVIDERS = [
   { id: "melon", label: "멜론" },
   { id: "genie", label: "지니" },
   { id: "vibe", label: "바이브" },
-  { id: "spotify", label: "Spotify" },
   { id: "lyricfind", label: "LyricFind" },
 ] as const;
 

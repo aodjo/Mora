@@ -9,7 +9,6 @@ import {
   resolveDurationMs,
   reviewReason,
 } from "../Collector/src/service.js";
-import { SpotifyClient } from "../Collector/src/spotify.js";
 import type { RecordingSeed, YoutubeCandidate } from "../Collector/src/types.js";
 
 const seed: RecordingSeed = { artist: "Artist", title: "Song", popularity: 1, freshness: 0, market: "KR" };
@@ -59,32 +58,6 @@ test("Collector drops tracks that announce they have no vocal", () => {
   for (const title of ["Song", "Instant Crush", "Ministry", "Mr. Blue Sky"]) {
     assert.equal(hasNoLyricsToAlign({ ...seed, title }), false, title);
   }
-});
-
-test("Spotify identification accepts only a track whose title and artist both agree", async () => {
-  const track = (name: string, artist: string, isrc: string) => ({
-    name,
-    duration_ms: 188_000,
-    artists: [{ name: artist }],
-    album: { name: "Album" },
-    external_ids: { isrc },
-  });
-  const client = (items: unknown[]) =>
-    new SpotifyClient("id", "secret", (async (url: string | URL) =>
-      String(url).includes("accounts.spotify.com")
-        ? Response.json({ access_token: "t", expires_in: 3600 })
-        : Response.json({ tracks: { items } })) as unknown as typeof fetch);
-
-  const seed: RecordingSeed = { artist: "송하예", title: "그대이길", popularity: 1, freshness: 0, market: "KR" };
-  // A same-titled song by someone else must not lend its ISRC: the identifier keys the public
-  // row, so a wrong one mislabels every alignment published under it.
-  assert.equal(await client([track("그대이길", "다른가수", "KRA111111111")]).identify(seed), undefined);
-  assert.equal(await client([track("완전히 다른 곡", "송하예", "KRA222222222")]).identify(seed), undefined);
-  assert.deepEqual(await client([track("그대이길", "송하예", "kra-333333333")]).identify(seed), {
-    isrc: "KRA333333333",
-    durationMs: 188_000,
-    album: "Album",
-  });
 });
 
 test("Review reasons name what is actually missing", () => {
@@ -142,31 +115,7 @@ test("a song collected during the run is not collected twice", () => {
   assert.equal(index.hasIsrc({ ...seed, artist: "방탄소년단", title: "Swim", isrc: "USA2P2600449" }), true);
 });
 
-test("a Spotify rate limit stops the calls instead of hammering through the run", async () => {
-  // 실측: 429 한 번에 retry-after 61159초(17시간). 계속 두드리면 차단이 연장된다.
-  let searches = 0;
-  const fetcher = (async (input: string | URL | Request) => {
-    const url = String(input instanceof Request ? input.url : input);
-    if (url.includes("accounts.spotify.com")) return Response.json({ access_token: "t", expires_in: 3600 });
-    searches++;
-    return new Response("limited", { status: 429, headers: { "retry-after": "61159" } });
-  }) as typeof fetch;
-  const logged: string[] = [];
-  const client = new SpotifyClient("id", "secret", fetcher, (message) => logged.push(message));
-
-  await assert.rejects(() => client.identify({ artist: "BTS", title: "SWIM", popularity: 1, freshness: 0, market: "KR" }));
-  assert.equal(searches, 1);
-  assert.match(logged[0] ?? "", /시간 동안 Spotify 없이/u);
-  assert.ok(client.blockedForMs > 60_000_000, String(client.blockedForMs));
-
-  // 차단 중에는 요청 없이 즉시 물러난다 — 280곡이 429를 280번 만들지 않는다.
-  for (let i = 0; i < 5; i++)
-    assert.equal(await client.identify({ artist: "IU", title: "Love wins all", popularity: 1, freshness: 0, market: "KR" }), undefined);
-  assert.equal(searches, 1);
-});
-
-test("LyricFind fills what a rate-limited Spotify cannot", async () => {
-  // Spotify가 17시간 차단된 실행: ISRC와 카탈로그 길이가 LyricFind에서 온다.
+test("LyricFind supplies the ISRC and catalogue length", async () => {
   const submitted: Array<Record<string, unknown>> = [];
   const searchSeeds: RecordingSeed[] = [];
   const service = new CollectorService({
@@ -202,11 +151,6 @@ test("LyricFind fills what a rate-limited Spotify cannot", async () => {
       ];
     },
     lyricsProvider: { search: async () => [{ provider: "test", text: "가사 한 줄", fetched_at: Date.now() }] },
-    spotify: {
-      identify: async () => {
-        throw new Error("SPOTIFY_RATE_LIMITED");
-      },
-    },
     lyricfind: { identify: async () => ({ isrc: "USA2P2600449", durationMs: 159_000 }) },
   });
   const report = await service.collect([{ artist: "BTS", title: "SWIM", popularity: 1, freshness: 0, market: "KR" }]);

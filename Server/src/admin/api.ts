@@ -799,7 +799,7 @@ async function completeSearchRequest(env: WorkerEnv, actor: Actor, id: string, v
 
 /**
  * Everything the catalogue already holds, so a run can skip it before spending anything.
- * A song costs a YouTube search, five lyrics providers and a Spotify lookup to collect, and
+ * A song costs a YouTube search, five lyrics providers and a catalogue lookup to collect, and
  * re-submitting one only lands another input revision beside the identical one already there.
  */
 async function collectorCollected(env: WorkerEnv, actor: Actor): Promise<Response> {

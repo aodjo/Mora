@@ -86,10 +86,11 @@ export class CollectorService {
    * every real candidate below auto-selection. A Spotify outage costs nothing but the gap.
    */
   async #enrich(seed: RecordingSeed): Promise<RecordingSeed> {
-    // Spotify first for its exact lengths, then LyricFind for what Spotify missed — or for
-    // everything, the day Spotify rate-limits the whole run.
+    // LyricFind answers what a catalogue needs to answer — which recording, how long — with no
+    // client quota to exhaust. Spotify used to come first and spent more of this run rate-limited
+    // than working, so it is gone rather than second.
     let enriched = seed;
-    for (const catalogue of [this.config.spotify, this.config.lyricfind]) {
+    for (const catalogue of [this.config.lyricfind]) {
       if (catalogue === undefined) continue;
       if (enriched.isrc !== undefined && enriched.duration_ms !== undefined) break;
       const found = await catalogue.identify(enriched).catch(() => undefined);

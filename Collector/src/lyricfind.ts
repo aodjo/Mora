@@ -3,10 +3,10 @@ import type { RecordingSeed } from "./types.js";
 /**
  * LyricFind's public site search as a catalogue: ISRC and track length without credentials.
  *
- * It answers what Spotify answers — which recording is this, how long does it run — and it
- * answers in the song's own script: ギラギラ comes back as ギラギラ with its ISRC, where Spotify
- * files it under "Gira Gira" and only finds it when the ISRC is already known. It also has no
- * client quota to exhaust, which is what benched Spotify for seventeen hours mid-run.
+ * It answers what a catalogue must — which recording is this, how long does it run — and it
+ * answers in the song's own script: ギラギラ comes back as ギラギラ with its ISRC. It has no
+ * client quota to exhaust, which is what retired Spotify from this chain: that client spent
+ * more of a run rate-limited than answering.
  *
  * Durations are printed as m:ss, so a length from here is at most half a second off — well
  * inside the two-second drift gate it feeds.

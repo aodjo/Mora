@@ -1,7 +1,6 @@
 import type { RecordingSeed } from "./types.js";
 import { decodeHtml, stripTags } from "./html.js";
 import { LyricFindCatalogue } from "./lyricfind.js";
-import { SpotifyClient } from "./spotify.js";
 
 /**
  * Searching the music services by name, so a person can add a song the charts never carried.
@@ -15,7 +14,7 @@ import { SpotifyClient } from "./spotify.js";
  * rows a person has to recognise as the same.
  */
 
-export type SearchProvider = "melon" | "genie" | "vibe" | "spotify" | "lyricfind";
+export type SearchProvider = "melon" | "genie" | "vibe" | "lyricfind";
 
 export interface SongHit {
   provider: SearchProvider;
@@ -147,26 +146,12 @@ export async function searchLyricFind(query: string, fetcher: typeof fetch = fet
   return hits;
 }
 
-/** Spotify needs credentials, so it only appears when the collector has them. */
-export async function searchSpotify(query: string, client: SpotifyClient): Promise<SongHit[]> {
-  return (await client.searchTracks(query, 20)).map((track) => ({
-    provider: "spotify" as const,
-    title: track.title,
-    artist: track.artist,
-    ...(track.album === undefined ? {} : { album: track.album }),
-    ...(track.durationMs === undefined ? {} : { duration_ms: track.durationMs }),
-    ...(track.isrc === undefined ? {} : { isrc: track.isrc }),
-    ...(track.artwork === undefined ? {} : { artwork: track.artwork }),
-  }));
-}
-
 export interface SearchOptions {
   providers?: SearchProvider[];
-  spotify?: SpotifyClient | undefined;
   fetcher?: typeof fetch;
 }
 
-export const ALL_PROVIDERS: SearchProvider[] = ["melon", "genie", "vibe", "spotify", "lyricfind"];
+export const ALL_PROVIDERS: SearchProvider[] = ["melon", "genie", "vibe", "lyricfind"];
 
 /**
  * Every asked-for provider at once, merged.
@@ -187,8 +172,6 @@ export async function searchSong(query: string, options: SearchOptions = {}): Pr
         return searchVibe(query, fetcher);
       case "lyricfind":
         return searchLyricFind(query, fetcher);
-      case "spotify":
-        return options.spotify === undefined ? [] : searchSpotify(query, options.spotify);
     }
   });
   const found = (await Promise.all(runs.map((run) => run.catch(() => [] as SongHit[])))).flat();
