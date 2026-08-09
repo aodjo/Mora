@@ -48,8 +48,9 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
   },
   {
     key: "server.youtube_api_key",
-    label: "YouTube Data API 키",
-    description: "곡 상세 화면에서 음원을 직접 검색할 때 사용합니다. 비워두면 검색창 대신 YouTube 링크만 표시합니다.",
+    label: "YouTube Data API 키 (예비)",
+    description:
+      "곡 상세의 음원 검색은 Collector의 yt-dlp가 처리하므로 보통 필요 없습니다. Collector를 꺼둔 채 검색해야 할 때만 쓰이며, 하루 약 100회 할당량이 적용됩니다.",
     type: "secret",
     secret: true,
     component: "server",

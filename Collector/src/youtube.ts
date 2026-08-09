@@ -86,6 +86,43 @@ export function isArtistChannel(channel: string, artist: string): boolean {
   return owner.includes("official") || owner.every((word) => wanted.includes(word) || CHANNEL_NOISE.has(word));
 }
 
+export interface YoutubeSearchResult {
+  video_id: string;
+  title: string;
+  channel: string;
+  duration_ms: number;
+  is_live: boolean;
+}
+
+/**
+ * A plain search, for a person to look through.
+ *
+ * Unlike the collection search this filters nothing and ranks nothing: the reviewer is the
+ * judge, and hiding a result they were looking for is worse than showing one they were not.
+ */
+export async function searchYoutube(query: string, limit = 20): Promise<YoutubeSearchResult[]> {
+  const wanted = Math.max(1, Math.min(40, Math.trunc(limit)));
+  const { stdout } = await run(
+    youtubeDlCommand(),
+    ["--dump-single-json", "--flat-playlist", "--no-warnings", `ytsearch${wanted}:${query}`],
+    { maxBuffer: 10 * 1024 * 1024 },
+  );
+  const parsed = JSON.parse(stdout) as { entries?: YtEntry[] };
+  return (parsed.entries ?? []).flatMap((entry): YoutubeSearchResult[] =>
+    entry.id === undefined || entry.title === undefined
+      ? []
+      : [
+          {
+            video_id: entry.id,
+            title: entry.title,
+            channel: entry.channel ?? entry.uploader ?? "",
+            duration_ms: Math.round((entry.duration ?? 0) * 1000),
+            is_live: entry.live_status === "is_live",
+          },
+        ],
+  );
+}
+
 export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCandidate[]> {
   // Deliberately without the album: it pulls the search towards the record rather than the
   // track, and "BTS Come Over Proof audio" returns the album's other songs and a live stream

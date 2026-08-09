@@ -25,7 +25,23 @@ interface SearchHit {
   title: string;
   channel: string;
   duration_ms: number;
-  thumbnail: string;
+  is_live?: boolean;
+}
+
+/**
+ * The Collector's local search. It has yt-dlp and the Worker does not, so asking it costs
+ * nothing — the Data API charges a hundred-a-day quota for the same answer. Loopback only,
+ * so this works when the console and the Collector share a machine, which is where it runs.
+ */
+const collectorSearch = `http://127.0.0.1:${window.localStorage.getItem("mora-collector-port") ?? "8710"}/search`;
+
+async function searchViaCollector(query: string): Promise<SearchHit[]> {
+  const response = await fetch(`${collectorSearch}?q=${encodeURIComponent(query)}`, {
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw new Error("COLLECTOR_SEARCH_FAILED");
+  const found = (await response.json()) as { items?: SearchHit[] };
+  return (found.items ?? []).filter((item) => item.is_live !== true);
 }
 
 function clock(ms: number): string {
@@ -168,18 +184,23 @@ export function RecordingDetail({
     setSearching(true);
     setSearchError("");
     try {
-      const found = await api<{ items: SearchHit[] }>(`/youtube/search?q=${encodeURIComponent(query.trim())}`);
-      setHits(found.items);
-    } catch (reason) {
-      const code = reason instanceof Error ? reason.message : "";
-      setSearchError(
-        code === "YOUTUBE_KEY_MISSING"
-          ? "YouTube Data API 키가 설정되지 않았습니다. 권한·설정에서 등록하면 여기서 바로 검색할 수 있습니다."
-          : code === "YOUTUBE_SEARCH_FAILED"
-            ? "YouTube 검색에 실패했습니다. 일일 할당량을 넘었을 수 있습니다."
-            : "YouTube 검색에 실패했습니다.",
-      );
-      setHits(null);
+      setHits(await searchViaCollector(query.trim()));
+    } catch {
+      // Collector가 꺼져 있으면 서버의 Data API로 넘어간다 — 키가 있을 때만 동작한다.
+      try {
+        const found = await api<{ items: SearchHit[] }>(`/youtube/search?q=${encodeURIComponent(query.trim())}`);
+        setHits(found.items);
+      } catch (reason) {
+        const code = reason instanceof Error ? reason.message : "";
+        setSearchError(
+          code === "YOUTUBE_KEY_MISSING"
+            ? "Collector가 실행 중이 아닙니다. Collector를 켜면 할당량 없이 바로 검색할 수 있습니다."
+            : code === "YOUTUBE_SEARCH_FAILED"
+              ? "Collector가 꺼져 있고 Data API 할당량도 소진되었습니다."
+              : "검색에 실패했습니다. Collector가 실행 중인지 확인하세요.",
+        );
+        setHits(null);
+      }
     } finally {
       setSearching(false);
     }
