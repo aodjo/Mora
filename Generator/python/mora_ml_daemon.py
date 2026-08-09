@@ -61,6 +61,7 @@ def self_test() -> dict[str, Any]:
         "htdemucs_ft": "passed" if module_exists("demucs") else "failed",
         "coarse_asr": "passed" if (backend == "mps" and module_exists("mlx_whisper")) or module_exists("whisperx") else "failed",
         "forced_align": "passed" if module_exists("whisperx") else "failed",
+        "split_voices": "passed" if module_exists("audio_separator") else "skipped",
         "diarization": "passed" if module_exists("pyannote.audio") and bool(os.getenv("HF_TOKEN")) else "skipped",
     }
     required = ("yt-dlp", "ffmpeg", "htdemucs_ft", "coarse_asr", "forced_align")
@@ -130,6 +131,125 @@ def separate(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
     if "vocals" not in stems:
         raise RuntimeError("VOCALS_MISSING")
     return stems
+
+
+KARAOKE_MODEL = "mel_band_roformer_karaoke_gabox_v2.ckpt"
+
+
+def model_cache() -> str:
+    root = os.getenv("MORA_CACHE_ROOT") or str(Path.home() / "Library/Caches/Mora")
+    directory = Path(root) / "audio-separator"
+    directory.mkdir(parents=True, exist_ok=True)
+    return str(directory)
+
+
+separator_cache: dict[str, Any] = {}
+
+
+def loaded_separator() -> Any:
+    if "separator" not in separator_cache:
+        from audio_separator.separator import Separator
+
+        separator = Separator(output_format="WAV", model_file_dir=model_cache(), log_level=40)
+        separator.load_model(KARAOKE_MODEL)
+        separator_cache["separator"] = separator
+    return separator_cache["separator"]
+
+
+def split_voices(vocals: Path, directory: Path, backend: str) -> tuple[Path, Path] | None:
+    """
+    The lead voice and the one singing over it, as two files.
+
+    Demucs returns one vocal stem with every voice mixed into it, so a line shouted over another
+    — "(꺼져)" over "그래도 제발 나를 사랑해줄래?" — reaches the transcriber as one signal and
+    only the louder voice is written down. Measured on that song: the transcriber's words ran
+    unbroken from 97.3s to 103.3s with not one syllable of either aside in them.
+
+    The second voice cannot be read even once it is on its own — separated, it transcribes as
+    "아 아 아". It can be *heard*, and that is all the timing needs: on the same song the split
+    put four times more energy where the asides are than where the lead sings alone, and near
+    silence in the interlude.
+    """
+    lead = directory / "lead.wav"
+    backing = directory / "backing.wav"
+    if lead.exists() and backing.exists():
+        return lead, backing
+    if not module_exists("audio_separator"):
+        return None
+    try:
+        with redirect_stdout(sys.stderr):
+            # 모델을 올리는 데만 40초가 든다. 데몬은 계속 살아 있으니 한 번만 올린다. 대신
+            # 결과가 나갈 자리는 작업마다 다르므로, 이미 만들어진 모델에게도 알려 준다.
+            separator = loaded_separator()
+            separator.output_dir = str(directory)
+            separator.model_instance.output_dir = str(directory)
+            produced = separator.separate(str(vocals))
+    except Exception as error:
+        print(f"[split_voices] skipped error={type(error).__name__}: {error}", file=sys.stderr)
+        return None
+    # 이 모델은 리드를 "Vocals", 나머지 목소리를 "Instrumental" 로 이름 붙인다.
+    written = {("lead" if "(Vocals)" in name else "backing"): directory / name for name in produced}
+    if "lead" not in written or "backing" not in written:
+        return None
+    written["lead"].replace(lead)
+    written["backing"].replace(backing)
+    return lead, backing
+
+
+def envelope(path: Path, hz: int = 100) -> Any:
+    """Loudness of the file, one number per 1/hz of a second."""
+    import numpy
+    import soundfile
+    samples, rate = soundfile.read(str(path), always_2d=True)
+    mono = samples.mean(axis=1)
+    hop = max(1, rate // hz)
+    frames = len(mono) // hop
+    return numpy.sqrt(numpy.array([numpy.mean(mono[index * hop : (index + 1) * hop] ** 2) for index in range(frames)]) + 1e-12)
+
+
+def second_voice_regions(lead: Path, backing: Path, hz: int = 100) -> list[tuple[float, float]]:
+    """
+    When someone other than the lead is singing.
+
+    Judged against the lead rather than against an absolute level, because a quiet song and a
+    loud one differ by more than a backing voice does. On the measured song the ratio was 0.32
+    where the asides are, 0.08 where the lead sings alone and 0.015 in the interlude.
+    """
+    try:
+        import numpy
+        back, front = envelope(backing, hz), envelope(lead, hz)
+    except Exception as error:
+        # 두 번째 목소리를 못 재는 것은 작업을 세울 이유가 아니다 — 못 들었다고 답한다.
+        print(f"[second_voice] unavailable error={type(error).__name__}: {error}", file=sys.stderr)
+        return []
+    frames = min(len(back), len(front))
+    if frames == 0:
+        return []
+    back, front = back[:frames], front[:frames]
+    loudest = float(numpy.percentile(front, 99))
+    if loudest <= 0:
+        return []
+    floor = loudest * 0.05
+    active = (back / numpy.maximum(front, floor) > 0.30) & (back > floor)
+    regions: list[tuple[float, float]] = []
+    start: int | None = None
+    quiet = 0
+    for index in range(frames):
+        if active[index]:
+            if start is None:
+                start = index
+            quiet = 0
+            continue
+        if start is None:
+            continue
+        quiet += 1
+        # 200ms 넘게 조용하면 한 번 부른 것이 끝난 것으로 본다.
+        if quiet > hz // 5:
+            regions.append((start / hz, (index - quiet) / hz))
+            start = None
+    if start is not None:
+        regions.append((start / hz, frames / hz))
+    return [(begin, end) for begin, end in regions if end - begin >= 0.2]
 
 
 def expected_language(job: dict[str, Any]) -> str:
@@ -681,6 +801,75 @@ def snap_words_to_witness(words: list[list[int | float]], counts: list[int], wit
             words[index][2] = round(warp(control, float(words[index][2])))
 
 
+def place_backing_runs(
+    words: list[list[int | float]],
+    counts: list[int],
+    text_lines: list[str],
+    weights: list[float],
+    regions: list[tuple[float, float]],
+) -> int:
+    """
+    Put a bracketed aside where the second voice was actually heard, not after the line.
+
+    The forced aligner can only lay words out one after another, so an aside written beside a
+    line takes a slot at its end even though it was sung on top of it. Where the split heard the
+    second voice, that guess can be replaced by a measurement: on "…흉터를 남기는건데? (나 너
+    싫으니까 꺼지라고)" the aligner put the aside at 102.2–103.3 while the second voice was
+    singing from 101.5, over the top of 남기는건데.
+
+    Only the aside moves. The lead's words are left exactly where they were, which is why the
+    two now overlap — that is what the audio says happened. A line whose second voice was never
+    heard keeps the aligner's guess.
+    """
+    moved = 0
+    position = 0
+    for line_index, count in enumerate(counts):
+        indices = [index for index, word in enumerate(words) if position <= int(word[0]) < position + count]
+        first_token = position
+        position += max(0, count)
+        line = text_lines[line_index] if line_index < len(text_lines) else ""
+        mask = bracket_mask(line)
+        if not indices or not any(mask) or all(mask) or len(mask) != count:
+            continue
+        line_start = float(words[indices[0]][1]) / 1000
+        line_end = float(words[indices[-1]][2]) / 1000
+        overlapping = [(begin, end) for begin, end in regions if begin < line_end and end > line_start]
+        if not overlapping:
+            continue
+        heard_from = max(line_start, min(begin for begin, _ in overlapping))
+        heard_to = min(line_end, max(end for _, end in overlapping))
+        if heard_to - heard_from < 0.2:
+            continue
+        for run in bracket_runs(mask):
+            in_run = [index for index in indices if int(words[index][0]) - first_token in run]
+            if not in_run:
+                continue
+            share = sum(weight_of(weights, int(words[index][0])) for index in in_run)
+            cursor = heard_from * 1000
+            for index in in_run:
+                width = (heard_to - heard_from) * 1000 * weight_of(weights, int(words[index][0])) / max(share, 1e-9)
+                words[index][1] = round(cursor)
+                cursor += width
+                words[index][2] = round(cursor)
+            moved += len(in_run)
+    return moved
+
+
+def bracket_runs(mask: list[bool]) -> list[set[int]]:
+    """The maximal stretches of bracketed words, as sets of positions within the line."""
+    runs: list[set[int]] = []
+    current: set[int] = set()
+    for position, flag in enumerate(mask):
+        if flag:
+            current.add(position)
+        elif current:
+            runs.append(current)
+            current = set()
+    if current:
+        runs.append(current)
+    return runs
+
+
 def spread_crushed_words(words: list[list[int | float]], lines: list[list[int]], counts: list[int], weights: list[float]) -> None:
     """
     Give back the time a word lost to the word that ran over it, in proportion to what it sings.
@@ -855,7 +1044,15 @@ def align_line(
     return [word for part in aligned.get("segments", []) for word in part.get("words", [])]
 
 
-def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], duration_ms: int, backend: str, detected: str = "und") -> dict[str, Any]:
+def align_variant(
+    vocals: Path,
+    variant: dict[str, Any],
+    asr: dict[str, Any],
+    duration_ms: int,
+    backend: str,
+    detected: str = "und",
+    second_voice: list[tuple[float, float]] | None = None,
+) -> dict[str, Any]:
     text_lines = [line for line in str(variant["text"]).splitlines() if line.strip()]
     counts = [int(value) for value in variant.get("token_counts", [])]
     if len(counts) != len(text_lines):
@@ -942,7 +1139,10 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
         snap_line_starts(result_words, line_windows, counts, line_start_witness_ms)
         extend_held_endings(result_words, line_windows, last_token_of_line, heard_words)
         snap_words_to_witness(result_words, counts, witness_ms)
-        spread_crushed_words(result_words, line_windows, counts, token_weights(text_lines, counts))
+        weights = token_weights(text_lines, counts)
+        spread_crushed_words(result_words, line_windows, counts, weights)
+        # 겹쳐 부른 말은 옆에 적혀 있을 뿐 뒤에 부른 것이 아니다. 들린 자리가 있으면 그리로.
+        place_backing_runs(result_words, counts, text_lines, weights, second_voice or [])
         coverage = aligned_token_weight / max(1, sum(counts))
         quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, language, detected)
         return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}
@@ -1083,10 +1283,19 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     notify("coarse_asr", "started", 0.55)
     asr, detected = coarse_asr(stems["vocals"], expected_language(job), config["backend"])
     notify("coarse_asr", "completed", 0.64)
+    # 리드 위에 겹쳐 부른 목소리는 받아쓰기에 한 글자도 남지 않는다. 읽을 수는 없어도
+    # 들린 자리는 잴 수 있고, 괄호로 적힌 가사는 그 자리에 놓는다.
+    second_voice: list[tuple[float, float]] = []
+    if os.getenv("MORA_SPLIT_VOICES", "1") != "0":
+        notify("split_voices", "started", 0.645)
+        split = split_voices(stems["vocals"], directory, config["backend"])
+        if split is not None:
+            second_voice = second_voice_regions(*split)
+        notify("split_voices", "completed" if split is not None else "skipped", 0.65, {"regions": float(len(second_voice))})
     notify("language_validate", "started", 0.65)
     validate_language(detected, str(job["recording"].get("language", "und")))
     notify("forced_align", "started", 0.66)
-    variants = [align_variant(stems["vocals"], variant, asr, duration_ms, config["backend"], detected) for variant in job["lyrics"]]
+    variants = [align_variant(stems["vocals"], variant, asr, duration_ms, config["backend"], detected, second_voice) for variant in job["lyrics"]]
     notify("forced_align", "completed", 0.8)
     notify("diarize", "started", 0.81)
     turns = diarize(stems["vocals"], config["backend"], job["pipeline"].get("min_speakers"), job["pipeline"].get("max_speakers"))
@@ -1101,6 +1310,12 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
         encoded = directory / f"{name}.m4a"
         run_command(["ffmpeg", "-y", "-i", str(path), "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(encoded)], "STEM_ENCODE_FAILED")
         artifacts.append({"kind": name if name in ("vocals", "drums", "bass", "other") else "other", "path": str(encoded), "content_type": "audio/mp4"})
+    # 겹쳐 부른 목소리도 남긴다 — 괄호 가사의 자리를 여기서 쟀으니, 의심되면 들어볼 수 있게.
+    backing = directory / "backing.wav"
+    if backing.exists():
+        encoded = directory / "backing.m4a"
+        run_command(["ffmpeg", "-y", "-i", str(backing), "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(encoded)], "STEM_ENCODE_FAILED")
+        artifacts.append({"kind": "other", "path": str(encoded), "content_type": "audio/mp4"})
     artifacts.extend(speaker_artifacts)
     notify("speaker_stems", "completed", 0.92)
     notify("index", "started", 0.93)

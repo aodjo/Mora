@@ -452,6 +452,42 @@ flat = recut.align(
 check("한꺼번에 물으면 줄 수보다 답이 많다", len(flat) > len(ASKING_LINES), f"{len(flat)}구간 vs {len(ASKING_LINES)}줄")
 check("그때 마지막 줄은 앞줄의 소리를 받는다", flat[2]["words"][0]["start"] < 103.5, f"{flat[2]['words'][0]['start']}s")
 
+# ── 겹쳐 부른 목소리: 옆에 적혀 있을 뿐 뒤에 부른 것이 아니다 ──
+# 실측한 "…흉터를 남기는건데? (나 너 싫으니까 꺼지라고)": 정렬기는 괄호를 102.2 부터
+# 줄 끝까지 늘어놓았지만, 두 번째 목소리는 101.5 부터 남기는건데 위에 겹쳐 부르고 있었다.
+check("괄호 덩어리를 찾는다", daemon.bracket_runs([False, False, True, True, False, True]) == [{2, 3}, {5}])
+check("괄호가 없으면 덩어리도 없다", daemon.bracket_runs([False, False]) == [])
+
+OVER_LINE = "넌 뭔데 내 맘에 흉터를 남기는건데? (나 너 싫으니까 꺼지라고)"
+over: list[list[int | float]] = [
+    [0, 100610, 100780, 0.5], [1, 100780, 101000, 0.5], [2, 101000, 101110, 0.5], [3, 101110, 101330, 0.5],
+    [4, 101330, 101650, 0.5], [5, 101650, 102200, 0.5],
+    [6, 102200, 102310, 0.5], [7, 102310, 102420, 0.5], [8, 102420, 102850, 0.5], [9, 102850, 103340, 0.5],
+]
+over_weights = daemon.token_weights([OVER_LINE], [10])
+moved = daemon.place_backing_runs(over, [10], [OVER_LINE], over_weights, [(101.52, 102.24), (102.97, 103.54)])
+check("괄호 낱말만 옮긴다", moved == 4, f"{moved}개")
+check("두 번째 목소리가 시작한 데서 시작한다", over[6][1] == 101_520, f"{over[6][1]}ms")
+check("줄 끝을 넘지 않는다", over[9][2] == 103_340, f"{over[9][2]}ms")
+check("메인 낱말은 그대로다", [row[1] for row in over[:6]] == [100610, 100780, 101000, 101110, 101330, 101650], str([r[1] for r in over[:6]]))
+check("괄호 안에서 순서는 지켜진다", all(over[i][2] <= over[i + 1][1] for i in range(6, 9)), str(over[6:]))
+check("긴 낱말이 더 오래 간다", (over[8][2] - over[8][1]) > (over[7][2] - over[7][1]), f"싫으니까 {over[8][2]-over[8][1]} vs 너 {over[7][2]-over[7][1]}")
+
+# 두 번째 목소리를 못 들은 줄은 정렬기의 짐작을 그대로 둔다.
+unheard: list[list[int | float]] = [[0, 45800, 48120, 0.5], [1, 48120, 48380, 0.5]]
+kept = [row[:] for row in unheard]
+daemon.place_backing_runs(unheard, [2], ["저기 하치와레 (보다)"], [4.0, 2.0], [(101.52, 102.24)])
+check("안 들린 줄은 건드리지 않는다", unheard == kept, str(unheard))
+
+# 줄이 전부 괄호면 이미 옆줄의 창을 쓰고 있으므로 여기서 다시 옮기지 않는다.
+whole: list[list[int | float]] = [[0, 100000, 101000, 0.5], [1, 101000, 102000, 0.5]]
+same = [row[:] for row in whole]
+daemon.place_backing_runs(whole, [2], ["(나 꺼지라고)"], [1.0, 4.0], [(101.52, 102.24)])
+check("줄 전체가 괄호면 그대로 둔다", whole == same, str(whole))
+
+check("numpy 가 없으면 구간을 지어내지 않는다", isinstance(daemon.second_voice_regions(Path("없음.wav"), Path("없음.wav")), list))
+
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
