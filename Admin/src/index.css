@@ -3293,10 +3293,25 @@ textarea:focus-visible {
   border-color: var(--border-strong);
   color: var(--text);
 }
-.provider-pick i {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+.provider-pick img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  padding: 1px;
+  border-radius: 4px;
+  /* 배지와 같은 칩 — 어두운 테마에서 검은 워드마크가 묻히지 않는다. */
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.06);
+  /* 꺼진 서비스는 회색으로 물러난다 — 켜진 것만 색을 갖는다. */
+  filter: grayscale(1);
+  opacity: 0.4;
+  transition:
+    filter 0.15s,
+    opacity 0.15s;
+}
+.provider-pick.on img {
+  filter: none;
+  opacity: 1;
 }
 .provider-hint {
   margin-left: auto;
@@ -3362,19 +3377,19 @@ textarea:focus-visible {
 }
 .provider-badges {
   display: inline-flex;
-  gap: 4px;
-  margin-top: 2px;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
 }
-.provider-badges i {
-  display: grid;
-  place-items: center;
-  width: 15px;
-  height: 15px;
+/* 어두운 테마에서 LyricFind의 검은 워드마크가 사라지지 않도록 중립 칩을 깐다. */
+.provider-badges img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  padding: 1px;
   border-radius: 4px;
-  color: #fff;
-  font-size: 9px;
-  font-style: normal;
-  font-weight: 700;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.06);
 }
 .basket-actions {
   display: flex;
