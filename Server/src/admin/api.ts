@@ -430,11 +430,22 @@ async function claimBasketSong(env: WorkerEnv, actor: Actor): Promise<Response> 
   return json({ song: null });
 }
 
+/**
+ * A basket song the Collector is finished with.
+ *
+ * A collected song leaves the basket: it is a song now, listed with the others, and leaving it
+ * here only buries the ones still waiting under the ones already dealt with. A failure stays,
+ * because the reason is the only place anyone can read what went wrong and decide.
+ */
 async function completeBasketSong(env: WorkerEnv, actor: Actor, id: string, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "collector.submit");
   const failure = typeof value.error === "string" && value.error.length > 0 ? value.error.slice(0, 200) : null;
-  await env.ADMIN_DB.prepare("UPDATE song_basket SET state=?1,error=?2 WHERE id=?3 AND claimed_by=?4")
-    .bind(failure === null ? "done" : "failed", failure, id, actor.id)
+  if (failure === null) {
+    await env.ADMIN_DB.prepare("DELETE FROM song_basket WHERE id=?1 AND claimed_by=?2").bind(id, actor.id).run();
+    return json({ accepted: true });
+  }
+  await env.ADMIN_DB.prepare("UPDATE song_basket SET state='failed',error=?1 WHERE id=?2 AND claimed_by=?3")
+    .bind(failure, id, actor.id)
     .run();
   return json({ accepted: true });
 }

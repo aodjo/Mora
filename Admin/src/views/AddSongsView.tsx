@@ -1,4 +1,4 @@
-import { Check, Loader2, Music, Plus, Search, ShoppingBasket, Trash2, X } from "lucide-react";
+import { Check, Loader2, Music, Plus, Search, ShoppingBasket, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { PROVIDER_ICONS } from "./provider-icons";
@@ -50,6 +50,13 @@ interface SearchState {
   items?: Hit[];
   error?: string;
 }
+
+const STATE_LABELS: Record<string, string> = {
+  held: "담김",
+  released: "전송됨",
+  claimed: "수집 중",
+  failed: "실패",
+};
 
 function clock(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000));
@@ -303,21 +310,17 @@ export function AddSongsView() {
                     </span>
                     <Badges providers={row.providers} />
                   </div>
-                  <span className={`state-badge ${row.state === "done" ? "good" : row.state === "failed" ? "bad" : "muted"}`}>
-                    {/* 담긴 것과 넘긴 것은 다른 상태다 — 처리를 눌러야 Collector 가 가져간다. */}
-                    {row.state === "held"
-                      ? "담김"
-                      : row.state === "released"
-                        ? "전송됨"
-                        : row.state === "claimed"
-                          ? "수집 중"
-                          : row.state === "done"
-                            ? "완료"
-                            : "실패"}
+                  <span className={`state-badge ${row.state === "failed" ? "bad" : "muted"}`}>
+                    {/*
+                      담긴 것과 넘긴 것은 다른 상태다 — 처리를 눌러야 Collector 가 가져간다.
+                      모르는 상태를 실패로 읽으면 안 된다: 전송됨이 생겼을 때 옛 화면이 정상인 곡을
+                      전부 실패로 보여줬다.
+                    */}
+                    {STATE_LABELS[row.state] ?? row.state}
                   </span>
                   {row.error != null && <code className="hit-error">{row.error}</code>}
                   <button className="icon-button" onClick={() => void drop(row.id)} aria-label={`${row.title} 빼기`} title="빼기">
-                    {row.state === "done" ? <X size={14} /> : <Trash2 size={14} />}
+                    <Trash2 size={14} />
                   </button>
                 </div>
               ))}
