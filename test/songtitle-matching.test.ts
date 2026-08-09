@@ -191,3 +191,37 @@ test("an exact title beats an earlier containment match", () => {
   ];
   assert.equal(pickTrack(twoExact, { title: "SWIM", artist: "BTS" }, (i) => i)?.artist, "BTS");
 });
+
+test("genie drops the title header its detail page prepends", async () => {
+  // 실측: Oasis는 JSONP(싱크)가 없어 스크랩 경로로 떨어지고, 그 본문이
+  // "Half The World Away - Oasis"로 시작한다 — 부르지 않는 줄이라 정렬이 밀린다.
+  const routes = {
+    "https://www.genie.co.kr/search/searchMain": `<table><tbody>${GENIE_ROW("16680567", "Half The World Away", "Oasis")}</tbody></table>`,
+    "https://dn.genie.co.kr/app/purchase/get_msl.asp": "not json",
+    "https://www.genie.co.kr/detail/songInfo": `<div id="pLyrics"><p>Half The World Away - Oasis<br>I would like to leave this city<br>This old town don't smell too pretty</p></div>`,
+  };
+  const result = await genie.fetch({ title: "Half the World Away", artist: "Oasis" }, ctx(routes));
+  assert.equal(result?.lyrics.split("\n")[0], "I would like to leave this city");
+});
+
+test("genie keeps a first line that merely resembles the title", async () => {
+  const routes = {
+    "https://www.genie.co.kr/search/searchMain": `<table><tbody>${GENIE_ROW("1", "Swim", "BTS")}</tbody></table>`,
+    "https://dn.genie.co.kr/app/purchase/get_msl.asp": "not json",
+    "https://www.genie.co.kr/detail/songInfo": `<div id="pLyrics"><p>Swim, swim<br>Water falling off your skin</p></div>`,
+  };
+  const result = await genie.fetch({ title: "Swim", artist: "BTS" }, ctx(routes));
+  assert.equal(result?.lyrics.split("\n")[0], "Swim, swim");
+});
+
+test("genie drops the title header its synced lyrics carry at 0ms", async () => {
+  // 실측: Oasis "Half the World Away"의 get_msl.asp 첫 줄이 0ms에 "Half The World Away - Oasis".
+  const routes = {
+    "https://www.genie.co.kr/search/searchMain": `<table><tbody>${GENIE_ROW("16680567", "Half The World Away", "Oasis")}</tbody></table>`,
+    "https://dn.genie.co.kr/app/purchase/get_msl.asp": `cb({"0":"Half The World Away - Oasis ","8900":"I would like to leave this city","13500":"This old town don't smell too pretty"})`,
+  };
+  const result = await genie.fetch({ title: "Half the World Away", artist: "Oasis" }, ctx(routes));
+  assert.equal(result?.lyrics.split("\n")[0], "I would like to leave this city");
+  assert.equal(result?.synced?.[0]?.timeMs, 8900);
+  assert.equal(result?.synced?.length, 2);
+});

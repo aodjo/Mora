@@ -47,6 +47,7 @@ export const genie: Provider = {
     try {
       const jsonp = await getText(`https://dn.genie.co.kr/app/purchase/get_msl.asp?path=a&songid=${songId}`, opts);
       synced = parseGenieMsl(jsonp);
+      if (isTitleHeader(synced[0]?.text, matched)) synced = synced.slice(1);
       lyrics = synced.map((l) => l.text).join("\n");
     } catch {
       /* JSONP 실패 → 아래 폴백 */
@@ -54,8 +55,9 @@ export const genie: Provider = {
 
     const detailUrl = `${BASE}/detail/songInfo?xgnm=${songId}`;
     if (!lyrics) {
-      const $ = cheerio.load(await getText(detailUrl, opts));
-      lyrics = htmlToPlainText($("#pLyrics p").html() ?? $(".lyrics").html() ?? "");
+      const scraped = htmlToPlainText($detail(await getText(detailUrl, opts))).split("\n");
+      if (isTitleHeader(scraped[0], matched)) scraped.shift();
+      lyrics = scraped.join("\n").trim();
     }
     if (!lyrics) return null;
 
@@ -71,6 +73,31 @@ export const genie: Provider = {
     };
   },
 };
+
+function $detail(html: string): string {
+  const $ = cheerio.load(html);
+  return $("#pLyrics p").html() ?? $(".lyrics").html() ?? "";
+}
+
+function compact(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+/**
+ * Genie는 곡에 따라 가사 맨 앞에 "Half The World Away - Oasis" 같은 제목 줄을 넣는다.
+ * 싱크 가사에서는 0ms에 붙어 있어, 그대로 두면 정렬이 통째로 한 줄씩 밀린다.
+ * 제목(+아티스트)과 정확히 같을 때만 버린다 — "Swim, swim"처럼 제목으로 시작하는
+ * 진짜 첫 소절은 남겨야 하기 때문이다.
+ */
+function isTitleHeader(line: string | undefined, matched: GenieRow | undefined): boolean {
+  if (line === undefined || matched === undefined) return false;
+  const first = compact(line);
+  if (first.length === 0) return false;
+  return first === compact(`${matched.title}${matched.artist}`) || first === compact(matched.title);
+}
 
 /** 통합검색 곡 목록: tr.list[songid] 행마다 a.title(TITLE 아이콘 span 제거) / a.artist / a.albumtitle */
 function parseSearchRows(html: string): GenieRow[] {
