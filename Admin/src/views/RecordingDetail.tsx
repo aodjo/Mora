@@ -60,7 +60,8 @@ function TranscriptPanel({ artifactId }: { artifactId: string }) {
         <div className="transcript-words">
           {heard.words.map((word, index) => (
             <span key={`${word.t}-${index}`} title={`${word.t.toFixed(2)}s ~ ${word.e.toFixed(2)}s`}>
-              <em>{clock(word.t * 1000)}</em>
+              {/* 초 단위로는 한 줄에 여덟 단어가 같은 시각으로 보인다 — 어긋남을 읽으려면 소수가 필요하다. */}
+              <em>{word.t.toFixed(1)}</em>
               {word.w}
             </span>
           ))}

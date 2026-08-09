@@ -293,6 +293,46 @@ check("아무도 모르면 자동 감지에 맡긴다",
 check("지역 꼬리표는 접는다",
       daemon.expected_language({"recording": {"language": "ko-KR"}, "lyrics": []}) == "ko")
 
+
+# ── 괄호로만 된 줄은 백보컬이다: 옆줄 위에 겹쳐 부르지, 뒤이어 부르지 않는다 ──
+# 실측한 "하치와레girl": 네 단어짜리 (나 너 싫으니까 꺼지라고) 가 1.9초를 쥐고, 그 앞의
+# 여덟 단어짜리 줄은 0.8초로 짓눌렸다.
+check("괄호로만 된 줄을 알아본다", daemon.is_backing_line("(나 너 싫으니까 꺼지라고)"))
+check("전각 괄호도 같다", daemon.is_backing_line("（꺼져）"))
+check("꼬리에 붙은 괄호는 그 줄의 일부다", not daemon.is_backing_line("사랑해줄래? (꺼져)"))
+check("괄호가 중간에 닫히면 감싼 것이 아니다", not daemon.is_backing_line("(가) 그리고 (나)"))
+check("괄호 없는 줄은 그대로", not daemon.is_backing_line("어딘지도 모르는"))
+check("빈 괄호는 줄로 치지 않는다", not daemon.is_backing_line("()"))
+
+BACKING_DISPLAY = ["넌 뭔데 내 맘에 흉터를 남기는건데", "(나 너 싫으니까 꺼지라고)", "나는 니가 나랑 결혼 안해줄걸 아는데"]
+BACKING_LINES = [line.strip("()") for line in BACKING_DISPLAY]
+BACKING_COUNTS = [len(line.split()) for line in BACKING_LINES]
+BACKING_WORDS = [daemon.comparable(w) for line in BACKING_LINES for w in line.split()]
+# 받아쓰기는 메인 보컬만 들었다 — 백보컬 줄의 단어는 하나도 없다.
+BACKING_HEARD = spoken_words([
+    ("넌", 99.8, 100.1), ("뭔데", 100.2, 100.6), ("내", 100.7, 100.9), ("맘에", 101.0, 101.4),
+    ("흉터를", 101.5, 102.0), ("남기는건데", 102.1, 103.0),
+    ("나는", 104.0, 104.4), ("니가", 104.5, 104.9), ("나랑", 105.0, 105.4),
+    ("결혼", 105.5, 106.0), ("안해줄걸", 106.1, 106.7), ("아는데", 106.8, 107.4),
+])
+flags = [daemon.is_backing_line(line) for line in BACKING_DISPLAY]
+folded = daemon.anchored_windows(BACKING_COUNTS, BACKING_WORDS, BACKING_HEARD, 99.8, 108.0, 0.0, backing=flags)
+check("백보컬을 접어도 창이 만들어진다", folded is not None)
+assert folded is not None
+check("백보컬은 옆줄과 같은 시간을 쓴다", folded[1] == folded[2], f"{folded[1]} vs {folded[2]}")
+check("앞 줄이 자기 시간을 지킨다", (folded[0][1] - folded[0][0]) >= 3000, f"{(folded[0][1] - folded[0][0]) / 1000:.1f}초")
+check("뒷 줄이 자기 시간을 지킨다", (folded[2][1] - folded[2][0]) >= 3000, f"{(folded[2][1] - folded[2][0]) / 1000:.1f}초")
+check("창이 거꾸로 되지 않는다", all(w[1] >= w[0] for w in folded), str(folded))
+
+# 백보컬이 마지막 줄이면 앞줄과 함께 간다.
+tail_flags = [False, False, True]
+tail_display = ["넌 뭔데 내 맘에 흉터를 남기는건데", "나는 니가 나랑 결혼 안해줄걸 아는데", "(꺼지라고)"]
+tail_lines = [line.strip("()") for line in tail_display]
+tail_counts = [len(line.split()) for line in tail_lines]
+tail_words = [daemon.comparable(w) for line in tail_lines for w in line.split()]
+tail = daemon.anchored_windows(tail_counts, tail_words, BACKING_HEARD, 99.8, 108.0, 0.0, backing=tail_flags)
+check("마지막 백보컬은 앞줄과 함께", tail is not None and tail[2] == tail[1], str(tail))
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")

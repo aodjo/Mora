@@ -364,6 +364,37 @@ def match_tokens(lyric: list[str], heard: list[dict[str, Any]]) -> dict[int, dic
     return anchors
 
 
+def is_backing_line(line: str) -> bool:
+    """
+    A line that is nothing but a bracketed aside — "(꺼져)", "(나 너 싫으니까 꺼지라고)".
+
+    These are the second voice, sung over the line beside them rather than after it. Counting
+    them as ordinary lines gives them a stretch of the song of their own, and the stretch comes
+    out of their neighbours: on the measured song a four-word backing line held 1.9 seconds
+    while the eight-word line before it was crushed into 0.8.
+    """
+    stripped = line.strip()
+    if len(stripped) < 3:
+        return False
+    pairs = {"(": ")", "[": "]", "{": "}", "（": "）", "［": "］"}
+    close = pairs.get(stripped[0])
+    if close is None or not stripped.endswith(close):
+        return False
+    # 안이 비었으면 부르는 말이 없다 — 백보컬이 아니라 그냥 기호다.
+    if not re.search(r"[^\W_]", stripped[1:-1], re.UNICODE):
+        return False
+    # 여는 괄호가 중간에 닫히면 줄 전체를 감싼 것이 아니다: "(가) 그리고 (나)".
+    depth = 0
+    for index, character in enumerate(stripped):
+        if character in pairs:
+            depth += 1
+        elif character in pairs.values():
+            depth -= 1
+            if depth == 0 and index != len(stripped) - 1:
+                return False
+    return depth == 0
+
+
 def anchored_windows(
     counts: list[int],
     words: list[str],
@@ -371,6 +402,7 @@ def anchored_windows(
     start: float,
     end: float,
     floor: float | None = None,
+    backing: list[bool] | None = None,
 ) -> list[list[int]] | None:
     """
     A time window per lyric line, taken from where those words were actually sung.
@@ -381,6 +413,35 @@ def anchored_windows(
     and the aligner cannot escape the window it was given. Returns None when too little of the
     lyric was recognised to place anything, leaving the proportional guess as the fallback.
     """
+    # 백보컬 줄의 단어는 자리를 차지하지 않는다 — 시간을 나눌 때 아예 빼고 센 뒤, 창은 옆줄에
+    # 겹쳐 준다. 빼지 않으면 그 단어들 몫으로 벌어진 간격이 이웃의 시간이 된다.
+    sung = [True] * len(words)
+    if backing is not None:
+        cursor = 0
+        for line_index, count in enumerate(counts):
+            if line_index < len(backing) and backing[line_index]:
+                for offset in range(count):
+                    if cursor + offset < len(sung):
+                        sung[cursor + offset] = False
+            cursor += count
+    if backing is not None and not all(sung):
+        voiced = [word for index, word in enumerate(words) if sung[index]]
+        voiced_counts = [
+            0 if (line_index < len(backing) and backing[line_index]) else count for line_index, count in enumerate(counts)
+        ]
+        placed = anchored_windows(voiced_counts, voiced, heard, start, end, floor)
+        if placed is None:
+            return None
+        # 백보컬 줄은 뒤따르는 진짜 줄과 같은 시간을 쓴다. 마지막이라면 앞줄과.
+        for line_index, count in enumerate(counts):
+            if not (line_index < len(backing) and backing[line_index]):
+                continue
+            neighbour = next((i for i in range(line_index + 1, len(counts)) if voiced_counts[i] > 0), None)
+            if neighbour is None:
+                neighbour = next((i for i in range(line_index - 1, -1, -1) if voiced_counts[i] > 0), None)
+            placed[line_index] = list(placed[neighbour]) if neighbour is not None else [round(start * 1000), round(end * 1000)]
+        return placed
+
     anchors = match_sequences(words, heard)
     if len(anchors) < max(4, len(words) // 12):
         return None
@@ -411,7 +472,11 @@ def anchored_windows(
     windows: list[list[int]] = []
     cursor = 0
     for count in counts:
-        first = cursor
+        if count <= 0:
+            # 자리를 차지하지 않는 줄 — 부르는 쪽에서 이웃의 창을 넣어 준다.
+            windows.append([round(start * 1000), round(start * 1000)])
+            continue
+        first = min(len(positions) - 1, cursor)
         last = min(len(positions) - 1, cursor + count - 1)
         line_start = positions[first]
         line_end = anchors[last]["end"] if last in anchors else positions[last] + 0.4
@@ -663,7 +728,15 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
     heard_words = asr_words(asr)
     # 되짚어 갈 바닥은 소리가 시작하는 곳이다. 시작점은 가사가 처음 들리는 곳이라 말하는
     # 인트로를 건너뛰지만, 그 앞에 놓일 줄들에게는 자리가 남아 있어야 한다.
-    anchored = anchored_windows(counts, lyric_words, heard_words, start, end, floor=audio_bounds(asr, duration_ms)[0])
+    anchored = anchored_windows(
+        counts,
+        lyric_words,
+        heard_words,
+        start,
+        end,
+        floor=audio_bounds(asr, duration_ms)[0],
+        backing=[is_backing_line(line) for line in text_lines],
+    )
     # When was each line's first word heard — the counter-witness against leading noise.
     anchors = match_sequences(lyric_words, heard_words)
     line_start_witness_ms: dict[int, float] = {}
