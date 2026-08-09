@@ -42,3 +42,20 @@ test("Collector config request uses only its service credential", async () => {
   assert.equal(config.dailyBudget, 25);
   assert.deepEqual(calls, [{ input: "https://mora.example/admin/api/collector/config", authorization: "Bearer mora_test" }]);
 });
+
+test("a target of zero is a decision, not a broken config", () => {
+  // 콘솔에서 C를 눌러 목표를 0으로 두면 Collector가 起動하다 죽었다 — 최소값이 1이었다.
+  const config = parseCollectorRuntimeConfig({ schema_version: 1, values: { ...values, COLLECTOR_DAILY_BUDGET: "0" } });
+  assert.equal(config.dailyBudget, 0);
+});
+
+test("a target outside the range is still refused", () => {
+  assert.throws(
+    () => parseCollectorRuntimeConfig({ schema_version: 1, values: { ...values, COLLECTOR_DAILY_BUDGET: "-1" } }),
+    /COLLECTOR_DAILY_BUDGET/u,
+  );
+  assert.throws(
+    () => parseCollectorRuntimeConfig({ schema_version: 1, values: { ...values, COLLECTOR_DAILY_BUDGET: "9999" } }),
+    /COLLECTOR_DAILY_BUDGET/u,
+  );
+});

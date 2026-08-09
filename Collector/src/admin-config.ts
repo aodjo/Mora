@@ -62,7 +62,8 @@ export function parseCollectorRuntimeConfig(payload: ConfigResponse): CollectorR
   const lyricFindApiKey = optional(values, "LYRICFIND_API_KEY");
   return {
     userAgent: required(values, "MORA_USER_AGENT"),
-    dailyBudget: numberValue(values, "COLLECTOR_DAILY_BUDGET", 1, 5000),
+    // 0은 유효한 목표다: "이번 회차는 여기까지"라고 콘솔이 말한 상태이지 잘못된 설정이 아니다.
+    dailyBudget: numberValue(values, "COLLECTOR_DAILY_BUDGET", 0, 5000),
     intervalMs: numberValue(values, "COLLECTOR_INTERVAL_MS", 60_000, 604_800_000),
     once: booleanValue(values, "COLLECTOR_ONCE"),
     markets: markets as Array<"KR" | "US" | "JP">,
