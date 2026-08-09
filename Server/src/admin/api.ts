@@ -936,8 +936,14 @@ async function stageEvent(env: WorkerEnv, actor: Actor, value: Record<string, un
   return json({ accepted: true }, 202);
 }
 
+/**
+ * A missing metric counts as zero, which is what makes this worth scoring: a worker that
+ * cannot measure something must not be rewarded for staying quiet about it. line_plausibility
+ * is here because a line that lasts under a third of a second is the aligner failing to find
+ * its words, and nothing else in the set noticed that.
+ */
 function qualityScore(quality: Record<string, number>): number {
-  const keys = ["token_coverage", "monotonicity", "duration_match", "language_match"];
+  const keys = ["token_coverage", "monotonicity", "duration_match", "language_match", "line_plausibility"];
   return keys.reduce((sum, key) => sum + Math.max(0, Math.min(1, quality[key] ?? 0)), 0) / keys.length;
 }
 

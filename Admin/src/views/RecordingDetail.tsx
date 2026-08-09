@@ -12,10 +12,12 @@ interface Detail {
 }
 
 const qualityNames: Record<string, string> = {
-  duration_match: "길이",
-  language_match: "언어",
-  monotonicity: "순서",
   token_coverage: "토큰",
+  monotonicity: "순서",
+  line_plausibility: "줄 길이",
+  duration_match: "구간",
+  language_match: "언어",
+  asr_anchored: "음성 기준",
 };
 
 interface SearchHit {
@@ -310,7 +312,7 @@ export function RecordingDetail({
             const score = Math.max(0, Math.min(1, number(candidate.quality_score)));
             const metrics = Object.entries(parseObject(candidate.quality))
               .filter(([key, value]) => key in qualityNames && typeof value === "number")
-              .slice(0, 4);
+              .slice(0, 6);
             return (
               <button key={text(candidate.id)} className="timing-row" onClick={() => onEditTiming(text(candidate.id))}>
                 <span className="timing-score">{Math.round(score * 100)}</span>

@@ -8,11 +8,13 @@ import json
 import math
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import traceback
+import unicodedata
 import wave
 from pathlib import Path
 from typing import Any
@@ -181,6 +183,109 @@ def proportional_spans(counts: list[int], start: float, end: float) -> tuple[lis
     return lines, words
 
 
+def comparable(value: str) -> str:
+    """Fold a word to what two transcriptions of the same sound would share."""
+    return re.sub(r"[^\w]+", "", unicodedata.normalize("NFKC", value).lower(), flags=re.UNICODE)
+
+
+def asr_words(asr: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every word the transcriber heard, in order, with the time it was heard at."""
+    words: list[dict[str, Any]] = []
+    for segment in asr.get("segments") or []:
+        for word in segment.get("words") or []:
+            text = comparable(str(word.get("word", word.get("text", ""))))
+            if not text or "start" not in word or "end" not in word:
+                continue
+            words.append({"text": text, "start": float(word["start"]), "end": float(word["end"])})
+    return words
+
+
+def match_sequences(lyric: list[str], heard: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """
+    Which heard word each written word is, where the two agree.
+
+    The transcriber mishears, skips and invents, so this is an alignment rather than a zip:
+    Needleman-Wunsch over the two token sequences, keeping only the pairs that matched. The
+    gaps between those anchors are what interpolation is for.
+    """
+    if not lyric or not heard:
+        return {}
+    rows, columns = len(lyric), len(heard)
+    # Gap −1, match +2, mismatch −1: cheap to skip a word, expensive to claim a wrong one.
+    scores = [[0.0] * (columns + 1) for _ in range(rows + 1)]
+    for row in range(1, rows + 1):
+        scores[row][0] = -row
+    for column in range(1, columns + 1):
+        scores[0][column] = -column
+    for row in range(1, rows + 1):
+        left_text = lyric[row - 1]
+        for column in range(1, columns + 1):
+            diagonal = scores[row - 1][column - 1] + (2.0 if left_text == heard[column - 1]["text"] else -1.0)
+            scores[row][column] = max(diagonal, scores[row - 1][column] - 1.0, scores[row][column - 1] - 1.0)
+    anchors: dict[int, dict[str, Any]] = {}
+    row, column = rows, columns
+    while row > 0 and column > 0:
+        same = lyric[row - 1] == heard[column - 1]["text"]
+        if scores[row][column] == scores[row - 1][column - 1] + (2.0 if same else -1.0):
+            if same:
+                anchors[row - 1] = heard[column - 1]
+            row -= 1
+            column -= 1
+        elif scores[row][column] == scores[row - 1][column] - 1.0:
+            row -= 1
+        else:
+            column -= 1
+    return anchors
+
+
+def anchored_windows(counts: list[int], words: list[str], heard: list[dict[str, Any]], start: float, end: float) -> list[list[int]] | None:
+    """
+    A time window per lyric line, taken from where those words were actually sung.
+
+    Dividing the vocal region by word count assumes a song spends equal time on equal words,
+    which no song does — it has an intro, a bridge, a held note, a repeated chorus. Feeding
+    those guesses to the forced aligner then pins each line inside the wrong seconds of audio,
+    and the aligner cannot escape the window it was given. Returns None when too little of the
+    lyric was recognised to place anything, leaving the proportional guess as the fallback.
+    """
+    anchors = match_sequences(words, heard)
+    if len(anchors) < max(4, len(words) // 12):
+        return None
+    # Anchor times are only known at matched words; the rest ride a line between them.
+    known = sorted(anchors)
+    positions: list[float] = []
+    for index in range(len(words)):
+        if index in anchors:
+            positions.append(anchors[index]["start"])
+            continue
+        before = [key for key in known if key < index]
+        after = [key for key in known if key > index]
+        if before and after:
+            low, high = before[-1], after[0]
+            span = anchors[high]["start"] - anchors[low]["end"]
+            positions.append(anchors[low]["end"] + span * (index - low) / (high - low))
+        elif before:
+            positions.append(anchors[before[-1]]["end"])
+        elif after:
+            positions.append(max(start, anchors[after[0]]["start"] - (after[0] - index) * 0.35))
+        else:
+            return None
+    for index in range(1, len(positions)):
+        positions[index] = max(positions[index], positions[index - 1])
+    windows: list[list[int]] = []
+    cursor = 0
+    for count in counts:
+        first = cursor
+        last = min(len(positions) - 1, cursor + count - 1)
+        line_start = positions[first]
+        line_end = anchors[last]["end"] if last in anchors else positions[last] + 0.4
+        if cursor + count < len(positions):
+            line_end = min(max(line_end, line_start + 0.3), positions[cursor + count])
+        windows.append([round(max(start, line_start) * 1000), round(min(end, max(line_end, line_start + 0.3)) * 1000)])
+        cursor += count
+    return windows
+
+
 def interpolate_boundaries(candidates: list[dict[str, Any]], count: int) -> list[list[int | float]]:
     """Project aligned ASR words onto the canonical tokenizer count without using text."""
     if count <= 0 or not candidates:
@@ -214,13 +319,18 @@ def interpolate_boundaries(candidates: list[dict[str, Any]], count: int) -> list
     return projected
 
 
-def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], duration_ms: int, backend: str) -> dict[str, Any]:
+def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], duration_ms: int, backend: str, detected: str = "und") -> dict[str, Any]:
     text_lines = [line for line in str(variant["text"]).splitlines() if line.strip()]
     counts = [int(value) for value in variant.get("token_counts", [])]
     if len(counts) != len(text_lines):
         counts = [max(1, len(line.split())) for line in text_lines]
     start, end = audio_bounds(asr, duration_ms)
-    line_windows, fallback_words = proportional_spans(counts, start, end)
+    proportional_windows, fallback_words = proportional_spans(counts, start, end)
+    # Where the transcriber actually heard these words beats dividing the song by word count.
+    lyric_words = [comparable(word) for line in text_lines for word in line.split() if comparable(word)]
+    anchored = anchored_windows(counts, lyric_words, asr_words(asr), start, end)
+    line_windows = anchored or [span[:] for span in proportional_windows]
+    anchored_by_asr = anchored is not None
     try:
         import whisperx
         language = str(variant.get("language", "und")).split("-")[0]
@@ -231,26 +341,18 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
             audio = whisperx.load_audio(str(vocals))
             aligned = whisperx.align(segments, model, metadata, audio, device, return_char_alignments=True)
         aligned_segments = aligned.get("segments", [])
-        all_candidates = sorted(
-            [word for word in aligned.get("word_segments", []) if "start" in word and "end" in word],
-            key=lambda word: float(word["start"]),
-        )
-        if not all_candidates:
-            all_candidates = sorted(
-                [word for segment in aligned_segments for word in segment.get("words", []) if "start" in word and "end" in word],
-                key=lambda word: float(word["start"]),
-            )
         result_words: list[list[int | float]] = []
         aligned_token_weight = 0.0
         token_index = 0
-        candidate_index = 0
-        cumulative_tokens = 0
-        total_tokens = sum(counts)
         for line_index, count in enumerate(counts):
-            cumulative_tokens += count
-            next_candidate_index = len(all_candidates) if line_index == len(counts) - 1 else round(cumulative_tokens * len(all_candidates) / max(1, total_tokens))
-            candidates = all_candidates[candidate_index:next_candidate_index]
-            candidate_index = next_candidate_index
+            # The aligner answers per segment, and a segment is a line. Re-cutting one flat word
+            # list by token count instead assumed every line takes time in proportion to its
+            # length, which is the guess this function exists to stop making.
+            segment = aligned_segments[line_index] if line_index < len(aligned_segments) else {}
+            candidates = sorted(
+                [word for word in segment.get("words", []) if "start" in word and "end" in word],
+                key=lambda word: float(word["start"]),
+            )
             if candidates:
                 projected = interpolate_boundaries(candidates, count)
                 for token_offset, word_start, word_end, score in projected:
@@ -265,10 +367,43 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
                 result_words.extend(fallback)
             token_index += count
         coverage = aligned_token_weight / max(1, sum(counts))
-        return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": {"token_coverage": coverage, "monotonicity": 1.0, "duration_match": 1.0, "language_match": 1.0, "alignment_fallback": 1.0 - coverage}}
+        quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, language, detected)
+        return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}
     except Exception as error:
         print(f"[forced_align] fallback error={type(error).__name__}", file=sys.stderr)
-        return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": fallback_words, "quality": {"token_coverage": 0.0, "monotonicity": 1.0, "duration_match": 1.0, "language_match": 1.0, "alignment_fallback": 1.0}}
+        quality = measure(fallback_words, line_windows, 0.0, duration_ms, False, str(variant.get("language", "und")).split("-")[0], detected)
+        return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": fallback_words, "quality": quality}
+
+
+def measure(words: list[list[int | float]], lines: list[list[int]], coverage: float, duration_ms: int, anchored: bool, language: str = "und", detected: str = "und") -> dict[str, float]:
+    """
+    What the alignment is actually worth.
+
+    monotonicity, duration_match and language_match used to be the literal 1.0, so every
+    candidate scored a perfect 1.000 and the quality gate could never fail — including the
+    ones whose timings were a proportional guess. They are measured now.
+    """
+    ordered = 0
+    for index in range(1, len(words)):
+        if float(words[index][1]) >= float(words[index - 1][1]):
+            ordered += 1
+    monotonicity = ordered / max(1, len(words) - 1)
+    covered = sum(max(0, int(span[1]) - int(span[0])) for span in lines)
+    span_end = max((int(span[1]) for span in lines), default=0)
+    reach = min(1.0, span_end / duration_ms) if duration_ms > 0 else 0.0
+    # A line that lasts no time at all is the aligner failing to find the words, not a fast line.
+    instant = sum(1 for span in lines if int(span[1]) - int(span[0]) < 300)
+    plausible = 1.0 - instant / max(1, len(lines))
+    return {
+        "token_coverage": coverage,
+        "language_match": 1.0 if language == "und" or detected == "und" or language == detected.split("-")[0] else 0.0,
+        "monotonicity": monotonicity,
+        "duration_match": reach,
+        "line_plausibility": plausible,
+        "asr_anchored": 1.0 if anchored else 0.0,
+        "alignment_fallback": 1.0 - coverage,
+        "vocal_density": min(1.0, covered / duration_ms) if duration_ms > 0 else 0.0,
+    }
 
 
 def diarize(vocals: Path, backend: str, minimum: int | None, maximum: int | None) -> list[list[int | float]]:
@@ -374,7 +509,7 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     notify("language_validate", "started", 0.65)
     validate_language(detected, str(job["recording"].get("language", "und")))
     notify("forced_align", "started", 0.66)
-    variants = [align_variant(stems["vocals"], variant, asr, duration_ms, config["backend"]) for variant in job["lyrics"]]
+    variants = [align_variant(stems["vocals"], variant, asr, duration_ms, config["backend"], detected) for variant in job["lyrics"]]
     notify("forced_align", "completed", 0.8)
     notify("diarize", "started", 0.81)
     turns = diarize(stems["vocals"], config["backend"], job["pipeline"].get("min_speakers"), job["pipeline"].get("max_speakers"))
@@ -398,7 +533,16 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     artifacts.append({"kind": "checkpoint", "path": str(checkpoint), "content_type": "application/json"})
     notify("index", "completed", 0.95)
     notify("quality_gate", "completed", 0.96)
-    quality = {"token_coverage": sum(item["quality"]["token_coverage"] for item in variants) / max(1, len(variants)), "monotonicity": 1.0, "duration_match": max(0.0, 1 - abs(duration_ms - int(job["recording"]["duration_ms"])) / 10000), "language_match": 1.0 if detected.split("-")[0] == str(job["recording"].get("language", "und")).split("-")[0] or job["recording"].get("language") == "und" else 0.0}
+    expected_language = str(job["recording"].get("language", "und"))
+    average = lambda key: sum(float(item["quality"].get(key, 0.0)) for item in variants) / max(1, len(variants))
+    quality = {
+        "token_coverage": average("token_coverage"),
+        "monotonicity": average("monotonicity"),
+        "line_plausibility": average("line_plausibility"),
+        "asr_anchored": average("asr_anchored"),
+        "duration_match": max(0.0, 1 - abs(duration_ms - int(job["recording"]["duration_ms"])) / 10000),
+        "language_match": 1.0 if expected_language == "und" or detected.split("-")[0] == expected_language.split("-")[0] else 0.0,
+    }
     return {"backend": config["backend"], "hardware": config["hardware"], "detected_languages": [detected], "variants": variants, "speaker_turns": turns, "word_speakers": word_speakers, "line_speakers": line_speakers, "artifacts": artifacts, "quality": quality, "work_dir": str(directory)}
 
 
