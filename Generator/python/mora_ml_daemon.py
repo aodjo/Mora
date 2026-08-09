@@ -157,11 +157,28 @@ def validate_language(detected: str, expected: str) -> None:
     notify("language_validate", "completed", 0.65, {"language_match": 1.0 if expected == "und" or code == expected.split("-")[0] else 0.0})
 
 
-def audio_bounds(asr: dict[str, Any], duration_ms: int) -> tuple[float, float]:
+def audio_bounds(asr: dict[str, Any], duration_ms: int, lyric_words: list[str] | None = None) -> tuple[float, float]:
+    """
+    Where the words we are timing begin and end.
+
+    Not simply where sound begins: a track can open with talking that is not in the lyric
+    sheet, and starting there draws the first line across it. When we know what the lyrics say,
+    the region starts at the first thing heard that the sheet also contains — spoken intros
+    rarely repeat the words of the song. With nothing to compare against, the first sound is
+    still the best guess available.
+    """
     segments = asr.get("segments") or []
     if not segments:
         return 0.0, duration_ms / 1000.0
-    return max(0.0, float(segments[0].get("start", 0))), min(duration_ms / 1000.0, float(segments[-1].get("end", duration_ms / 1000.0)))
+    first = max(0.0, float(segments[0].get("start", 0)))
+    last = min(duration_ms / 1000.0, float(segments[-1].get("end", duration_ms / 1000.0)))
+    if not lyric_words:
+        return first, last
+    wanted = set(lyric_words)
+    for word in asr_words(asr):
+        if word["text"] in wanted:
+            return max(first, min(float(word["start"]), last)), last
+    return first, last
 
 
 def proportional_spans(counts: list[int], start: float, end: float) -> tuple[list[list[int]], list[list[int | float]]]:
@@ -205,9 +222,81 @@ def match_sequences(lyric: list[str], heard: list[dict[str, Any]]) -> dict[int, 
     Which heard word each written word is, where the two agree.
 
     The transcriber mishears, skips and invents, so this is an alignment rather than a zip:
-    Needleman-Wunsch over the two token sequences, keeping only the pairs that matched. The
-    gaps between those anchors are what interpolation is for.
+    Needleman-Wunsch, keeping only the pairs that matched. The gaps between those anchors are
+    what interpolation is for.
+
+    It runs over characters rather than whole words, because whole words are not what the two
+    sides disagree about in Korean. A lyric sheet writes 도시속에 where the transcriber writes
+    도시 속에, and 너 하나 where it writes 너하나 — the sounds are identical and every word of
+    the line fails to match. Characters do not care where the spaces went: the run 도시속에
+    lines up either way, and the word it belongs to is looked up afterwards.
     """
+    if not lyric or not heard:
+        return {}
+    # 글자 흐름과, 각 글자가 어느 단어에서 왔는지.
+    lyric_chars: list[str] = []
+    lyric_owner: list[int] = []
+    for index, word in enumerate(lyric):
+        for character in word:
+            lyric_chars.append(character)
+            lyric_owner.append(index)
+    heard_chars: list[str] = []
+    heard_owner: list[int] = []
+    for index, word in enumerate(heard):
+        for character in str(word["text"]):
+            heard_chars.append(character)
+            heard_owner.append(index)
+    if not lyric_chars or not heard_chars:
+        return {}
+    # 아주 긴 가사에서는 글자 표가 커진다. 그럴 때만 단어 단위로 물러난다.
+    if len(lyric_chars) * len(heard_chars) > 6_000_000:
+        return match_tokens(lyric, heard)
+    pairs = align_streams(lyric_chars, heard_chars)
+    anchors: dict[int, dict[str, Any]] = {}
+    matched_chars: dict[int, int] = {}
+    for lyric_index, heard_index in pairs:
+        word = lyric_owner[lyric_index]
+        matched_chars[word] = matched_chars.get(word, 0) + 1
+        if word not in anchors:
+            anchors[word] = heard[heard_owner[heard_index]]
+    # 한두 글자가 우연히 겹친 것은 앵커가 아니다. 단어의 절반은 맞아야 그 단어를 봤다고 한다.
+    return {index: word for index, word in anchors.items() if matched_chars[index] * 2 >= len(lyric[index])}
+
+
+def align_streams(left: list[str], right: list[str]) -> list[tuple[int, int]]:
+    """Needleman-Wunsch over two character streams, returning only the positions that matched."""
+    rows, columns = len(left), len(right)
+    scores = [[0.0] * (columns + 1) for _ in range(rows + 1)]
+    for row in range(1, rows + 1):
+        scores[row][0] = -row
+    for column in range(1, columns + 1):
+        scores[0][column] = -column
+    for row in range(1, rows + 1):
+        character = left[row - 1]
+        previous = scores[row - 1]
+        current = scores[row]
+        for column in range(1, columns + 1):
+            diagonal = previous[column - 1] + (2.0 if character == right[column - 1] else -1.0)
+            current[column] = max(diagonal, previous[column] - 1.0, current[column - 1] - 1.0)
+    pairs: list[tuple[int, int]] = []
+    row, column = rows, columns
+    while row > 0 and column > 0:
+        same = left[row - 1] == right[column - 1]
+        if scores[row][column] == scores[row - 1][column - 1] + (2.0 if same else -1.0):
+            if same:
+                pairs.append((row - 1, column - 1))
+            row -= 1
+            column -= 1
+        elif scores[row][column] == scores[row - 1][column] - 1.0:
+            row -= 1
+        else:
+            column -= 1
+    pairs.reverse()
+    return pairs
+
+
+def match_tokens(lyric: list[str], heard: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """Whole-word matching, for lyrics too long to align character by character."""
     if not lyric or not heard:
         return {}
     rows, columns = len(lyric), len(heard)
@@ -514,10 +603,10 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
     counts = [int(value) for value in variant.get("token_counts", [])]
     if len(counts) != len(text_lines):
         counts = [max(1, len(line.split())) for line in text_lines]
-    start, end = audio_bounds(asr, duration_ms)
-    proportional_windows, fallback_words = proportional_spans(counts, start, end)
     # Where the transcriber actually heard these words beats dividing the song by word count.
     lyric_words = [comparable(word) for line in text_lines for word in line.split() if comparable(word)]
+    start, end = audio_bounds(asr, duration_ms, lyric_words)
+    proportional_windows, fallback_words = proportional_spans(counts, start, end)
     heard_words = asr_words(asr)
     anchored = anchored_windows(counts, lyric_words, heard_words, start, end)
     # When was each line's first word heard — the counter-witness against leading noise.

@@ -31,6 +31,10 @@ def heard(rows: list[tuple[str, float, float]]) -> list[dict[str, object]]:
     return [{"text": daemon.comparable(text), "start": start, "end": end} for text, start, end in rows]
 
 
+# 아래쪽 테스트들이 heard 라는 이름을 값으로 쓰기도 해서, 뒤에서도 부를 수 있는 별칭을 둔다.
+spoken_words = heard
+
+
 # 실제 사례: Red Velvet "Hawaii". 10.6초 인트로와 3연 앞의 간주가 있다.
 LINES = ["내 어릴 적 작은 소망", "멋진 어른이 되는 것", "눈 깜짝할 새 키만 자란", "별난 어른 돼버렸지"]
 COUNTS = [len(line.split()) for line in LINES]
@@ -205,6 +209,49 @@ check("여유 없는 이웃에게서는 뺏지 않는다", tight[0][2] - tight[0
 fine = [[0, 0, 500, 0.9], [1, 500, 900, 0.9]]
 daemon.widen_thin_words(fine, [[0, 900]], [2])
 check("충분한 단어는 그대로 둔다", fine == [[0, 0, 500, 0.9], [1, 500, 900, 0.9]], str(fine))
+
+
+# ── 띄어쓰기: 가사와 받아쓰기가 늘 다르게 끊는다 ──
+# uruma "하치와레girl" 은 앵커가 모자라 비례추정으로 떨어졌고, 그 시작이 말하는 인트로였다.
+KO_LINES = ["어딘지도 모르는 차가운 이 도시속에", "너 하나 보기 위해 달린거야 맨발로 매일"]
+KO_WORDS = [daemon.comparable(w) for line in KO_LINES for w in line.split()]
+KO_HEARD = spoken_words([
+    ("어딘지도", 7.0, 7.6), ("모르는", 7.7, 8.3), ("차가운", 8.4, 9.0), ("이", 9.1, 9.3),
+    ("도시", 9.4, 9.8), ("속에", 9.9, 10.4),          # 가사는 "도시속에" 한 단어
+    ("너하나", 11.0, 11.7),                            # 가사는 "너 하나" 두 단어
+    ("보기위해", 11.8, 12.6), ("달린거야", 12.7, 13.5), ("맨발로", 13.6, 14.2), ("매일", 14.3, 15.0),
+])
+ko_anchors = daemon.match_sequences(KO_WORDS, KO_HEARD)
+check("붙여 쓴 가사도 띄어 쓴 받아쓰기와 맞는다", 0 in ko_anchors and 4 in ko_anchors, f"앵커 {sorted(ko_anchors)}")
+check("띄어쓰기 차이로 대부분을 잃지 않는다", len(ko_anchors) >= len(KO_WORDS) - 1, f"{len(ko_anchors)}/{len(KO_WORDS)}")
+
+# 말하는 인트로 위에 첫 줄이 놓이지 않는다.
+SPOKEN = spoken_words([("자", 1.4, 1.8), ("이제", 1.9, 2.4), ("시작해볼까", 2.5, 3.4), ("들어봐", 3.6, 4.4)])
+ko_counts = [len(line.split()) for line in KO_LINES]
+ko_windows = daemon.anchored_windows(ko_counts, KO_WORDS, SPOKEN + KO_HEARD, 1.4, 15.0)
+check("앵커가 만들어진다", ko_windows is not None)
+assert ko_windows is not None
+check("첫 줄이 노래가 시작하는 곳에서 열린다", abs(ko_windows[0][0] / 1000 - 7.0) < 0.3, f"{ko_windows[0][0] / 1000:.1f}s")
+proportional_ko, _ = daemon.proportional_spans(ko_counts, 1.4, 15.0)
+check("비례추정은 말하는 인트로에서 시작했다 (회귀 대비)", proportional_ko[0][0] / 1000 < 2.0, f"{proportional_ko[0][0] / 1000:.1f}s")
+
+# 한 글자가 우연히 겹친 것을 앵커로 삼지 않는다.
+stray = daemon.match_sequences(["사랑해"], spoken_words([("사", 1.0, 1.1)]))
+check("한 글자 겹침은 앵커가 아니다", stray == {}, str(stray))
+
+
+# 앵커가 아예 안 잡혀도, 가사에 없는 말하는 인트로에서 시작하지는 않는다.
+asr_with_intro = {"segments": [
+    {"start": 1.4, "end": 4.4, "words": [
+        {"word": "자", "start": 1.4, "end": 1.8}, {"word": "이제", "start": 1.9, "end": 2.4},
+        {"word": "시작해볼까", "start": 2.5, "end": 3.4}, {"word": "들어봐", "start": 3.6, "end": 4.4}]},
+    {"start": 7.0, "end": 15.0, "words": [
+        {"word": "어딘지도", "start": 7.0, "end": 7.6}, {"word": "모르는", "start": 7.7, "end": 8.3}]},
+]}
+bounded = daemon.audio_bounds(asr_with_intro, 15_000, KO_WORDS)
+check("가사 없는 인트로를 건너뛰고 시작한다", abs(bounded[0] - 7.0) < 0.05, f"{bounded[0]}s")
+check("비교할 가사가 없으면 첫 소리에서 시작한다", abs(daemon.audio_bounds(asr_with_intro, 15_000)[0] - 1.4) < 0.05)
+check("끝은 그대로다", abs(bounded[1] - 15.0) < 0.05, f"{bounded[1]}s")
 
 print()
 if failures:
