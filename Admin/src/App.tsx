@@ -387,6 +387,9 @@ function Overview({ data }: { data: Record<string, unknown> }) {
   );
 }
 
+/** 한 번에 움직이는 폭. 차트가 백 단위라 10과 100이면 대부분의 판단이 한두 번에 끝난다. */
+const STEPS = [10, 100] as const;
+
 interface CollectionStatus {
   target: number;
   pending: number;
@@ -405,7 +408,6 @@ function CollectionPanel() {
   const { showToast } = useToast();
   const [status, setStatus] = useState<CollectionStatus | null>(null);
   const [resetting, setResetting] = useState(false);
-  const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const load = useCallback(() => {
     void api<CollectionStatus>("/collection")
@@ -420,17 +422,13 @@ function CollectionPanel() {
   }, [load]);
   if (status === null) return null;
   const filled = status.pending + status.claimed + status.done + status.failed;
-  const typed = draft ?? String(status.target);
-  const wanted = Number(typed);
-  const valid = Number.isFinite(wanted) && wanted >= 1 && wanted <= 5000;
-  const changed = valid && Math.round(wanted) !== status.target;
-  async function saveTarget(): Promise<void> {
-    if (!changed) return;
+  async function setTarget(next: number, said: string): Promise<void> {
+    const bounded = Math.max(0, Math.min(5000, Math.round(next)));
+    if (bounded === status?.target) return;
     setSaving(true);
     try {
-      await api("/collection", { method: "PUT", body: JSON.stringify({ target: Math.round(wanted) }) });
-      setDraft(null);
-      showToast(`목표를 ${Math.round(wanted)}곡으로 바꿨습니다.`);
+      await api("/collection", { method: "PUT", body: JSON.stringify({ target: bounded }) });
+      showToast(said);
       load();
     } catch (reason) {
       showToast(reason instanceof Error ? reason.message : "목표 변경에 실패했습니다", { variant: "error" });
@@ -463,25 +461,47 @@ function CollectionPanel() {
             {status.failed > 0 && ` · ${status.failed}곡 실패`}
           </p>
         </div>
+        {/*
+          더 모을지 그만 모을지는 "지금보다 얼마나"의 문제라서, 절대값을 타이핑하는 것보다
+          지금 값에 더하고 빼는 편이 실제 판단에 가깝다. C는 0으로 되돌려 수집을 멈춘다.
+        */}
         <div className="target-control">
-          <label htmlFor="collection-target">목표</label>
-          <input
-            id="collection-target"
-            className="form-control"
-            type="number"
-            min={1}
-            max={5000}
-            value={typed}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void saveTarget();
-            }}
-          />
-          <span>곡</span>
-          <button className="primary-button" onClick={() => void saveTarget()} disabled={!changed || saving}>
-            적용
-          </button>
-          <button className="ghost-button" onClick={() => void startRound()} disabled={resetting}>
+          <span className="target-now">
+            목표 <b>{status.target}</b>곡
+          </span>
+          <div className="target-keys" role="group" aria-label="수집 목표 조절">
+            {STEPS.map((step) => (
+              <button
+                key={step}
+                className="target-key"
+                onClick={() => void setTarget(status.target - step, `목표를 ${step}곡 줄였습니다.`)}
+                disabled={saving || status.target === 0}
+                aria-label={`목표 ${step}곡 줄이기`}
+              >
+                −{step}
+              </button>
+            ))}
+            {STEPS.map((step) => (
+              <button
+                key={`+${step}`}
+                className="target-key"
+                onClick={() => void setTarget(status.target + step, `목표를 ${step}곡 늘렸습니다.`)}
+                disabled={saving || status.target >= 5000}
+                aria-label={`목표 ${step}곡 늘리기`}
+              >
+                +{step}
+              </button>
+            ))}
+            <button
+              className="target-key clear"
+              onClick={() => void setTarget(0, "목표를 0으로 되돌렸습니다. 새 곡은 더 담기지 않습니다.")}
+              disabled={saving || status.target === 0}
+              aria-label="목표를 0으로"
+            >
+              C
+            </button>
+          </div>
+          <button className="secondary-button" onClick={() => void startRound()} disabled={resetting}>
             새 회차
           </button>
         </div>

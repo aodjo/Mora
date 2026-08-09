@@ -570,7 +570,8 @@ async function readCollectionQueue(env: WorkerEnv, actor: Actor): Promise<Respon
  */
 async function setCollectionTarget(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "jobs.manage");
-  const target = Math.round(numberValue(value.target, 1, 5000));
+  // 0은 "이번 회차는 여기까지" — 대기열은 그대로 두고 새로 담지만 않는다.
+  const target = Math.round(numberValue(value.target, 0, 5000));
   const now = Date.now();
   await env.ADMIN_DB.prepare(
     `INSERT INTO settings (key,value,secret,updated_by,updated_at) VALUES ('collector.daily_budget',?1,0,?2,?3)

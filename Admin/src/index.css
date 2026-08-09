@@ -3427,19 +3427,49 @@ textarea:focus-visible {
 .target-control {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
 }
-.target-control label {
+.target-now {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
-.target-control input {
-  width: 84px;
-  text-align: right;
+.target-now b {
+  color: var(--text);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
-.target-control span {
+/* 계산기처럼 한 덩이로 붙여 둔다 — 누르는 자리끼리 떨어져 있으면 한 조작으로 안 읽힌다. */
+.target-keys {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.target-key {
+  min-width: 46px;
+  min-height: 34px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.target-key:first-child {
+  border-left: 0;
+}
+.target-key:hover:not(:disabled) {
+  background: var(--surface-muted);
+}
+.target-key:disabled {
   color: var(--text-muted);
-  font-size: 12px;
-  margin-left: -4px;
+  cursor: default;
+  opacity: 0.5;
+}
+.target-key.clear {
+  color: var(--text-muted);
+  font-weight: 600;
 }
