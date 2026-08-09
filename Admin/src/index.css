@@ -3122,11 +3122,26 @@ textarea:focus-visible {
 .yt-thumb:hover span {
   background: rgb(0 0 0 / 0.12);
 }
+/* 재생 중인 것만 커진다 — 160px에서는 YouTube 스크러버가 몇 픽셀이라 탐색이 안 된다. */
 .yt-frame {
-  width: 160px;
+  width: 100%;
+  max-width: 560px;
   aspect-ratio: 16 / 9;
   border: 1px solid var(--border);
   border-radius: 8px;
+}
+.source-row.playing {
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 10px;
+  align-items: start;
+}
+.source-row.playing .source-row-main {
+  order: 2;
+}
+.source-row.playing > button:not(.yt-thumb),
+.source-row.playing > .state-badge {
+  order: 3;
+  justify-self: start;
 }
 .yt-search {
   display: flex;

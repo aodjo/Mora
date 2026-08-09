@@ -74,10 +74,15 @@ function drift(catalogueMs: number, videoMs: number): { label: string; tone: "go
   return { label: `${Math.round(gap / 1000)}초 차이`, tone: "bad" };
 }
 
-/** The iframe is created only when asked for, so a page of results is a page of images. */
-function Player({ videoId, title }: { videoId: string; title: string }) {
-  const [playing, setPlaying] = useState(false);
-  if (playing)
+/**
+ * A thumbnail until asked for, then a player big enough to use.
+ *
+ * At thumbnail size YouTube's own controls are unusable — the scrubber is a few pixels of
+ * track — so the one that is playing grows and the row stacks around it. Only one plays at a
+ * time, which the parent decides, so two sources never sound at once.
+ */
+function Player({ videoId, title, active, onPlay }: { videoId: string; title: string; active: boolean; onPlay: () => void }) {
+  if (active)
     return (
       <iframe
         className="yt-frame"
@@ -88,7 +93,7 @@ function Player({ videoId, title }: { videoId: string; title: string }) {
       />
     );
   return (
-    <button type="button" className="yt-thumb" onClick={() => setPlaying(true)} aria-label={`${title} 재생`}>
+    <button type="button" className="yt-thumb" onClick={onPlay} aria-label={`${title} 재생`}>
       <img src={`https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/mqdefault.jpg`} alt="" loading="lazy" />
       <span>
         <Play size={16} fill="currentColor" />
@@ -120,6 +125,7 @@ export function RecordingDetail({
   const [language, setLanguage] = useState<"auto" | "ko" | "en" | "ja">("auto");
   const [lyrics, setLyrics] = useState("");
   const searchAbort = useRef<AbortController | null>(null);
+  const [playing, setPlaying] = useState<string | null>(null);
 
   const load = useCallback(() => {
     api<Detail>(`/recordings/${encodeURIComponent(recordingId)}`)
@@ -325,7 +331,16 @@ export function RecordingDetail({
         {selected === undefined ? (
           <p className="detail-empty">아직 확정된 음원이 없습니다. 아래 후보에서 고르거나 직접 검색해 지정하세요.</p>
         ) : (
-          <SourceRow source={selected} catalogueMs={catalogueMs} canSelect={false} busy={busy} onChoose={choose} confirmed />
+          <SourceRow
+            source={selected}
+            catalogueMs={catalogueMs}
+            canSelect={false}
+            busy={busy}
+            onChoose={choose}
+            playing={playing}
+            onPlay={setPlaying}
+            confirmed
+          />
         )}
       </section>
 
@@ -379,6 +394,8 @@ export function RecordingDetail({
               canSelect={canSelect && !busy}
               busy={busy}
               onChoose={choose}
+              playing={playing}
+              onPlay={setPlaying}
             />
           ))
         )}
@@ -423,8 +440,13 @@ export function RecordingDetail({
             hits.map((hit) => {
               const gap = drift(catalogueMs, hit.duration_ms);
               return (
-                <div key={hit.video_id} className="source-row">
-                  <Player videoId={hit.video_id} title={hit.title} />
+                <div key={hit.video_id} className={`source-row ${playing === hit.video_id ? "playing" : ""}`}>
+                  <Player
+                    videoId={hit.video_id}
+                    title={hit.title}
+                    active={playing === hit.video_id}
+                    onPlay={() => setPlaying(hit.video_id)}
+                  />
                   <div className="source-row-main">
                     <strong>{hit.title}</strong>
                     <span>
@@ -455,6 +477,8 @@ function SourceRow({
   canSelect,
   busy,
   onChoose,
+  playing,
+  onPlay,
   confirmed = false,
 }: {
   source: AdminItem;
@@ -462,6 +486,8 @@ function SourceRow({
   canSelect: boolean;
   busy: boolean;
   onChoose: (value: { source_id: string }) => void;
+  playing: string | null;
+  onPlay: (videoId: string) => void;
   confirmed?: boolean;
 }) {
   const metadata = parseObject(source.metadata);
@@ -469,8 +495,8 @@ function SourceRow({
   const title = text(metadata.title, `YouTube ${videoId}`);
   const gap = drift(catalogueMs, number(source.duration_ms) || number(metadata.duration_ms));
   return (
-    <div className={`source-row ${confirmed ? "confirmed" : ""}`}>
-      <Player videoId={videoId} title={title} />
+    <div className={`source-row ${confirmed ? "confirmed" : ""} ${playing === videoId ? "playing" : ""}`}>
+      <Player videoId={videoId} title={title} active={playing === videoId} onPlay={() => onPlay(videoId)} />
       <div className="source-row-main">
         <strong>{title}</strong>
         <span>
