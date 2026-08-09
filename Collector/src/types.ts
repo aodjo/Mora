@@ -5,6 +5,12 @@ export interface RecordingSeed {
   title: string;
   album?: string | undefined;
   duration_ms?: number | undefined;
+  /**
+   * Length taken from the catalogue entry that carries the ISRC we publish under, and therefore
+   * the length the released master actually runs to. Absent when nothing authoritative answered,
+   * which is the difference between a source we can trust and one only a person should approve.
+   */
+  catalogue_duration_ms?: number | undefined;
   mbid?: string | undefined;
   isrc?: string | undefined;
   language?: string | undefined;
@@ -23,6 +29,8 @@ export interface YoutubeCandidate {
   official: boolean;
   source_type: "song" | "topic" | "unofficial";
   score: number;
+  /** Gap from the catalogue length, or undefined when there was nothing authoritative to check. */
+  catalogue_drift_ms?: number | undefined;
 }
 
 export interface CollectorConfig {

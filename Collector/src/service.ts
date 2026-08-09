@@ -33,15 +33,24 @@ export class CollectorService {
     this.#listenbrainz = new ListenBrainzClient(this.#fetch);
   }
 
-  /** Fills only what MusicBrainz left blank; a Spotify outage costs nothing but the gap. */
+  /**
+   * Fills what MusicBrainz left blank, and takes over the length when both describe the same
+   * release. MusicBrainz carries whichever cut a contributor happened to submit — it put IU's
+   * "Love wins all" at 4:05 against a recording that runs 4:31 — and a length that wrong drags
+   * every real candidate below auto-selection. A Spotify outage costs nothing but the gap.
+   */
   async #enrich(seed: RecordingSeed): Promise<RecordingSeed> {
-    if (this.config.spotify === undefined || (seed.isrc !== undefined && seed.duration_ms !== undefined)) return seed;
+    if (this.config.spotify === undefined) return seed;
     const found = await this.config.spotify.identify(seed).catch(() => undefined);
     if (found === undefined) return seed;
+    // Different ISRCs mean different releases, so Spotify's length describes another cut and is
+    // no longer evidence about ours.
+    const sameRelease = seed.isrc === undefined || found.isrc === undefined || seed.isrc === found.isrc;
+    const catalogue = sameRelease ? found.durationMs : undefined;
     return {
       ...seed,
       ...(seed.isrc === undefined && found.isrc !== undefined ? { isrc: found.isrc } : {}),
-      ...(seed.duration_ms === undefined && found.durationMs !== undefined ? { duration_ms: found.durationMs } : {}),
+      ...(catalogue === undefined ? {} : { duration_ms: catalogue, catalogue_duration_ms: catalogue }),
       ...(seed.album === undefined && found.album !== undefined ? { album: found.album } : {}),
     };
   }
@@ -99,12 +108,7 @@ export class CollectorService {
           this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "no-lyrics" });
           continue;
         }
-        // Search results come back flat, so the score compares the song title against the whole
-        // video title and tops out at 0.86 for anything captioned "'Whiplash' Official Audio".
-        // 0.90 therefore asked for a title that is bare — which is why almost everything landed
-        // in review. Now that official means the artist's own channel rather than any channel
-        // with the word in its name, that is the gate worth leaning on.
-        const selected = sources[0]?.official === true && sources[0].score >= 0.85;
+        const selected = canAutoSelect(sources[0]);
         const response = await this.#fetch(`${this.config.adminUrl.replace(/\/$/u, "")}/admin/api/collector/recordings`, {
           method: "POST",
           headers: { authorization: `Bearer ${this.config.adminToken}`, "content-type": "application/json" },
@@ -144,21 +148,43 @@ export class CollectorService {
   }
 }
 
+/** Rounding alone puts a match half a second out: YouTube reports whole seconds, catalogues do not. */
+const CATALOGUE_DRIFT_TOLERANCE_MS = 2_000;
+
+/**
+ * Whether a source can go to the Generator without a person looking at it.
+ *
+ * Requiring the artist's own channel sounded right and is too narrow to use: BTS upload as
+ * BANGTANTV and HYBE LABELS, and for "SWIM" those channels hold a 4:05 music video and a 2:52
+ * performance cut, while the only copy of the 2:39 recording is a reupload. What decides whether
+ * timings will be right is not who posted the file but whether it runs to the length of the
+ * master we publish under, and Spotify answers that against the ISRC itself: the real uploads
+ * came in 993ms, 467ms and 920ms out, the music video 86 seconds out. So the catalogue length is
+ * the gate, and the artist's channel is one way to clear it rather than the only one.
+ */
+export function canAutoSelect(best: YoutubeCandidate | undefined): boolean {
+  if (best === undefined || best.score < 0.85) return false;
+  if (best.catalogue_drift_ms !== undefined) return best.catalogue_drift_ms <= CATALOGUE_DRIFT_TOLERANCE_MS;
+  // Nothing authoritative to measure against, so ownership is the only assurance left.
+  return best.official;
+}
+
 /** Turns the server's list of what is missing into something worth reading in a log. */
 export function reviewReason(blockedBy: string[], sources: YoutubeCandidate[]): string {
   const parts: string[] = [];
   if (blockedBy.includes("isrc")) parts.push("ISRC 없음");
   if (blockedBy.includes("source")) {
     const best = sources[0];
-    parts.push(
-      best === undefined
-        ? "음원 후보 없음"
-        : best.official
-          ? `자동 선택 기준 미달 (아티스트 채널, 최고 ${best.score.toFixed(2)})`
-          : `아티스트 채널 음원 없음 (최고 ${best.score.toFixed(2)})`,
-    );
+    parts.push(best === undefined ? "음원 후보 없음" : `자동 선택 기준 미달 (${whyNotSelected(best)})`);
   }
   return parts.length > 0 ? parts.join(" · ") : "확인 필요";
+}
+
+/** Names the one thing standing between the best candidate and the Generator. */
+function whyNotSelected(best: YoutubeCandidate): string {
+  if (best.score < 0.85) return `점수 ${best.score.toFixed(2)}`;
+  if (best.catalogue_drift_ms === undefined) return "카탈로그 길이 없음, 아티스트 채널 아님";
+  return `길이 ${(best.catalogue_drift_ms / 1000).toFixed(1)}초 차이`;
 }
 
 export function lyricsSearchInput(seed: RecordingSeed): Parameters<LyricsProvider["search"]>[0] {

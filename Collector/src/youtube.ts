@@ -126,6 +126,8 @@ export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCa
       const durationScore = drift === undefined || durationMs === 0 ? 0.5 : drift <= 2_000 ? 1 : Math.max(0, 1 - (drift - 2_000) / 12_000);
       const channel = entry.channel ?? entry.uploader ?? "";
       const official = isArtistChannel(channel, seed.artist);
+      const catalogueDrift =
+        seed.catalogue_duration_ms === undefined || durationMs === 0 ? undefined : Math.abs(seed.catalogue_duration_ms - durationMs);
       const score = titleScore * 0.45 + artistScore * 0.35 + durationScore * 0.15 + (official ? 0.05 : 0) - (isVideo ? 0.1 : 0);
       if (score < 0.55) return [];
       return [
@@ -139,11 +141,22 @@ export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCa
           official,
           source_type: official ? (/-\s*topic$/iu.test(channel.trim()) ? "topic" : "song") : "unofficial",
           score,
+          ...(catalogueDrift === undefined ? {} : { catalogue_drift_ms: catalogueDrift }),
         },
       ];
     })
-    .sort((a, b) => b.score - a.score)
+    .sort(rankSource)
     .slice(0, 3);
+}
+
+/**
+ * Once the catalogue length has confirmed a copy is the released master, who uploaded it is the
+ * tie-break worth having: a fan lyrics video and the artist's own upload of the same audio both
+ * match to the second, and the artist's is the one that will still be there next month.
+ */
+function rankSource(a: YoutubeCandidate, b: YoutubeCandidate): number {
+  const verified = (item: YoutubeCandidate): number => (item.catalogue_drift_ms !== undefined && item.catalogue_drift_ms <= 2_000 ? 1 : 0);
+  return verified(b) - verified(a) || Number(b.official) - Number(a.official) || b.score - a.score;
 }
 
 function youtubeDlCommand(): string {

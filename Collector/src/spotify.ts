@@ -57,13 +57,23 @@ export class SpotifyClient {
     return this.#token.value;
   }
 
-  /** The best match for the seed, or undefined when Spotify has nothing convincing. */
-  async identify(seed: RecordingSeed): Promise<{ isrc?: string; durationMs?: number; album?: string } | undefined> {
-    const query = `track:${seed.title} artist:${seed.artist}`;
+  async #search(query: string): Promise<SpotifyTrack[]> {
     const url = `${SEARCH_URL}?q=${encodeURIComponent(query)}&type=track&limit=5`;
     const response = await this.fetcher(url, { headers: { authorization: `Bearer ${await this.#accessToken()}` } });
     if (!response.ok) throw new Error(`SPOTIFY_SEARCH_${response.status}`);
-    const items = ((await response.json()) as SearchResponse).tracks?.items ?? [];
+    return ((await response.json()) as SearchResponse).tracks?.items ?? [];
+  }
+
+  /** The best match for the seed, or undefined when Spotify has nothing convincing. */
+  async identify(seed: RecordingSeed): Promise<{ isrc?: string; durationMs?: number; album?: string } | undefined> {
+    // An ISRC names one recording, so when we already hold one there is nothing left to verify.
+    // It is also the only way to reach a track the catalogue files under another script: Spotify
+    // lists Ado's ギラギラ as "Gira Gira", and searching the Japanese title returns live cuts.
+    if (seed.isrc !== undefined && seed.isrc.length > 0) {
+      const exact = (await this.#search(`isrc:${seed.isrc}`))[0];
+      if (exact !== undefined) return describe(exact, seed.isrc);
+    }
+    const items = await this.#search(`track:${seed.title} artist:${seed.artist}`);
     const wantedTitle = normalize(seed.title);
     const wantedArtist = normalize(seed.artist);
     for (const track of items) {
@@ -73,13 +83,17 @@ export class SpotifyClient {
       if (normalize(track.name) !== wantedTitle) continue;
       const credited = (track.artists ?? []).map((artist) => normalize(artist.name ?? "")).filter((name) => name.length > 0);
       if (!credited.some((name) => name === wantedArtist || name.includes(wantedArtist) || wantedArtist.includes(name))) continue;
-      const isrc = track.external_ids?.isrc;
-      return {
-        ...(typeof isrc === "string" && isrc.length > 0 ? { isrc: isrc.replaceAll("-", "").toUpperCase() } : {}),
-        ...(typeof track.duration_ms === "number" && track.duration_ms > 0 ? { durationMs: track.duration_ms } : {}),
-        ...(typeof track.album?.name === "string" && track.album.name.length > 0 ? { album: track.album.name } : {}),
-      };
+      return describe(track);
     }
     return undefined;
   }
+}
+
+function describe(track: SpotifyTrack, fallbackIsrc?: string): { isrc?: string; durationMs?: number; album?: string } {
+  const isrc = typeof track.external_ids?.isrc === "string" && track.external_ids.isrc.length > 0 ? track.external_ids.isrc : fallbackIsrc;
+  return {
+    ...(isrc === undefined ? {} : { isrc: isrc.replaceAll("-", "").toUpperCase() }),
+    ...(typeof track.duration_ms === "number" && track.duration_ms > 0 ? { durationMs: track.duration_ms } : {}),
+    ...(typeof track.album?.name === "string" && track.album.name.length > 0 ? { album: track.album.name } : {}),
+  };
 }
