@@ -901,7 +901,9 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     artifacts.append({"kind": "checkpoint", "path": str(checkpoint), "content_type": "application/json"})
     notify("index", "completed", 0.95)
     notify("quality_gate", "completed", 0.96)
-    expected_language = str(job["recording"].get("language", "und"))
+    # expected_language 함수와 이름이 겹치면 파이썬이 함수 전체에서 그 이름을 지역으로 봐,
+    # 위쪽의 호출이 "값 없는 지역 변수"로 죽는다. 실제로 그렇게 죽었다.
+    stated_language = str(job["recording"].get("language", "und"))
     average = lambda key: sum(float(item["quality"].get(key, 0.0)) for item in variants) / max(1, len(variants))
     quality = {
         "token_coverage": average("token_coverage"),
@@ -909,7 +911,7 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
         "line_plausibility": average("line_plausibility"),
         "asr_anchored": average("asr_anchored"),
         "duration_match": max(0.0, 1 - abs(duration_ms - int(job["recording"]["duration_ms"])) / 10000),
-        "language_match": 1.0 if expected_language == "und" or detected.split("-")[0] == expected_language.split("-")[0] else 0.0,
+        "language_match": 1.0 if stated_language == "und" or detected.split("-")[0] == stated_language.split("-")[0] else 0.0,
     }
     return {"backend": config["backend"], "hardware": config["hardware"], "detected_languages": [detected], "variants": variants, "speaker_turns": turns, "word_speakers": word_speakers, "line_speakers": line_speakers, "artifacts": artifacts, "quality": quality, "work_dir": str(directory)}
 
