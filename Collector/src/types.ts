@@ -63,5 +63,5 @@ export type CollectorProgress =
       jobId?: string;
       deduplicated: boolean;
     }
-  | { stage: "skipped"; current: number; total: number; song: string; reason: "instrumental" | "no-lyrics" | "collected" }
+  | { stage: "skipped"; current: number; total: number; song: string; reason: "instrumental" | "no-lyrics" | "no-source" | "collected" }
   | { stage: "failed"; current: number; total: number; song: string; code: string };

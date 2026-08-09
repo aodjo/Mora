@@ -30,6 +30,8 @@ interface Harness {
   catalogue: Array<{ artist: string; title: string; isrc?: string }>;
   /** 이 실행에서 가사 제공자가 내놓을 결과. 빈 배열이면 "가사 없음" 경로를 탄다. */
   lyrics: LyricsProviderResult[];
+  /** true면 YouTube 검색이 빈손으로 돌아온다. */
+  noSources: boolean;
 }
 
 function harness(
@@ -39,6 +41,7 @@ function harness(
   const lyricsBox: { value: LyricsProviderResult[] } = {
     value: [{ provider: "test", text: "가사 한 줄", fetched_at: Date.now() }],
   };
+  const sourceBox = { none: false };
   const searched: string[] = [];
   const lyricsFor: string[] = [];
   const submitted: string[] = [];
@@ -81,6 +84,7 @@ function harness(
     fetch: fetchImpl,
     youtubeSearch: async (seed): Promise<YoutubeCandidate[]> => {
       searched.push(`${seed.artist} - ${seed.title}`);
+      if (sourceBox.none) return [];
       return [
         {
           url: "https://music.youtube.com/watch?v=abcdefghijk",
@@ -116,6 +120,12 @@ function harness(
     },
     set lyrics(value: LyricsProviderResult[]) {
       lyricsBox.value = value;
+    },
+    get noSources() {
+      return sourceBox.none;
+    },
+    set noSources(value: boolean) {
+      sourceBox.none = value;
     },
   };
 }
@@ -226,4 +236,21 @@ test("an instrumental is recorded as one and never costs a lyrics lookup", async
   assert.equal(report.skipped, 1);
   assert.deepEqual(h.lyricsFor, []);
   assert.deepEqual(h.skips, [{ artist: "BTS", title: "SWIM (instrumental)", reason: "instrumental" }]);
+});
+
+test("a song with no playable source is a remembered skip, not a failure", async () => {
+  // 실측: Megasound 4곡 — 카탈로그 길이도, 재생할 업로드도 없어 매 실행
+  // "수집 실패 (DURATION_UNAVAILABLE)"로 반복됐다. 시드에 길이가 없는 게 조건이다.
+  const OBSCURE: RecordingSeed = { artist: "Megasound", title: "Keep On Running", popularity: 0.1, freshness: 0.9, market: "US" };
+  const h = harness([]);
+  h.noSources = true;
+  const report = await h.service.collect([OBSCURE]);
+  assert.deepEqual(report.errors, []);
+  assert.equal(report.skipped, 1);
+  assert.deepEqual(h.skips, [{ artist: "Megasound", title: "Keep On Running", reason: "no-source" }]);
+
+  // 기억됐으니 다음 실행은 검색조차 하지 않는다.
+  const next = harness([], [{ artist: "Megasound", title: "Keep On Running" }]);
+  await next.service.collect([OBSCURE]);
+  assert.deepEqual(next.searched, []);
 });

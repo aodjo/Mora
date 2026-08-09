@@ -171,7 +171,7 @@ export class CollectorService {
   }
 
   /** Remembered so the next run does not pay to reach the same answer. */
-  async #remember(seed: RecordingSeed, reason: "instrumental" | "no-lyrics"): Promise<void> {
+  async #remember(seed: RecordingSeed, reason: "instrumental" | "no-lyrics" | "no-source"): Promise<void> {
     await this.#fetch(`${this.config.adminUrl.replace(/\/$/u, "")}/admin/api/collector/skipped`, {
       method: "POST",
       headers: { authorization: `Bearer ${this.config.adminToken}`, "content-type": "application/json" },
@@ -221,7 +221,17 @@ export class CollectorService {
         }
         const sources = await (this.config.youtubeSearch ?? searchYoutubeMusic)(identified);
         const durationMs = resolveDurationMs(identified, sources);
-        if (durationMs === undefined) throw new Error("DURATION_UNAVAILABLE");
+        // No catalogue length and no playable upload: there is nothing to time against. A song
+        // this obscure may surface later, so it is a remembered skip, not a failure to retry
+        // every run.
+        if (durationMs === undefined) {
+          report.skipped++;
+          collected.remember(identified);
+          collected.remember(seed);
+          await this.#remember(seed, "no-source");
+          this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "no-source" });
+          continue;
+        }
         const recording = { ...identified, duration_ms: durationMs };
         const lyrics: LyricsProviderResult[] = await this.config.lyricsProvider.search(lyricsSearchInput(identified));
         // Every provider came back empty. Without a single line of text there is nothing to

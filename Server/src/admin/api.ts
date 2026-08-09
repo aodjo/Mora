@@ -403,6 +403,7 @@ async function collectorCollected(env: WorkerEnv, actor: Actor): Promise<Respons
 const SKIP_RETRY_MS: Record<string, number | null> = {
   instrumental: null,
   "no-lyrics": 30 * 24 * 60 * 60_000,
+  "no-source": 30 * 24 * 60 * 60_000,
 };
 
 /**
