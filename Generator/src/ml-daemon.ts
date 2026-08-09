@@ -41,15 +41,22 @@ export class MlDaemon {
   readonly #process: ChildProcessWithoutNullStreams;
   #id = 0;
   readonly #pending = new Map<number, PendingRequest>();
+  readonly #stderrTail: string[] = [];
   onStage: ((value: { stage: string; state: string; progress: number; metrics: Record<string, number> }) => void) | undefined;
   constructor(
     command = process.env.MORA_PYTHON ?? "python3",
     script = process.env.MORA_ML_DAEMON_SCRIPT ?? resolve(process.cwd(), "Generator/python/mora_ml_daemon.py"),
   ) {
     this.#process = spawn(command, [script], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
-    // Python/ML libraries can be noisy on stderr. Drain it so a full pipe cannot
-    // deadlock the daemon; stdout remains reserved for the JSON-RPC protocol.
-    this.#process.stderr.resume();
+    // Python/ML libraries are noisy on stderr, but stderr is also where a crashed pipeline
+    // leaves its traceback. Draining it blind meant every failure surfaced as the bare code
+    // ML_PIPELINE_FAILED and the reason vanished — so the tail is kept, to hand back with
+    // the error it explains. Reading it keeps the pipe from filling either way.
+    const stderrLines = createInterface({ input: this.#process.stderr });
+    stderrLines.on("line", (line) => {
+      this.#stderrTail.push(line);
+      if (this.#stderrTail.length > 60) this.#stderrTail.shift();
+    });
     const lines = createInterface({ input: this.#process.stdout });
     lines.on("line", (line) => {
       try {
@@ -65,7 +72,7 @@ export class MlDaemon {
         if (!pending) return;
         this.#pending.delete(response.id);
         if (pending.timeout !== undefined) clearTimeout(pending.timeout);
-        response.error ? pending.reject(new Error(response.error.code)) : pending.resolve(response.result);
+        response.error ? pending.reject(this.#failure(response.error.code)) : pending.resolve(response.result);
       } catch {
         /* daemon stdout is protocol-only */
       }
@@ -73,6 +80,17 @@ export class MlDaemon {
     this.#process.on("error", (error) => this.#rejectAll(error));
     this.#process.on("exit", (code) => this.#rejectAll(new Error(`ML_DAEMON_EXIT_${code}`)));
   }
+  /** The error, carrying the last of what Python said before it died. */
+  #failure(code: string): Error {
+    const said = this.#stderrTail
+      .filter((line) => line.trim().length > 0)
+      .slice(-12)
+      .join("\n");
+    const error = new Error(code);
+    if (said.length > 0) (error as Error & { detail?: string }).detail = said;
+    return error;
+  }
+
   call<T>(method: string, params: unknown, timeoutMs?: number): Promise<T> {
     const id = ++this.#id;
     return new Promise<T>((resolve, reject) => {

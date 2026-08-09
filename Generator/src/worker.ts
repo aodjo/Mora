@@ -179,6 +179,9 @@ export class GeneratorWorker {
       succeeded = true;
     } catch (error) {
       if (input !== undefined) await this.sendFailure(input, error);
+      // 파이썬이 죽기 전에 남긴 말 — 코드 하나만 보고는 아무것도 고칠 수 없다.
+      const detail = (error as Error & { detail?: string }).detail;
+      if (detail !== undefined) this.options.onStatus?.({ state: "warning", message: `파이프라인 실패 원인:\n${detail}` });
       // A language the aligner has no model for will fail again on every attempt.
       retrying = leased.attempts < 3 && safeCode(error) !== "UNSUPPORTED_LANGUAGE";
       if (retrying)
