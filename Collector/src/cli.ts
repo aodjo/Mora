@@ -9,6 +9,7 @@ import { CollectorService } from "./service.js";
 import { createSongTitleProvider } from "./songtitle-provider.js";
 import { startSearchWorker } from "./search-worker.js";
 import { collectOne, startBasketWorker } from "./basket-worker.js";
+import { startPlanWorker } from "./plan-worker.js";
 import { LyricFindCatalogue } from "./lyricfind.js";
 import { SpotifyClient } from "./spotify.js";
 
@@ -125,15 +126,10 @@ function build(config: CollectorRuntimeConfig, lyrics: LyricsProvider): Collecto
   });
 }
 
-async function run(config: CollectorRuntimeConfig): Promise<void> {
-  const report = await build(config, await loadProvider(config)).run();
-  process.stdout.write(`${JSON.stringify(report)}\n`);
-}
-
 process.stdout.write("Admin에서 Collector 설정을 불러오는 중…\n");
 let config = initialConfig ?? (await fetchCollectorRuntimeConfig(adminUrl, collectorToken));
 process.stdout.write(
-  `설정 완료: ${config.markets.join(", ")} · 최대 ${config.dailyBudget}곡 · ${config.once ? "1회 실행" : `${Math.round(config.intervalMs / 60_000)}분 간격`}` +
+  `설정 완료: ${config.markets.join(", ")} · 목표 ${config.dailyBudget}곡 (전체 Collector 합계)` +
     ` · Spotify 식별 ${config.spotifyClientId !== undefined && config.spotifyClientSecret !== undefined ? "사용" : "미설정"}\n`,
 );
 // 수집과 나란히, 콘솔이 올린 음원 검색을 집어간다. 여러 대가 떠 있으면 먼저 집는 쪽이 처리한다.
@@ -156,22 +152,16 @@ startBasketWorker({
 });
 process.stdout.write("Admin 음원 검색·장바구니 대기 중\n");
 
-let lastRunAt = Date.now();
-await run(config);
-
-while (!config.once) {
-  const remaining = Math.max(1000, config.intervalMs - (Date.now() - lastRunAt));
-  await delay(Math.min(60_000, remaining));
-  config = await fetchCollectorRuntimeConfig(adminUrl, collectorToken);
-  if (config.once) break;
-  if (Date.now() - lastRunAt < config.intervalMs) continue;
-  lastRunAt = Date.now();
-  await run(config);
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
+// 어드민이 정한 목표만큼만, 여러 대가 나눠 가진다. 시작했다고 자기 예산을 쓰지 않는다.
+const service = build(config, await loadProvider(config));
+startPlanWorker({
+  adminUrl,
+  adminToken: collectorToken,
+  discover: async (want) => service.discover(undefined, want),
+  collect: collectOne(service),
+  onLog: (message) => process.stdout.write(`${message}\n`),
+});
+process.stdout.write("수집 계획 대기 중\n");
 
 async function readCredentials(path: string): Promise<CollectorCredentials | undefined> {
   try {

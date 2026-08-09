@@ -191,7 +191,7 @@ export class AlignmentStore implements AlignmentRepository {
     }
     return rows.map((row) => ({
       id: row.id,
-      isrc: row.isrc,
+      recordingId: row.isrc,
       textHash: row.text_hash,
       tokenizer: row.tokenizer,
       fingerprint: {

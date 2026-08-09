@@ -4,7 +4,7 @@ import type { AlignmentRepository, Contribution, RecordingIdentifier } from "../
 
 interface AlignmentRow {
   id: number;
-  isrc: string;
+  recording_id: string;
   text_hash: string;
   tokenizer: string;
   fp_lens: ArrayBuffer | number[];
@@ -38,7 +38,7 @@ function source(value: string): AlignmentSource {
 function fromRow(row: AlignmentRow): StoredAlignment {
   return {
     id: row.id,
-    isrc: row.isrc,
+    recordingId: row.recording_id,
     textHash: row.text_hash,
     tokenizer: row.tokenizer,
     fingerprint: {
@@ -68,8 +68,8 @@ export class D1AlignmentStore implements AlignmentRepository {
         .prepare(
           `
           SELECT a.*, r.duration_ms FROM public_alignment a
-          JOIN public_recording r ON r.isrc = a.isrc
-          WHERE a.isrc = ?1 AND a.active = 1 ORDER BY a.created_at DESC
+          JOIN public_recording r ON r.id = a.recording_id
+          WHERE r.isrc = ?1 AND a.active = 1 ORDER BY a.created_at DESC
         `,
         )
         .bind(identifier.isrc);
@@ -78,7 +78,7 @@ export class D1AlignmentStore implements AlignmentRepository {
         .prepare(
           `
           SELECT a.*, r.duration_ms FROM public_alignment a
-          JOIN public_recording r ON r.isrc = a.isrc
+          JOIN public_recording r ON r.id = a.recording_id
           WHERE r.mbid = ?1 AND a.active = 1 ORDER BY a.created_at DESC
         `,
         )
@@ -88,7 +88,7 @@ export class D1AlignmentStore implements AlignmentRepository {
         .prepare(
           `
         SELECT a.*, r.duration_ms FROM public_alignment a
-        JOIN public_recording r ON r.isrc = a.isrc
+        JOIN public_recording r ON r.id = a.recording_id
         WHERE r.artist_key = ?1 AND r.title_key = ?2 AND ABS(r.duration_ms - ?3) <= MAX(5000, r.duration_ms * 0.02)
           AND a.active = 1
         ORDER BY a.quality_score DESC, a.created_at DESC

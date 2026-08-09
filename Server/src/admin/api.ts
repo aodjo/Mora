@@ -257,8 +257,8 @@ async function enrollWorker(env: WorkerEnv, value: Record<string, unknown>): Pro
 }
 
 /** What is still missing before a job can open, so the collector can say why it stopped. */
-function blockedBy(isrc: string | null, sourceId: string | null): string[] {
-  return [...(isrc === null ? ["isrc"] : []), ...(sourceId === null ? ["source"] : [])];
+function blockedBy(_isrc: string | null, sourceId: string | null): string[] {
+  return sourceId === null ? ["source"] : [];
 }
 
 /**
@@ -414,6 +414,160 @@ async function completeBasketSong(env: WorkerEnv, actor: Actor, id: string, valu
     .bind(failure === null ? "done" : "failed", failure, id, actor.id)
     .run();
   return json({ accepted: true });
+}
+
+/** How long a Collector may hold the discovery job before another may take it. */
+const DISCOVERY_LEASE_MS = 3 * 60_000;
+/**
+ * How long to leave the charts alone after a sweep that added nothing.
+ *
+ * The target counts songs, not attempts, so a target of 300 against a hundred-song chart
+ * whose songs are all collected leaves 200 forever missing. Without this the Collectors read
+ * the charts again the moment each sweep ends — measured at twenty-nine sweeps in fourteen
+ * seconds — and every one of them returns what the last one did.
+ */
+const DISCOVERY_COOLDOWN_MS = 10 * 60_000;
+/** How long a claimed song may sit before it is offered again. Collecting one is minutes of work. */
+const COLLECTION_CLAIM_MS = 20 * 60_000;
+
+/**
+ * What a Collector should do next.
+ *
+ * Every Collector used to walk the charts itself and spend its own budget, so running three
+ * did the same work three times. The target is now a total the console sets, the queue is
+ * shared, and this hands out one thing at a time: fill the queue, take a song, or wait.
+ * Whoever asks first gets it, which is the one with time to ask.
+ */
+async function claimCollectionWork(env: WorkerEnv, actor: Actor): Promise<Response> {
+  requirePermission(actor, "collector.submit");
+  const now = Date.now();
+  await env.ADMIN_DB.batch([
+    env.ADMIN_DB.prepare("UPDATE collection_queue SET state='pending',claimed_by=NULL WHERE state='claimed' AND claimed_at < ?1").bind(
+      now - COLLECTION_CLAIM_MS,
+    ),
+    // A Collector that took the discovery job and never came back must not hold it forever.
+    env.ADMIN_DB.prepare("UPDATE collection_lease SET finished_at=?1,added=0 WHERE finished_at IS NULL AND taken_at < ?2").bind(
+      now,
+      now - DISCOVERY_LEASE_MS,
+    ),
+  ]);
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const next = await env.ADMIN_DB.prepare(
+      "SELECT id,artist,title,market FROM collection_queue WHERE state='pending' ORDER BY priority DESC, rowid LIMIT 1",
+    ).first<{ id: string; artist: string; title: string; market: string }>();
+    if (next === null) break;
+    const claimed = await env.ADMIN_DB.prepare(
+      "UPDATE collection_queue SET state='claimed',claimed_by=?1,claimed_at=?2 WHERE id=?3 AND state='pending'",
+    )
+      .bind(actor.id, now, next.id)
+      .run();
+    if (claimed.meta.changes > 0)
+      return json({ work: { kind: "collect", id: next.id, artist: next.artist, title: next.title, market: next.market } });
+  }
+
+  // Nothing queued. Someone has to go and look, but only one of us.
+  const target = Number((await runtimeValue(env, "collector.daily_budget")) ?? 300);
+  const filled = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue").first<{ n: number }>();
+  const missing = Math.max(0, target - (filled?.n ?? 0));
+  if (missing === 0) return json({ work: { kind: "idle" } });
+  const last = await env.ADMIN_DB.prepare("SELECT holder,taken_at,finished_at,added FROM collection_lease WHERE id='discovery'").first<{
+    holder: string;
+    taken_at: number;
+    finished_at: number | null;
+    added: number;
+  }>();
+  // Someone is out there now, or the last one came back empty-handed and it is too soon to ask again.
+  if (last !== null && last.finished_at === null) return json({ work: { kind: "idle" } });
+  if (last !== null && last.added === 0 && now - (last.finished_at ?? 0) < DISCOVERY_COOLDOWN_MS) return json({ work: { kind: "idle" } });
+  const taken = await env.ADMIN_DB.prepare(
+    `INSERT INTO collection_lease (id,holder,taken_at,finished_at,added) VALUES ('discovery',?1,?2,NULL,0)
+     ON CONFLICT(id) DO UPDATE SET holder=excluded.holder,taken_at=excluded.taken_at,finished_at=NULL,added=0
+     WHERE collection_lease.finished_at IS NOT NULL OR collection_lease.taken_at < ?3`,
+  )
+    .bind(actor.id, now, now - DISCOVERY_LEASE_MS)
+    .run();
+  if (taken.meta.changes === 0) return json({ work: { kind: "idle" } });
+  return json({ work: { kind: "discover", want: missing } });
+}
+
+/** The songs the discovering Collector found, as much of them as the target still has room for. */
+async function fillCollectionQueue(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
+  requirePermission(actor, "collector.submit");
+  const songs = Array.isArray(value.songs) ? value.songs : [];
+  const target = Number((await runtimeValue(env, "collector.daily_budget")) ?? 300);
+  const filled = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue").first<{ n: number }>();
+  let room = Math.max(0, target - (filled?.n ?? 0));
+  const now = Date.now();
+  const statements: D1PreparedStatement[] = [];
+  for (const entry of songs) {
+    if (room === 0) break;
+    const song = entry as Record<string, unknown>;
+    if (typeof song.artist !== "string" || typeof song.title !== "string") continue;
+    const artist = song.artist.slice(0, 500).trim();
+    const title = song.title.slice(0, 500).trim();
+    if (artist.length === 0 || title.length === 0) continue;
+    statements.push(
+      env.ADMIN_DB.prepare(
+        `INSERT OR IGNORE INTO collection_queue (id,artist,title,market,priority,state,filled_at)
+         VALUES (?1,?2,?3,?4,?5,'pending',?6)`,
+      ).bind(
+        crypto.randomUUID(),
+        artist,
+        title,
+        typeof song.market === "string" ? song.market.slice(0, 4) : "KR",
+        typeof song.priority === "number" && Number.isFinite(song.priority) ? song.priority : 0,
+        now,
+      ),
+    );
+    room--;
+  }
+  const before = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue").first<{ n: number }>();
+  if (statements.length > 0) await env.ADMIN_DB.batch(statements);
+  const grown = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue").first<{ n: number }>();
+  // What the sweep actually added, not what it offered: the same chart read twice adds nothing
+  // the second time, and that is the signal to leave the charts alone for a while.
+  await env.ADMIN_DB.prepare("UPDATE collection_lease SET finished_at=?1,added=?2 WHERE id='discovery'")
+    .bind(now, (grown?.n ?? 0) - (before?.n ?? 0))
+    .run();
+  const after = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue WHERE state='pending'").first<{ n: number }>();
+  return json({ queued: after?.n ?? 0 }, 202);
+}
+
+/** A song the Collector finished with, however it turned out. */
+async function completeCollectionWork(env: WorkerEnv, actor: Actor, id: string, value: Record<string, unknown>): Promise<Response> {
+  requirePermission(actor, "collector.submit");
+  const failure = typeof value.error === "string" && value.error.length > 0 ? value.error.slice(0, 200) : null;
+  await env.ADMIN_DB.prepare("UPDATE collection_queue SET state=?1,error=?2 WHERE id=?3 AND claimed_by=?4")
+    .bind(failure === null ? "done" : "failed", failure, id, actor.id)
+    .run();
+  return json({ accepted: true });
+}
+
+/** Where the run has got to, for the console. */
+async function readCollectionQueue(env: WorkerEnv, actor: Actor): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const { results } = await env.ADMIN_DB.prepare("SELECT state, COUNT(*) AS n FROM collection_queue GROUP BY state").all<{
+    state: string;
+    n: number;
+  }>();
+  const counts = Object.fromEntries(results.map((row) => [row.state, row.n]));
+  const target = Number((await runtimeValue(env, "collector.daily_budget")) ?? 300);
+  return json({
+    target,
+    pending: counts.pending ?? 0,
+    claimed: counts.claimed ?? 0,
+    done: counts.done ?? 0,
+    failed: counts.failed ?? 0,
+  });
+}
+
+/** Start the next round: clear what the last one left and let the Collectors fill again. */
+async function resetCollectionQueue(env: WorkerEnv, actor: Actor): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  await env.ADMIN_DB.batch([env.ADMIN_DB.prepare("DELETE FROM collection_queue"), env.ADMIN_DB.prepare("DELETE FROM collection_lease")]);
+  await audit(env, actor, "collection.reset", "collection_queue", "all");
+  return json({ reset: true }, 202);
 }
 
 const SEARCH_KINDS = new Set(["youtube", "song"]);
@@ -783,7 +937,10 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
   }
 
   let jobId: string | null = null;
-  if (isrc !== null && selectedSourceId !== null) {
+  // Timing needs audio and words, not an identifier. An ISRC is what the public data is keyed
+  // by, so it is required to publish — demanding it here only parked finished-able songs in
+  // review for a code that could be filled in at any point before release.
+  if (selectedSourceId !== null) {
     jobId = crypto.randomUUID();
     await env.ADMIN_DB.prepare(
       "INSERT INTO jobs (id,input_revision_id,state,priority,available_at,created_at,updated_at) VALUES (?1,?2,'queued',?3,?4,?4,?4)",
@@ -1253,25 +1410,29 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
 async function promote(env: WorkerEnv, actor: Actor, candidateId: string): Promise<Response> {
   requirePermission(actor, "candidates.approve");
   const row = await env.ADMIN_DB.prepare(
-    `SELECT c.*,r.isrc,r.mbid,r.artist,r.title,r.duration_ms FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id JOIN recordings r ON r.id=i.recording_id WHERE c.id=?1`,
+    `SELECT c.*,r.id AS recording_id,r.isrc,r.mbid,r.artist,r.title,r.duration_ms FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id JOIN recordings r ON r.id=i.recording_id WHERE c.id=?1`,
   )
     .bind(candidateId)
     .first<Record<string, unknown>>();
   if (row === null) throw new ServiceError(404, "NOT_FOUND");
+  // What we publish is words and the times they are sung at, and a song can be found by its
+  // ISRC, its MBID or by artist, title and length. Keying the public data on the ISRC meant a
+  // song reachable by the other two had nowhere to go; it is one identifier now, not the door.
   const publicWrite = env.PUBLIC_DB.prepare(
-    `INSERT INTO public_recording (isrc,mbid,artist_key,title_key,duration_ms) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(isrc) DO UPDATE SET mbid=COALESCE(excluded.mbid,public_recording.mbid),artist_key=excluded.artist_key,title_key=excluded.title_key,duration_ms=excluded.duration_ms`,
+    `INSERT INTO public_recording (id,isrc,mbid,artist_key,title_key,duration_ms) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET isrc=COALESCE(excluded.isrc,public_recording.isrc),mbid=COALESCE(excluded.mbid,public_recording.mbid),artist_key=excluded.artist_key,title_key=excluded.title_key,duration_ms=excluded.duration_ms`,
   ).bind(
-    row.isrc,
+    row.recording_id,
+    typeof row.isrc === "string" && row.isrc.length > 0 ? row.isrc : null,
     row.mbid ?? null,
     String(row.artist).normalize("NFKC").toLowerCase(),
     String(row.title).normalize("NFKC").toLowerCase(),
     row.duration_ms,
   );
   const alignmentWrite = env.PUBLIC_DB.prepare(
-    `INSERT INTO public_alignment (revision_id,isrc,text_hash,tokenizer,fp_lens,fp_types,line_spans,word_spans,speaker_turns,word_speakers,line_speakers,quality_score,source,active,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'manual',1,?13) ON CONFLICT(isrc,text_hash,tokenizer) DO UPDATE SET revision_id=excluded.revision_id,fp_lens=excluded.fp_lens,fp_types=excluded.fp_types,line_spans=excluded.line_spans,word_spans=excluded.word_spans,speaker_turns=excluded.speaker_turns,word_speakers=excluded.word_speakers,line_speakers=excluded.line_speakers,quality_score=excluded.quality_score,active=1,created_at=excluded.created_at`,
+    `INSERT INTO public_alignment (revision_id,recording_id,text_hash,tokenizer,fp_lens,fp_types,line_spans,word_spans,speaker_turns,word_speakers,line_speakers,quality_score,source,active,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'manual',1,?13) ON CONFLICT(recording_id,text_hash,tokenizer) DO UPDATE SET revision_id=excluded.revision_id,fp_lens=excluded.fp_lens,fp_types=excluded.fp_types,line_spans=excluded.line_spans,word_spans=excluded.word_spans,speaker_turns=excluded.speaker_turns,word_speakers=excluded.word_speakers,line_speakers=excluded.line_speakers,quality_score=excluded.quality_score,active=1,created_at=excluded.created_at`,
   ).bind(
     candidateId,
-    row.isrc,
+    row.recording_id,
     row.text_hash,
     row.tokenizer,
     row.fp_lens,
@@ -1792,6 +1953,18 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "POST" && url.pathname === "/admin/api/roles") return upsertRole(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/notifications") return addNotification(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/workers/enrollment") return createEnrollment(env, actor);
+  if (request.method === "POST" && url.pathname === "/admin/api/collector/work/claim") return claimCollectionWork(env, actor);
+  if (request.method === "POST" && url.pathname === "/admin/api/collector/work/fill")
+    return fillCollectionQueue(env, actor, await body(request));
+  if (request.method === "POST" && url.pathname.startsWith("/admin/api/collector/work/"))
+    return completeCollectionWork(
+      env,
+      actor,
+      decodeURIComponent(url.pathname.slice("/admin/api/collector/work/".length)),
+      await body(request),
+    );
+  if (request.method === "GET" && url.pathname === "/admin/api/collection") return readCollectionQueue(env, actor);
+  if (request.method === "DELETE" && url.pathname === "/admin/api/collection") return resetCollectionQueue(env, actor);
   if (request.method === "GET" && url.pathname === "/admin/api/basket") return readBasket(env, actor);
   if (request.method === "POST" && url.pathname === "/admin/api/basket") return addToBasket(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/basket/process") return processBasket(env, actor);

@@ -95,8 +95,6 @@ test("Review reasons name what is actually missing", () => {
   assert.equal(reviewReason(["source"], [{ ...candidate, catalogue_drift_ms: 86_000 }]), "자동 선택 기준 미달 (길이 86.0초 차이)");
   assert.equal(reviewReason(["source"], [{ ...candidate, score: 0.7 }]), "자동 선택 기준 미달 (점수 0.70)");
   assert.equal(reviewReason(["source"], []), "음원 후보 없음");
-  assert.equal(reviewReason(["isrc"], [candidate]), "ISRC 없음");
-  assert.equal(reviewReason(["isrc", "source"], []), "ISRC 없음 · 음원 후보 없음");
 });
 
 test("the catalogue length decides auto-selection, not who uploaded the file", () => {
@@ -221,4 +219,60 @@ test("LyricFind fills what a rate-limited Spotify cannot", async () => {
   const sources = submitted[0]?.sources as Array<{ selected?: boolean; catalogue_drift_ms?: number }>;
   assert.equal(sources[0]?.selected, true);
   assert.equal(sources[0]?.catalogue_drift_ms, 7);
+});
+
+test("a missing ISRC is no longer a reason to stop", async () => {
+  // ISRC가 없다고 검수로 보내면, 타이밍을 만들 수 있는 곡이 코드 하나 때문에 멈춰 선다.
+  // 공개할 때는 여전히 필요하지만 그것은 나중 일이다.
+  assert.equal(reviewReason([], []), "확인 필요");
+  const candidate: YoutubeCandidate = {
+    url: "https://music.youtube.com/watch?v=abcdefghijk",
+    video_id: "abcdefghijk",
+    title: "SWIM",
+    artist: "BTS",
+    duration_ms: 159_000,
+    official: true,
+    source_type: "song",
+    score: 0.95,
+  };
+  // 음원이 없을 때만 멈추는 이유가 된다.
+  assert.equal(reviewReason(["source"], [candidate]), "자동 선택 기준 미달 (카탈로그 길이 없음, 아티스트 채널 아님)");
+});
+
+test("a song with no ISRC still goes to the Generator", async () => {
+  const submitted: Array<Record<string, unknown>> = [];
+  const service = new CollectorService({
+    adminUrl: "https://admin.test",
+    adminToken: "t",
+    userAgent: "test",
+    dailyBudget: 5,
+    markets: ["KR"],
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/collector/collected")) return Response.json({ recordings: [], skipped: [] });
+      if (url.includes("/collector/recordings")) {
+        submitted.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        // 서버는 음원만 확정되면 작업을 연다.
+        return Response.json({ job_id: "job-1", deduplicated: false });
+      }
+      return Response.json({ accepted: true });
+    }) as typeof fetch,
+    youtubeSearch: async (seed) => [
+      {
+        url: "https://music.youtube.com/watch?v=abcdefghijk",
+        video_id: "abcdefghijk",
+        title: seed.title,
+        artist: seed.artist,
+        duration_ms: 159_000,
+        official: true,
+        source_type: "song",
+        score: 0.95,
+      },
+    ],
+    lyricsProvider: { search: async () => [{ provider: "test", text: "가사 한 줄", fetched_at: Date.now() }] },
+  });
+  const report = await service.collect([{ artist: "Storyinsoil", title: "Flux", popularity: 1, freshness: 0, market: "KR" }]);
+  assert.equal(report.submitted, 1);
+  assert.equal(report.review, 0);
+  assert.equal((submitted[0]?.recording as { isrc?: string }).isrc, undefined);
 });

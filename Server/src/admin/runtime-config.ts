@@ -98,8 +98,8 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
   },
   {
     key: "collector.daily_budget",
-    label: "일일 수집 한도",
-    description: "한 번의 수집 주기에서 처리할 최대 곡 수입니다.",
+    label: "수집 목표 곡 수",
+    description: "이번 주기에 전체 Collector가 함께 채울 곡 수입니다. 한 대당이 아니라 합계입니다.",
     type: "number",
     secret: false,
     component: "collector",

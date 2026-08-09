@@ -45,7 +45,8 @@ export type SpeakerIndex = [index: number, speakerId: number, confidence: number
 
 export interface StoredAlignment {
   id: number;
-  isrc: string;
+  /** 이 타이밍이 붙은 곡. ISRC일 수도 있고 우리가 만든 id일 수도 있다. */
+  recordingId: string;
   textHash: string;
   tokenizer: string;
   fingerprint: Fingerprint;

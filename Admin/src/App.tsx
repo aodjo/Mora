@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, liveEvents, type AuthStatus } from "./api";
+import { useToast } from "./Toast";
 import { Auth } from "./Auth";
 import { Editor } from "./Editor";
 import { ConnectionsPanel, SettingsPanel } from "./Settings";
@@ -380,8 +381,75 @@ function Overview({ data }: { data: Record<string, unknown> }) {
           </article>
         ))}
       </div>
+      <CollectionPanel />
       <CalibrationPanel value={data.calibration as Calibration | undefined} />
     </div>
+  );
+}
+
+interface CollectionStatus {
+  target: number;
+  pending: number;
+  claimed: number;
+  done: number;
+  failed: number;
+}
+
+/**
+ * How far the run has got against the number the console set.
+ *
+ * The target is a total for every Collector together, not each — so this is the one place
+ * that says whether the round is finished, and the only way to start another.
+ */
+function CollectionPanel() {
+  const { showToast } = useToast();
+  const [status, setStatus] = useState<CollectionStatus | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const load = useCallback(() => {
+    void api<CollectionStatus>("/collection")
+      .then(setStatus)
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    load();
+    const timer = window.setInterval(load, 5_000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+  if (status === null) return null;
+  const filled = status.pending + status.claimed + status.done + status.failed;
+  const settled = status.done + status.failed;
+  const progress = filled === 0 ? 0 : Math.min(1, settled / filled);
+  async function startRound(): Promise<void> {
+    if (!window.confirm("이번 회차를 비우고 다시 시작합니다. 진행 중인 곡은 끝난 뒤 결과가 버려집니다. 계속할까요?")) return;
+    setResetting(true);
+    try {
+      await api("/collection", { method: "DELETE" });
+      showToast("수집 대기열을 비웠습니다. Collector가 다시 채웁니다.");
+      load();
+    } catch (reason) {
+      showToast(reason instanceof Error ? reason.message : "초기화에 실패했습니다", { variant: "error" });
+    } finally {
+      setResetting(false);
+    }
+  }
+  return (
+    <section className="calibration-panel">
+      <div className="calibration-head">
+        <div>
+          <h3>수집 진행</h3>
+          <p>
+            목표 {status.target}곡 · 대기열 {filled}곡 · 남은 {status.pending}곡{status.claimed > 0 && ` · ${status.claimed}곡 수집 중`}
+            {status.failed > 0 && ` · ${status.failed}곡 실패`}
+          </p>
+        </div>
+        <button className="ghost-button" onClick={() => void startRound()} disabled={resetting}>
+          새 회차 시작
+        </button>
+      </div>
+      <div className="calibration-bar" aria-label={`${settled}/${filled}곡 완료`}>
+        <i style={{ width: `${progress * 100}%` }} />
+      </div>
+    </section>
   );
 }
 

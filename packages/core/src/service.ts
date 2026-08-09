@@ -95,7 +95,7 @@ export class AlignmentService {
       durationCompatible(alignment, durationMs),
     );
     if (alignments.length === 0) throw new ServiceError(404, "NOT_FOUND");
-    if (resolvedIdentifier.artist !== undefined && new Set(alignments.map((item) => item.isrc)).size > 1)
+    if (resolvedIdentifier.artist !== undefined && new Set(alignments.map((item) => item.recordingId)).size > 1)
       throw new ServiceError(409, "AMBIGUOUS_RECORDING");
     const exact = alignments.find((alignment) => textHash(forTokenizer(alignment.tokenizer).canonical) === alignment.textHash);
     const selected =
@@ -117,7 +117,7 @@ export class AlignmentService {
       durationCompatible(alignment, durationMs),
     );
     if (alignments.length === 0) throw new ServiceError(404, "NOT_FOUND");
-    if (resolvedIdentifier.artist !== undefined && new Set(alignments.map((item) => item.isrc)).size > 1)
+    if (resolvedIdentifier.artist !== undefined && new Set(alignments.map((item) => item.recordingId)).size > 1)
       throw new ServiceError(409, "AMBIGUOUS_RECORDING");
     const selected = bestCandidate(alignments, () => target);
     return projectFingerprintAlignment(selected.alignment, target, selected.match);

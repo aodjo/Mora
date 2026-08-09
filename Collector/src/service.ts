@@ -140,7 +140,7 @@ export class CollectorService {
    * the charts hardly move between days. Dropping them before the cut lets each run take the
    * next 300 it does not have, so repeated runs walk down the chart instead of standing still.
    */
-  async discover(collected: CollectedIndex = new CollectedIndex([])): Promise<RecordingSeed[]> {
+  async discover(collected: CollectedIndex = new CollectedIndex([]), want = this.config.dailyBudget): Promise<RecordingSeed[]> {
     const pools: RecordingSeed[] = [];
     this.config.onProgress?.({ stage: "discovering", markets: this.config.markets });
     const source = this.config.chartSource ?? ((market) => chartSeeds(market, this.#fetch));
@@ -159,9 +159,7 @@ export class CollectorService {
     }
     const fresh = [...unique.values()].filter((seed) => !collected.hasName(seed));
     this.config.onProgress?.({ stage: "discovered", total: unique.size, alreadyCollected: unique.size - fresh.length });
-    return fresh
-      .sort((a, b) => b.popularity * 0.65 + b.freshness * 0.35 - (a.popularity * 0.65 + a.freshness * 0.35))
-      .slice(0, this.config.dailyBudget);
+    return fresh.sort((a, b) => b.popularity * 0.65 + b.freshness * 0.35 - (a.popularity * 0.65 + a.freshness * 0.35)).slice(0, want);
   }
 
   /** Remembered so the next run does not pay to reach the same answer. */
@@ -336,7 +334,6 @@ export function canAutoSelect(best: YoutubeCandidate | undefined): boolean {
 /** Turns the server's list of what is missing into something worth reading in a log. */
 export function reviewReason(blockedBy: string[], sources: YoutubeCandidate[]): string {
   const parts: string[] = [];
-  if (blockedBy.includes("isrc")) parts.push("ISRC 없음");
   if (blockedBy.includes("source")) {
     const best = sources[0];
     parts.push(best === undefined ? "음원 후보 없음" : `자동 선택 기준 미달 (${whyNotSelected(best)})`);
