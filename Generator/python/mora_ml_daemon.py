@@ -122,7 +122,10 @@ def separate(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
 def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any], str]:
     if backend == "mps":
         import mlx_whisper
-        model = os.getenv("MORA_MLX_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
+        # turbo 는 디코더를 32층에서 4층으로 줄여 몇 배 빠르지만, 그만큼 흘린다 — 특히 한국어의
+        # 조사와 짧은 단어를. 여기서 받아쓰기는 가사가 아니라 "그 말이 몇 초에 나왔나"를 대는
+        # 증인이므로, 흘린 단어는 곧 앵커가 없는 줄이고 그것이 정렬을 무너뜨린다.
+        model = os.getenv("MORA_MLX_WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
         with redirect_stdout(sys.stderr):
             result = mlx_whisper.transcribe(str(vocals), path_or_hf_repo=model, word_timestamps=True, language=None if language == "und" else language.split("-")[0])
         return result, str(result.get("language", language))
@@ -130,7 +133,12 @@ def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any
     device = "cuda" if backend == "cuda" else backend
     compute_type = "float16" if backend in ("cuda", "xpu", "rocm") else "int8"
     with redirect_stdout(sys.stderr):
-        model = whisperx.load_model("large-v3-turbo", device, compute_type=compute_type, language=None if language == "und" else language.split("-")[0])
+        model = whisperx.load_model(
+            os.getenv("MORA_WHISPER_MODEL", "large-v3"),
+            device,
+            compute_type=compute_type,
+            language=None if language == "und" else language.split("-")[0],
+        )
         audio = whisperx.load_audio(str(vocals))
         result = model.transcribe(audio, batch_size=8)
     return result, str(result.get("language", language))
@@ -327,7 +335,14 @@ def match_tokens(lyric: list[str], heard: list[dict[str, Any]]) -> dict[int, dic
     return anchors
 
 
-def anchored_windows(counts: list[int], words: list[str], heard: list[dict[str, Any]], start: float, end: float) -> list[list[int]] | None:
+def anchored_windows(
+    counts: list[int],
+    words: list[str],
+    heard: list[dict[str, Any]],
+    start: float,
+    end: float,
+    floor: float | None = None,
+) -> list[list[int]] | None:
     """
     A time window per lyric line, taken from where those words were actually sung.
 
@@ -356,7 +371,10 @@ def anchored_windows(counts: list[int], words: list[str], heard: list[dict[str, 
         elif before:
             positions.append(anchors[before[-1]]["end"])
         elif after:
-            positions.append(max(start, anchors[after[0]]["start"] - (after[0] - index) * 0.35))
+            # 첫 앵커보다 앞선 줄들. 한 단어당 0.35초씩 되짚어 가되, 소리가 시작하기 전으로는
+            # 가지 않는다 — 바닥이 "가사가 처음 들린 곳"이면 이 줄들이 그 지점에 뭉개진다.
+            reach = anchors[after[0]]["start"] - (after[0] - index) * 0.35
+            positions.append(max(start if floor is None else floor, reach))
         else:
             return None
     for index in range(1, len(positions)):
@@ -370,7 +388,13 @@ def anchored_windows(counts: list[int], words: list[str], heard: list[dict[str, 
         line_end = anchors[last]["end"] if last in anchors else positions[last] + 0.4
         if cursor + count < len(positions):
             line_end = min(max(line_end, line_start + 0.3), positions[cursor + count])
-        windows.append([round(max(start, line_start) * 1000), round(min(end, max(line_end, line_start + 0.3)) * 1000)])
+        # 하한은 되짚어 갈 수 있는 바닥이다. 시작점(가사가 처음 들린 곳)을 하한으로 쓰면
+        # 그 앞에 놓인 줄이 시작보다 끝이 이른 창을 갖게 된다.
+        opened = max(start if floor is None else floor, line_start)
+        # 구간의 끝으로 자르되 시작보다 이르게 두지 않는다 — 마지막 줄이 끝을 넘겨 시작하면
+        # 시작이 끝보다 늦은 창이 나오고, 그런 창 안에서는 정렬기가 아무것도 할 수 없다.
+        closed = max(min(end, max(line_end, opened + 0.3)), opened + 0.3)
+        windows.append([round(opened * 1000), round(closed * 1000)])
         cursor += count
     return windows
 
@@ -608,7 +632,9 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
     start, end = audio_bounds(asr, duration_ms, lyric_words)
     proportional_windows, fallback_words = proportional_spans(counts, start, end)
     heard_words = asr_words(asr)
-    anchored = anchored_windows(counts, lyric_words, heard_words, start, end)
+    # 되짚어 갈 바닥은 소리가 시작하는 곳이다. 시작점은 가사가 처음 들리는 곳이라 말하는
+    # 인트로를 건너뛰지만, 그 앞에 놓일 줄들에게는 자리가 남아 있어야 한다.
+    anchored = anchored_windows(counts, lyric_words, heard_words, start, end, floor=audio_bounds(asr, duration_ms)[0])
     # When was each line's first word heard — the counter-witness against leading noise.
     anchors = match_sequences(lyric_words, heard_words)
     line_start_witness_ms: dict[int, float] = {}

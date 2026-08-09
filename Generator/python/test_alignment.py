@@ -253,6 +253,31 @@ check("가사 없는 인트로를 건너뛰고 시작한다", abs(bounded[0] - 7
 check("비교할 가사가 없으면 첫 소리에서 시작한다", abs(daemon.audio_bounds(asr_with_intro, 15_000)[0] - 1.4) < 0.05)
 check("끝은 그대로다", abs(bounded[1] - 15.0) < 0.05, f"{bounded[1]}s")
 
+
+# ── 첫 앵커보다 앞선 줄: 인트로로 밀려나서도, 한 점에 뭉개져서도 안 된다 ──
+# 실측한 "하치와레girl": 0~10초가 말하는 인트로이고 가사와 맞는 첫 단어는 30.6초에 나온다.
+INTRO_LINES = ["어딘지도 모르는 차가운 이 도시속에", "너 하나 보기 위해 달린거야 맨발로 매일", "가방에 달고다녀 카와이 하치와레", "만난 적 없는 널 만나"]
+INTRO_COUNTS = [len(line.split()) for line in INTRO_LINES]
+INTRO_WORDS = [daemon.comparable(w) for line in INTRO_LINES for w in line.split()]
+INTRO_HEARD = spoken_words([
+    ("오하요", 0.0, 1.0), ("실은요", 4.7, 5.4), ("공부했었다", 5.6, 6.3),   # 가사에 없는 말
+    ("으음", 10.6, 12.0), ("놀랐어", 12.0, 13.2), ("알았다", 23.4, 29.9),   # 가사와 맞지 않는 소리
+    # 여기서부터 가사와 맞는다
+    ("가방에", 30.6, 31.2), ("달고", 31.3, 31.7), ("다녀", 31.8, 32.1), ("카와이", 32.2, 32.8),
+    ("하치와레", 32.9, 33.6), ("만난", 34.0, 34.4), ("적", 34.5, 34.7), ("없는", 34.8, 35.2),
+    ("널", 35.3, 35.5), ("만나", 35.6, 36.1),
+])
+intro_start, intro_end = daemon.audio_bounds({"segments": [{"start": 0.0, "end": 33.0, "words": [
+    {"word": w["text"], "start": w["start"], "end": w["end"]} for w in INTRO_HEARD]}]}, 40_000, INTRO_WORDS)
+check("가사가 처음 들리는 곳에서 시작한다", abs(intro_start - 30.6) < 0.05, f"{intro_start}s")
+intro_windows = daemon.anchored_windows(INTRO_COUNTS, INTRO_WORDS, INTRO_HEARD, intro_start, intro_end, floor=0.0)
+check("앵커가 만들어진다", intro_windows is not None)
+assert intro_windows is not None
+check("말하는 인트로에는 아무 줄도 놓이지 않는다", intro_windows[0][0] > 10_000, f"{intro_windows[0][0] / 1000:.1f}s")
+check("첫 앵커 앞 줄들이 한 점에 뭉개지지 않는다", intro_windows[0][1] - intro_windows[0][0] > 500, str(intro_windows[0]))
+check("창이 거꾸로 되지 않는다", all(w[1] >= w[0] for w in intro_windows), str(intro_windows))
+check("앵커가 있는 줄은 들은 자리에 온다", abs(intro_windows[2][0] / 1000 - 30.6) < 0.2, f"{intro_windows[2][0] / 1000:.1f}s")
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
