@@ -333,6 +333,43 @@ tail_words = [daemon.comparable(w) for line in tail_lines for w in line.split()]
 tail = daemon.anchored_windows(tail_counts, tail_words, BACKING_HEARD, 99.8, 108.0, 0.0, backing=tail_flags)
 check("마지막 백보컬은 앞줄과 함께", tail is not None and tail[2] == tail[1], str(tail))
 
+
+# ── 정렬기는 한 구간에 한 답을 주지 않는다: 문장 부호에서 다시 자른다 ──
+# 실측한 "하치와레girl": 물음표가 든 줄이 둘 있었고, 32줄을 넘겨 34구간을 돌려받았다.
+# 줄 번호로 답을 읽으면 그 뒤로 모든 줄이 앞줄의 소리를 갖는다 — 노래 마지막 3분의 1이
+# 두 줄씩 이르게 놓였다. 그래서 한 줄씩 묻는다.
+class ReCuttingAligner:
+    """물음표에서 구간을 쪼개는, 실제로 관찰된 정렬기의 행동."""
+
+    def align(self, segments, model, metadata, audio, device, return_char_alignments=False):
+        out = []
+        for segment in segments:
+            span = float(segment["end"]) - float(segment["start"])
+            pieces = [piece.strip() for piece in segment["text"].replace("?", "?\n").split("\n") if piece.strip()]
+            for index, piece in enumerate(pieces):
+                at = float(segment["start"]) + span * index / max(1, len(pieces))
+                out.append({"text": piece, "words": [{"word": word, "start": at, "end": at + 0.2} for word in piece.split()]})
+        return {"segments": out}
+
+
+ASKING_LINES = ["그래도 제발 나를 사랑해줄래? (꺼져)", "넌 뭔데 내 맘에 흉터를 남기는건데? (나 너 싫으니까 꺼지라고)", "나는 니가 나랑 결혼 안해줄걸 아는데"]
+ASKING_WINDOWS = [(97.3, 100.5), (100.5, 103.5), (103.5, 106.0)]
+recut = ReCuttingAligner()
+per_line = [
+    daemon.align_line(line, start, end, recut, None, None, None, "cpu")
+    for line, (start, end) in zip(ASKING_LINES, ASKING_WINDOWS)
+]
+check("한 줄씩 물으면 줄 수만큼 답이 온다", len(per_line) == len(ASKING_LINES), str(len(per_line)))
+check("쪼개진 조각도 제 줄에 모인다", [len(words) for words in per_line] == [5, 10, 6], str([len(w) for w in per_line]))
+check("괄호 뒤 줄이 앞줄의 소리를 갖지 않는다", per_line[2][0]["start"] >= 103.5, f"{per_line[2][0]['start']}s")
+check("마지막 줄이 창 안에 있다", per_line[2][-1]["end"] <= 106.0 + 0.3, f"{per_line[2][-1]['end']}s")
+# 줄 번호로 읽던 옛 방식이 실제로 어긋났음을 같은 정렬기로 보인다.
+flat = recut.align(
+    [{"start": start, "end": end, "text": line} for line, (start, end) in zip(ASKING_LINES, ASKING_WINDOWS)], None, None, None, "cpu"
+)["segments"]
+check("한꺼번에 물으면 줄 수보다 답이 많다", len(flat) > len(ASKING_LINES), f"{len(flat)}구간 vs {len(ASKING_LINES)}줄")
+check("그때 마지막 줄은 앞줄의 소리를 받는다", flat[2]["words"][0]["start"] < 103.5, f"{flat[2]['words'][0]['start']}s")
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")

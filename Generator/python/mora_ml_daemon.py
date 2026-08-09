@@ -716,6 +716,26 @@ def extend_held_endings(
             lines[line_index][1] = int(word[2])
 
 
+def align_line(
+    line: str, window_start: float, window_end: float, whisperx: Any, model: Any, metadata: Any, audio: Any, device: str
+) -> list[dict[str, Any]]:
+    """
+    Every word the forced aligner placed for this one line.
+
+    The aligner is asked one line at a time because it does not answer one segment per segment.
+    It re-cuts each segment into sentences, so a line that ends a sentence part-way — "그래도
+    제발 나를 사랑해줄래? (꺼져)" — comes back as two, and it merges segments that share a
+    start and an end. Reading the answers back by line number therefore drifts: on the measured
+    song two lines carried a question mark, the list came back 34 long for 32 lines, and from
+    the first of them every line was given the line before's audio — the last third of the song
+    sat two lines early. Asking per line, whatever comes back belongs to the line that asked.
+    """
+    aligned = whisperx.align(
+        [{"start": window_start, "end": window_end, "text": line}], model, metadata, audio, device, return_char_alignments=True
+    )
+    return [word for part in aligned.get("segments", []) for word in part.get("words", [])]
+
+
 def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], duration_ms: int, backend: str, detected: str = "und") -> dict[str, Any]:
     text_lines = [line for line in str(variant["text"]).splitlines() if line.strip()]
     counts = [int(value) for value in variant.get("token_counts", [])]
@@ -755,23 +775,21 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
         device = "cuda" if backend == "cuda" else "cpu" if backend == "mps" else backend
         with redirect_stdout(sys.stderr):
             model, metadata = whisperx.load_align_model(language_code=language, device=device)
-            segments = [{"start": line_windows[index][0] / 1000, "end": line_windows[index][1] / 1000, "text": line} for index, line in enumerate(text_lines)]
             audio = whisperx.load_audio(str(vocals))
-            aligned = whisperx.align(segments, model, metadata, audio, device, return_char_alignments=True)
-        aligned_segments = aligned.get("segments", [])
+            aligned_segments = [
+                align_line(line, line_windows[index][0] / 1000, line_windows[index][1] / 1000, whisperx, model, metadata, audio, device)
+                for index, line in enumerate(text_lines)
+            ]
         result_words: list[list[int | float]] = []
         aligned_token_weight = 0.0
         token_index = 0
         # Which token ends each line, so a held note can be given the length it is held for.
         last_token_of_line: dict[int, int] = {}
         for line_index, count in enumerate(counts):
-            # The aligner answers per segment, and a segment is a line. Re-cutting one flat word
-            # list by token count instead assumed every line takes time in proportion to its
-            # length, which is the guess this function exists to stop making.
-            segment = aligned_segments[line_index] if line_index < len(aligned_segments) else {}
             # Every word of the line, in the order it is written — including the ones the
             # aligner could not place, which are given a spot between their neighbours.
-            candidates = fill_unaligned(segment.get("words", []), line_windows[line_index][0] / 1000, line_windows[line_index][1] / 1000)
+            heard_in_line = aligned_segments[line_index] if line_index < len(aligned_segments) else []
+            candidates = fill_unaligned(heard_in_line, line_windows[line_index][0] / 1000, line_windows[line_index][1] / 1000)
             if candidates:
                 projected = interpolate_boundaries(candidates, count)
                 for token_offset, word_start, word_end, score in projected:
