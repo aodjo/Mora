@@ -364,6 +364,71 @@ def interpolate_boundaries(candidates: list[dict[str, Any]], count: int) -> list
     return projected
 
 
+# 사람이 낼 수 있는 가장 짧은 음절. 이보다 짧게 잡혔다면 경계가 틀린 것이지 그렇게 부른 것이 아니다.
+MIN_WORD_MS = 120.0
+
+
+def widen_thin_words(words: list[list[int | float]], lines: list[list[int]], counts: list[int]) -> None:
+    """
+    Give a word that came out too short to see the time its neighbour took from it.
+
+    A syllable cannot last forty milliseconds — "겨우 날 떼어" put 665ms on 겨우, 40ms on 날 and
+    332ms on 떼어, and 날 flickers past unreadably. The aligner is not wrong that 날 is there or
+    where in the order it falls; it is wrong about where 겨우 stopped, having run the two
+    together. So the boundary moves rather than the word: the time comes out of whichever
+    neighbour can spare it, starting with the one before, which is the one that swallowed it.
+
+    Nothing is created and nothing is reordered — the line is as long as it was, and a word can
+    only take from a neighbour that stays above the floor itself.
+    """
+    line_of_token: dict[int, int] = {}
+    first_token: dict[int, int] = {}
+    last_token: dict[int, int] = {}
+    position = 0
+    for line_index, count in enumerate(counts):
+        if count <= 0:
+            continue
+        first_token[line_index] = position
+        for offset in range(count):
+            line_of_token[position + offset] = line_index
+        last_token[line_index] = position + count - 1
+        position += count
+
+    for index, word in enumerate(words):
+        duration = float(word[2]) - float(word[1])
+        if duration >= MIN_WORD_MS:
+            continue
+        line_index = line_of_token.get(int(word[0]))
+        if line_index is None:
+            continue
+        needed = MIN_WORD_MS - duration
+        previous = words[index - 1] if index > 0 and line_of_token.get(int(words[index - 1][0])) == line_index else None
+        following = words[index + 1] if index + 1 < len(words) and line_of_token.get(int(words[index + 1][0])) == line_index else None
+        # The word before is the one that ran over, so it gives first.
+        if previous is not None:
+            spare = max(0.0, (float(previous[2]) - float(previous[1])) - MIN_WORD_MS)
+            taken = min(needed, spare)
+            if taken > 0:
+                previous[2] = round(float(previous[2]) - taken)
+                word[1] = previous[2]
+                needed -= taken
+        if needed > 0 and following is not None:
+            spare = max(0.0, (float(following[2]) - float(following[1])) - MIN_WORD_MS)
+            taken = min(needed, spare)
+            if taken > 0:
+                following[1] = round(float(following[1]) + taken)
+                word[2] = following[1]
+                needed -= taken
+        # 줄 끝에 홀로 선 단어는 줄이 가진 여백에서 가져온다.
+        if needed > 0 and previous is None and following is None:
+            room = min(needed, max(0.0, float(lines[line_index][1]) - float(word[2])))
+            word[2] = round(float(word[2]) + room)
+        if int(word[0]) == first_token.get(line_index) and float(word[1]) < lines[line_index][0]:
+            lines[line_index][0] = int(word[1])
+        if int(word[0]) == last_token.get(line_index) and float(word[2]) > lines[line_index][1]:
+            lines[line_index][1] = int(word[2])
+
+
 def snap_line_starts(
     words: list[list[int | float]],
     lines: list[list[int]],
@@ -506,6 +571,7 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
             last_token_of_line[token_index - 1] = line_index
         snap_line_starts(result_words, line_windows, counts, line_start_witness_ms)
         extend_held_endings(result_words, line_windows, last_token_of_line, heard_words)
+        widen_thin_words(result_words, line_windows, counts)
         coverage = aligned_token_weight / max(1, sum(counts))
         quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, language, detected)
         return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}

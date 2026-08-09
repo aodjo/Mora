@@ -178,6 +178,34 @@ projected = daemon.interpolate_boundaries(filled, 3)
 check("we 가 gonna 자리로 밀려나지 않는다", projected[0][2] <= 12_500, f"we 끝 {projected[0][2]}ms")
 check("gonna 는 자기 자리를 지킨다", 12_300 <= projected[1][1] <= 12_700, f"gonna 시작 {projected[1][1]}ms")
 
+
+# ── 너무 짧게 잡힌 단어: 실측한 "사막같은 몸에서 겨우 날 떼어" ──
+# 날이 40ms 를 받아 눈에 보이지 않았다. 음절 하나가 40ms 일 수는 없다.
+real = [
+    [0, 13344, 14058, 0.9],
+    [1, 14058, 14863, 0.9],
+    [2, 14863, 15528, 0.9],
+    [3, 15528, 15568, 0.9],   # 날
+    [4, 15568, 15900, 0.9],
+]
+real_lines = [[13344, 15900]]
+daemon.widen_thin_words(real, real_lines, [5])
+nal = real[3]
+check("날이 볼 수 있는 길이를 갖는다", nal[2] - nal[1] >= 120, f"{nal[2] - nal[1]}ms")
+check("시간은 앞 단어에서 나온다", real[2][2] == nal[1], f"겨우 끝 {real[2][2]} vs 날 시작 {nal[1]}")
+check("앞 단어도 최소는 지킨다", real[2][2] - real[2][1] >= 120, f"{real[2][2] - real[2][1]}ms")
+check("줄 길이는 그대로다", real_lines[0] == [13344, 15900], str(real_lines[0]))
+check("순서가 뒤집히지 않는다", all(real[i][2] <= real[i + 1][1] for i in range(len(real) - 1)))
+check("총 길이가 늘어나지 않는다", real[0][1] == 13344 and real[-1][2] == 15900)
+
+tight = [[0, 1000, 1120, 0.9], [1, 1120, 1160, 0.9], [2, 1160, 1280, 0.9]]
+daemon.widen_thin_words(tight, [[1000, 1280]], [3])
+check("여유 없는 이웃에게서는 뺏지 않는다", tight[0][2] - tight[0][1] >= 120 and tight[2][2] - tight[2][1] >= 120, str(tight))
+
+fine = [[0, 0, 500, 0.9], [1, 500, 900, 0.9]]
+daemon.widen_thin_words(fine, [[0, 900]], [2])
+check("충분한 단어는 그대로 둔다", fine == [[0, 0, 500, 0.9], [1, 500, 900, 0.9]], str(fine))
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
