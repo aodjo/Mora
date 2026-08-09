@@ -31,6 +31,10 @@ def module_exists(name: str) -> bool:
         return False
 
 
+# 가속기를 못 찾은 이유. "cpu" 라는 답만 들고는 무엇을 고쳐야 할지 알 수 없다.
+backend_fallback: dict[str, str] = {}
+
+
 def detect_backend() -> tuple[str, str]:
     hardware = f"{platform.system()} {platform.machine()}"
     try:
@@ -43,8 +47,9 @@ def detect_backend() -> tuple[str, str]:
             return "mps", hardware
         if getattr(torch.version, "hip", None):
             return "rocm", hardware
-    except Exception:
-        pass
+        backend_fallback["reason"] = f"torch {torch.__version__} 에 쓸 수 있는 가속기가 없습니다"
+    except Exception as error:
+        backend_fallback["reason"] = f"torch 를 불러오지 못했습니다 — {type(error).__name__}: {error}"
     return "cpu", hardware
 
 
@@ -59,7 +64,15 @@ def self_test() -> dict[str, Any]:
         "diarization": "passed" if module_exists("pyannote.audio") and bool(os.getenv("HF_TOKEN")) else "skipped",
     }
     required = ("yt-dlp", "ffmpeg", "htdemucs_ft", "coarse_asr", "forced_align")
-    return {"backend": backend, "hardware": hardware, "checks": checks, "production_ready": backend != "cpu" and all(checks[key] == "passed" for key in required)}
+    report: dict[str, Any] = {
+        "backend": backend,
+        "hardware": hardware,
+        "checks": checks,
+        "production_ready": backend != "cpu" and all(checks[key] == "passed" for key in required),
+    }
+    if backend == "cpu" and "reason" in backend_fallback:
+        report["backend_reason"] = backend_fallback["reason"]
+    return report
 
 
 def notify(stage: str, state: str, progress: float, metrics: dict[str, float] | None = None) -> None:

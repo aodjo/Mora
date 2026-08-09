@@ -112,7 +112,13 @@ export class MlDaemon {
       });
     });
   }
-  selfTest(): Promise<{ backend: string; hardware: string; checks: Record<string, string>; production_ready: boolean }> {
+  selfTest(): Promise<{
+    backend: string;
+    hardware: string;
+    checks: Record<string, string>;
+    production_ready: boolean;
+    backend_reason?: string;
+  }> {
     return this.call("self_test", {}, 120_000);
   }
   run(params: unknown): Promise<MlRunResult> {

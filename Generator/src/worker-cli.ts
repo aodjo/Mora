@@ -25,7 +25,17 @@ try {
     daemon.close();
     process.exit(selfTest.production_ready ? 0 : 1);
   }
-  if (!selfTest.production_ready) throw new Error("worker self-test did not pass the production profile");
+  // 무엇이 걸렸는지 말하지 않으면 고칠 수가 없다. 대개는 PATH 에 없는 도구 하나다.
+  if (!selfTest.production_ready) {
+    const failed = Object.entries(selfTest.checks ?? {})
+      .filter(([, value]) => value !== "passed" && value !== "skipped")
+      .map(([name]) => name);
+    const why =
+      failed.length > 0
+        ? `준비되지 않은 항목: ${failed.join(", ")}`
+        : (selfTest.backend_reason ?? `가속기를 찾지 못했습니다 (backend=${selfTest.backend})`);
+    throw new Error(`Generator 환경 확인 실패 — ${why}`);
+  }
   const passedChecks = Object.values(selfTest.checks).filter((value) => value === "passed").length;
   process.stdout.write(
     `Generator 환경 확인 완료: ${selfTest.backend} · ${selfTest.hardware} · ${passedChecks}/${Object.keys(selfTest.checks).length} 검사 통과\n`,
