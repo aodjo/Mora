@@ -5,6 +5,9 @@ import { useToast } from "../Toast";
 import { number, relativeTime, stageLabel, stateLabel, stateTone, text, type AdminItem } from "./utils";
 
 type JobFilter = "all" | "active" | "failed" | "done";
+/** 더 진행되지 않는 상태들 — 여기서는 사람이 다시 시작할 수 있어야 한다. */
+const DONE_STATES = ["failed", "unsupported_language", "candidate_ready", "cancelled"];
+
 const filters: Array<[JobFilter, string, (state: string) => boolean]> = [
   ["all", "전체", () => true],
   ["active", "진행", (state) => ["queued", "claimed", "running"].includes(state)],
@@ -129,10 +132,14 @@ export function JobsView({
                 <span className={`state-badge ${stateTone(state)}`}>{stateLabel(state)}</span>
                 <time>{relativeTime(item.updated_at)}</time>
                 <div className="job-actions" onClick={(event) => event.stopPropagation()}>
-                  {state === "failed" && (
+                  {/*
+                    실패만 다시 돌릴 수 있는 게 아니다. 정렬 코드를 고친 뒤 이미 끝난 작업을
+                    새 코드로 다시 만드는 일이 더 잦고, 그때 버튼이 없어서 손댈 방법이 없었다.
+                  */}
+                  {DONE_STATES.includes(state) && (
                     <button className="job-retry" onClick={() => void retry(id)}>
                       <RotateCcw size={13} />
-                      재시도
+                      {state === "failed" ? "재시도" : "다시 만들기"}
                     </button>
                   )}
                   {["queued", "claimed", "running", "failed"].includes(state) && item.cancel_requested !== 1 && (

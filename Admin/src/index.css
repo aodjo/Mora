@@ -3468,3 +3468,15 @@ textarea:focus-visible {
   color: var(--text-muted);
   font-weight: 600;
 }
+
+/* 구역 제목과 그 구역에 대한 동작을 한 줄에 둔다. */
+.detail-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.detail-section-head h3 {
+  margin: 0;
+}

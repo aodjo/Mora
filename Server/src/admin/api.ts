@@ -1810,16 +1810,20 @@ async function jobAction(env: WorkerEnv, actor: Actor, jobId: string, action: st
       .bind(now, jobId)
       .run();
   else if (action === "retry") {
-    const row = await env.ADMIN_DB.prepare("SELECT input_revision_id,attempt_count,max_attempts FROM jobs WHERE id=?1")
+    const row = await env.ADMIN_DB.prepare("SELECT input_revision_id,state FROM jobs WHERE id=?1")
       .bind(jobId)
-      .first<{ input_revision_id: string; attempt_count: number; max_attempts: number }>();
+      .first<{ input_revision_id: string; state: string }>();
     if (row === null) throw new ServiceError(404, "NOT_FOUND");
-    if (row.attempt_count >= row.max_attempts) throw new ServiceError(409, "ATTEMPT_LIMIT");
-    await env.ADMIN_DB.prepare(
-      "UPDATE jobs SET state='queued',cancel_requested=0,error_code=NULL,available_at=?1,updated_at=?1 WHERE id=?2",
-    )
-      .bind(now, jobId)
-      .run();
+    if (!["failed", "unsupported_language", "candidate_ready", "cancelled"].includes(row.state)) throw new ServiceError(409, "CONFLICT");
+    await env.ADMIN_DB.batch([
+      // 사람이 누른 재시작이다. 자동 재시도 한도는 실패가 반복되는 것을 막으려는 것이지,
+      // 코드를 고친 뒤 다시 만드는 일을 막으려는 것이 아니다.
+      env.ADMIN_DB.prepare(
+        "UPDATE jobs SET state='queued',cancel_requested=0,error_code=NULL,attempt_count=0,current_stage=NULL,progress=0,worker_id=NULL,available_at=?1,updated_at=?1 WHERE id=?2",
+      ).bind(now, jobId),
+      // 아직 아무도 손대지 않은 후보는 곧 대체된다. 승인했거나 공개한 것은 남긴다.
+      env.ADMIN_DB.prepare("DELETE FROM alignment_candidates WHERE job_id=?1 AND status IN ('draft','pending','rejected')").bind(jobId),
+    ]);
   } else throw new ServiceError(404, "NOT_FOUND");
   await audit(env, actor, `job.${action}`, "job", jobId);
   await event(env, `job.${action}`, { job_id: jobId });

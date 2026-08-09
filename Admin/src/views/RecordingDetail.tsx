@@ -1,4 +1,4 @@
-import { ArrowLeft, AudioLines, Check, ChevronRight, ExternalLink, Play, Save, Search, TriangleAlert } from "lucide-react";
+import { ArrowLeft, AudioLines, Check, ChevronRight, ExternalLink, Play, RotateCcw, Save, Search, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useToast } from "../Toast";
@@ -128,7 +128,8 @@ export function RecordingDetail({
   const [playing, setPlaying] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    api<Detail>(`/recordings/${encodeURIComponent(recordingId)}`)
+    // 반환한다 — 다시 만들기처럼 새로 읽은 뒤에 이어서 할 일이 있는 곳에서 기다릴 수 있어야 한다.
+    return api<Detail>(`/recordings/${encodeURIComponent(recordingId)}`)
       .then((value) => {
         setDetail(value);
         setQuery((current) => (current.length > 0 ? current : `${text(value.recording.artist)} ${text(value.recording.title)}`.trim()));
@@ -138,7 +139,9 @@ export function RecordingDetail({
       })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "곡 정보를 불러오지 못했습니다"));
   }, [recordingId]);
-  useEffect(load, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   if (error !== "")
     return (
@@ -168,6 +171,28 @@ export function RecordingDetail({
       : draftId === null
         ? "소스를 확정할 수 있는 리비전이 없습니다."
         : "";
+
+  // 더 진행되지 않는 작업만 다시 시작할 수 있다 — 돌고 있는 것을 두 번 돌릴 이유는 없다.
+  const finishedJob = (() => {
+    const revision = detail.revisions.find((item) =>
+      ["candidate_ready", "failed", "cancelled", "unsupported_language"].includes(text(item.job_state)),
+    );
+    return revision === undefined ? null : text(revision.job_id);
+  })();
+
+  async function rebuild(jobId: string): Promise<void> {
+    setBusy(true);
+    try {
+      await api(`/jobs/${encodeURIComponent(jobId)}/retry`, { method: "POST", body: "{}" });
+      showToast("타이밍을 다시 만듭니다. Generator가 가져가면 진행 상황이 보입니다.");
+      await load();
+      refresh();
+    } catch (reason) {
+      showToast(reason instanceof Error ? reason.message : "다시 만들기에 실패했습니다", { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function saveMetadata(notify = true): Promise<void> {
     if (draftId === null) return;
@@ -342,7 +367,19 @@ export function RecordingDetail({
       </section>
 
       <section className="detail-section">
-        <h3>타이밍 후보 {detail.candidates.length > 0 && <b>{detail.candidates.length}</b>}</h3>
+        <div className="detail-section-head">
+          <h3>타이밍 후보 {detail.candidates.length > 0 && <b>{detail.candidates.length}</b>}</h3>
+          {/*
+            정렬을 고친 뒤 이 곡만 다시 만들고 싶을 때, 작업 큐를 찾아가 그 행을 고르게 하는 것은
+            먼 길이다. 결과를 보고 있는 자리에서 다시 만들 수 있어야 한다.
+          */}
+          {finishedJob !== null && (
+            <button className="secondary-button" onClick={() => void rebuild(finishedJob)} disabled={busy}>
+              <RotateCcw size={13} />
+              다시 만들기
+            </button>
+          )}
+        </div>
         {detail.candidates.length === 0 ? (
           <p className="detail-empty">
             {selected === undefined

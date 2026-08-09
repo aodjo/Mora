@@ -18,7 +18,6 @@ export type ErrorCode =
   | "CANCELLED"
   | "EDIT_LOCKED"
   | "INVALID_DRAFT"
-  | "ATTEMPT_LIMIT"
   | "INVALID_CHALLENGE"
   | "VERIFICATION_FAILED"
   | "BAD_ARTIFACT"
