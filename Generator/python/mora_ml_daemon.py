@@ -319,6 +319,46 @@ def interpolate_boundaries(candidates: list[dict[str, Any]], count: int) -> list
     return projected
 
 
+def extend_held_endings(
+    words: list[list[int | float]],
+    lines: list[list[int]],
+    last_token_of_line: dict[int, int],
+    heard: list[dict[str, Any]],
+) -> None:
+    """
+    Give a held final note the length it is held for.
+
+    The phoneme aligner marks where a sound begins and loses interest once it stops changing,
+    so "Fun~~~~" ends on paper the moment "Fun" has been said. Inside a line the next word's
+    start already covers this; the last word of a line has nothing after it and kept its raw
+    end, which is exactly where held notes live. The transcriber, however, heard the whole
+    note — its word end sits where the voice actually stopped — so the line's last word may
+    borrow that end when the transcriber heard something longer at the same spot.
+    """
+    for position, word in enumerate(words):
+        line_index = last_token_of_line.get(int(word[0]))
+        if line_index is None:
+            continue
+        word_start, word_end = float(word[1]), float(word[2])
+        next_start = float(words[position + 1][1]) if position + 1 < len(words) else None
+        # The longest ASR word still running at this word's start — the note as it was heard.
+        heard_end = max(
+            (h["end"] * 1000 for h in heard if h["start"] * 1000 <= word_start + 250 and h["end"] * 1000 > word_end),
+            default=None,
+        )
+        if heard_end is None:
+            continue
+        extended = heard_end
+        # Never into the next line's opening word.
+        if next_start is not None:
+            extended = min(extended, next_start - 40)
+        if extended <= word_end:
+            continue
+        word[2] = round(extended)
+        if line_index < len(lines) and lines[line_index][1] < word[2]:
+            lines[line_index][1] = int(word[2])
+
+
 def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], duration_ms: int, backend: str, detected: str = "und") -> dict[str, Any]:
     text_lines = [line for line in str(variant["text"]).splitlines() if line.strip()]
     counts = [int(value) for value in variant.get("token_counts", [])]
@@ -344,6 +384,8 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
         result_words: list[list[int | float]] = []
         aligned_token_weight = 0.0
         token_index = 0
+        # Which token ends each line, so a held note can be given the length it is held for.
+        last_token_of_line: dict[int, int] = {}
         for line_index, count in enumerate(counts):
             # The aligner answers per segment, and a segment is a line. Re-cutting one flat word
             # list by token count instead assumed every line takes time in proportion to its
@@ -366,6 +408,8 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
                 fallback = [word for word in fallback_words if token_index <= int(word[0]) < token_index + count]
                 result_words.extend(fallback)
             token_index += count
+            last_token_of_line[token_index - 1] = line_index
+        extend_held_endings(result_words, line_windows, last_token_of_line, asr_words(asr))
         coverage = aligned_token_weight / max(1, sum(counts))
         quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, language, detected)
         return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}

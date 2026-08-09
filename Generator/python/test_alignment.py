@@ -80,8 +80,43 @@ check("찰나로 끝나는 줄은 감점된다", bad["line_plausibility"] < good
 check("ASR 앵커 여부가 기록된다", good["asr_anchored"] == 1.0 and bad["asr_anchored"] == 0.0)
 check("지표가 전부 1.0으로 고정되지 않는다", len({round(value, 3) for value in bad.values()}) > 1, str(bad))
 
+# ── 장음 끝점: "Fun~~~~"은 Fun이 발음된 순간이 아니라 끝까지 끈 데서 끝나야 한다 ──
+def _held_case() -> tuple[list[list[int | float]], list[list[int]], dict[int, int], list[dict[str, object]]]:
+    # 2행: [사랑해(0), Fun~~~~(1)] / [다음(2), 줄(3)]. 정렬기는 Fun을 12.0~12.4로 봤지만
+    # ASR은 같은 자리에서 12.0~15.8짜리 소리를 들었다. 다음 줄은 17.0에 시작한다.
+    words: list[list[int | float]] = [[0, 10.0e3, 11.5e3, 0.9], [1, 12.0e3, 12.4e3, 0.9], [2, 17.0e3, 17.5e3, 0.9], [3, 17.6e3, 18.2e3, 0.9]]
+    lines = [[10000, 12400], [17000, 18200]]
+    last = {1: 0, 3: 1}
+    heard = [
+        {"text": "사랑해", "start": 10.0, "end": 11.5},
+        {"text": "fun", "start": 12.0, "end": 15.8},
+        {"text": "다음", "start": 17.0, "end": 17.5},
+        {"text": "줄", "start": 17.6, "end": 18.2},
+    ]
+    return words, lines, last, heard
+
+words, lines, last, heard = _held_case()
+daemon.extend_held_endings(words, lines, last, heard)
+check("장음은 ASR이 들은 끝까지 늘어난다", words[1][2] == 15800, f"{words[1][2]}")
+check("줄 스팬도 함께 늘어난다", lines[0][1] == 15800, f"{lines[0][1]}")
+check("다음 줄과 겹치지 않는다", words[1][2] < words[2][1], f"{words[1][2]} vs {words[2][1]}")
+check("마지막 줄의 끝 단어도 처리된다", words[3][2] == 18200, f"{words[3][2]}")
+
+# 짧게 끝난 단어는 그대로 둔다 — ASR도 짧게 들었다.
+words2, lines2, last2, _ = _held_case()
+short = [{"text": "fun", "start": 12.0, "end": 12.4}]
+daemon.extend_held_endings(words2, lines2, last2, short)
+check("길게 들리지 않았으면 늘리지 않는다", words2[1][2] == 12400, f"{words2[1][2]}")
+
+# 다음 줄이 바짝 붙어 있으면 그 직전까지만.
+words3, lines3, last3, heard3 = _held_case()
+words3[2][1] = 13.0e3
+daemon.extend_held_endings(words3, lines3, last3, heard3)
+check("늘려도 다음 줄 시작 직전에서 멈춘다", words3[1][2] == 12960, f"{words3[1][2]}")
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
     sys.exit(1)
 print("전부 통과")
+
