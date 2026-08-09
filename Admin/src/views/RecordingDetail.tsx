@@ -165,10 +165,13 @@ export function RecordingDetail({
   recordingId,
   onBack,
   onEditTiming,
+  onTitle,
   refresh,
 }: {
   recordingId: string;
   onBack: () => void;
+  /** 위치 표시가 이 곡을 이름으로 부를 수 있게 알려준다. */
+  onTitle?: (title: string) => void;
   onEditTiming: (candidateId: string) => void;
   refresh: () => void;
 }) {
@@ -191,13 +194,14 @@ export function RecordingDetail({
     return api<Detail>(`/recordings/${encodeURIComponent(recordingId)}`)
       .then((value) => {
         setDetail(value);
+        onTitle?.(text(value.recording.title, "곡 상세"));
         setQuery((current) => (current.length > 0 ? current : `${text(value.recording.artist)} ${text(value.recording.title)}`.trim()));
         setIsrc((current) => (current.length > 0 ? current : text(value.recording.isrc, "")));
         const found = text(value.recording.language);
         if (found === "ko" || found === "en" || found === "ja") setLanguage(found);
       })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "곡 정보를 불러오지 못했습니다"));
-  }, [recordingId]);
+  }, [recordingId, onTitle]);
   useEffect(() => {
     void load();
   }, [load]);

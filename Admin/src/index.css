@@ -355,12 +355,34 @@ textarea:focus-visible {
   font-size: 14px;
   line-height: 20px;
 }
-.breadcrumb span,
+.breadcrumb span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .breadcrumb b {
   color: var(--faint);
   font-weight: 400;
 }
+/* 지나온 단계는 누를 수 있다 — 위치를 보여주는 김에 돌아가는 길도 된다. */
+.breadcrumb button {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--faint);
+  font: inherit;
+  cursor: pointer;
+}
+.breadcrumb button:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
 .breadcrumb strong {
+  overflow: hidden;
+  max-width: 32ch;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 500;
 }
 .topbar-actions {

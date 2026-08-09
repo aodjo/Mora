@@ -110,10 +110,13 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const request = useRef(0);
   const [live, setLive] = useState(false);
+  // 열려 있는 곡의 이름. 위치 표시가 "곡 상세" 대신 그 곡을 부를 수 있게.
+  const [songLabel, setSongLabel] = useState<string | null>(null);
   const navigate = useCallback((page: Page, selected: string | null = null, child: string | null = null) => {
     const url = urlFor({ page, selected, child });
     if (url !== window.location.pathname) window.history.pushState(null, "", url);
     setRoute({ page, selected, child });
+    if (selected === null) setSongLabel(null);
   }, []);
   useEffect(() => {
     // Rewrite /admin, /admin/nope and the like to the address the app actually landed on.
@@ -213,6 +216,17 @@ export default function App() {
   if (auth.actor === null) return <Auth status={auth} onAuthenticated={refreshAuth} theme={theme} onToggleTheme={toggleTheme} />;
   const items = Array.isArray(data.items) ? (data.items as Array<Record<string, unknown>>) : [];
   const activeLabel = pages.find(([id]) => id === page)?.[1];
+  /*
+    실제로 들어온 길을 그대로 쌓는다. 전에는 어디까지 들어가든 "Mora / 곡과 리비전"에 멈춰
+    있어서, 지금 보고 있는 것이 목록인지 한 곡인지 그 곡의 편집기인지 구분되지 않았고 —
+    가장 아쉬운 것은 — 한 단계 위로 돌아갈 방법이 없었다.
+  */
+  const trail: Array<{ label: string; go?: () => void }> = [
+    { label: "Mora", go: () => navigate("overview") },
+    { label: activeLabel ?? "Admin", ...(selected === null ? {} : { go: () => navigate(page) }) },
+    ...(selected === null ? [] : [{ label: songLabel ?? "곡 상세", ...(child === null ? {} : { go: () => navigate(page, selected) }) }]),
+    ...(child === null ? [] : [{ label: "타이밍 편집" }]),
+  ];
   // Settings, connections and the editor fetch their own data, so they never wait on this.
   const selfLoading = page === "settings" || page === "connections" || selected !== null;
   const ready = selfLoading || loadedPage === page;
@@ -254,11 +268,18 @@ export default function App() {
       </aside>
       <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumb">
-            <span>Mora</span>
-            <b>/</b>
-            <strong>{activeLabel}</strong>
-          </div>
+          <nav className="breadcrumb" aria-label="위치">
+            {trail.map((step, index) => (
+              <span key={`${step.label}-${index}`}>
+                {index > 0 && <b>/</b>}
+                {step.go === undefined ? (
+                  <strong aria-current="page">{step.label}</strong>
+                ) : (
+                  <button onClick={step.go}>{step.label}</button>
+                )}
+              </span>
+            ))}
+          </nav>
           <div className="topbar-actions">
             <span className="connection">
               <i className={live ? "busy" : ""} />
@@ -318,6 +339,7 @@ export default function App() {
                 recordingId={selected}
                 onBack={() => navigate("recordings")}
                 onEditTiming={(candidateId) => navigate("recordings", selected, candidateId)}
+                onTitle={setSongLabel}
                 refresh={refresh}
               />
             )
