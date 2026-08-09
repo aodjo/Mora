@@ -36,7 +36,7 @@ test("an age-rated song's lyrics are read as the crawler sees them", async () =>
   const seen: Array<{ url: string; ua: string }> = [];
   const found = await genie.fetch(
     { artist: "Ruru (루루)", title: "살인 아니고 사랑인데요??" },
-    { timeoutMs: 5000, fetchImpl: serve(seen) },
+    { timeoutMs: 5000, fetchImpl: serve(seen), keys: {} },
   );
   assert.ok(found !== null, "가사를 찾아야 한다");
   assert.match(found.lyrics, /칼로 찌르는 상상을 하곤 해/u);
