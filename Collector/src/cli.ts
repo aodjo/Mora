@@ -93,7 +93,7 @@ async function run(config: CollectorRuntimeConfig): Promise<void> {
         const duplicate = progress.deduplicated ? " · 기존 작업" : "";
         process.stdout.write(`[${progress.current}/${progress.total}] ${destination}${why}${duplicate}: ${progress.song}\n`);
       } else if (progress.stage === "skipped") {
-        const why = progress.reason === "instrumental" ? "연주곡" : "가사를 찾지 못함";
+        const why = progress.reason === "instrumental" ? "연주곡" : progress.reason === "collected" ? "이미 수집함" : "가사를 찾지 못함";
         process.stdout.write(`[${progress.current}/${progress.total}] 건너뜀 (${why}): ${progress.song}\n`);
       } else if (progress.stage === "failed") {
         process.stdout.write(`[${progress.current}/${progress.total}] 수집 실패 (${progress.code}): ${progress.song}\n`);

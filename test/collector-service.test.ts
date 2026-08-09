@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canAutoSelect, hasNoLyricsToAlign, lyricsSearchInput, resolveDurationMs, reviewReason } from "../Collector/src/service.js";
+import {
+  CollectedIndex,
+  canAutoSelect,
+  hasNoLyricsToAlign,
+  lyricsSearchInput,
+  resolveDurationMs,
+  reviewReason,
+} from "../Collector/src/service.js";
 import { SpotifyClient } from "../Collector/src/spotify.js";
 import type { RecordingSeed, YoutubeCandidate } from "../Collector/src/types.js";
 
@@ -106,4 +113,32 @@ test("the catalogue length decides auto-selection, not who uploaded the file", (
   // A weak title or artist match is disqualifying however well the length agrees.
   assert.equal(canAutoSelect({ ...reupload, score: 0.7 }), false);
   assert.equal(canAutoSelect(undefined), false);
+});
+
+test("a song already in the catalogue is skipped before anything is spent", () => {
+  const index = new CollectedIndex([
+    { artist: "BTS", title: "SWIM", isrc: "USA2P2600449" },
+    { artist: "송하예", title: "그대이길" },
+  ]);
+  assert.equal(index.hasName({ ...seed, artist: "BTS", title: "SWIM" }), true);
+  // 차트마다 표기가 흔들려도 정규화가 흡수한다.
+  assert.equal(index.hasName({ ...seed, artist: "bts", title: "swim" }), true);
+  assert.equal(index.hasName({ ...seed, artist: "BTS", title: "Come Over" }), false);
+
+  // 이름이 달라도 식별이 끝나면 ISRC가 같은 녹음임을 알려준다.
+  assert.equal(index.hasIsrc({ ...seed, artist: "방탄소년단", title: "SWIM", isrc: "usa2p2600449" }), true);
+  assert.equal(index.hasIsrc({ ...seed, isrc: "KRA302600331" }), false);
+  assert.equal(index.hasIsrc(seed), false);
+
+  // ISRC가 없는 곡도 이름으로는 걸린다.
+  assert.equal(index.hasName({ ...seed, artist: "송하예", title: "그대이길" }), true);
+});
+
+test("a song collected during the run is not collected twice", () => {
+  const index = new CollectedIndex([]);
+  const swim = { ...seed, artist: "BTS", title: "SWIM", isrc: "USA2P2600449" };
+  assert.equal(index.hasName(swim), false);
+  index.remember(swim);
+  assert.equal(index.hasName(swim), true);
+  assert.equal(index.hasIsrc({ ...seed, artist: "방탄소년단", title: "Swim", isrc: "USA2P2600449" }), true);
 });

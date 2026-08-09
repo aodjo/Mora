@@ -23,6 +23,48 @@ export function hasNoLyricsToAlign(seed: RecordingSeed): boolean {
   return INSTRUMENTAL.test(seed.title);
 }
 
+/** The key the run already uses to fold duplicate chart entries together. */
+export function songKey(artist: string, title: string): string {
+  return `${artist.normalize("NFKC").toLowerCase()}\0${title.normalize("NFKC").toLowerCase()}`;
+}
+
+/**
+ * What the catalogue already holds, looked up by name or by ISRC. Charts repeat almost entirely
+ * between runs, so without this every run pays for a YouTube search, five lyrics providers and a
+ * Spotify lookup per song only to have the server file the result beside an identical one.
+ */
+export class CollectedIndex {
+  readonly #keys = new Set<string>();
+  readonly #isrcs = new Set<string>();
+
+  constructor(recordings: ReadonlyArray<{ artist: string; title: string; isrc?: string | undefined }>) {
+    for (const recording of recordings) {
+      this.#keys.add(songKey(recording.artist, recording.title));
+      if (recording.isrc !== undefined && recording.isrc.length > 0) this.#isrcs.add(recording.isrc.toUpperCase());
+    }
+  }
+
+  get size(): number {
+    return this.#keys.size;
+  }
+
+  /** Before anything is spent: the chart gave us a name we have already collected under. */
+  hasName(seed: RecordingSeed): boolean {
+    return this.#keys.has(songKey(seed.artist, seed.title));
+  }
+
+  /** After identification: the same recording reached us under a different name. */
+  hasIsrc(seed: RecordingSeed): boolean {
+    return seed.isrc !== undefined && this.#isrcs.has(seed.isrc.toUpperCase());
+  }
+
+  /** Keeps a run from collecting the same song twice when the charts spell it two ways. */
+  remember(seed: RecordingSeed): void {
+    this.#keys.add(songKey(seed.artist, seed.title));
+    if (seed.isrc !== undefined && seed.isrc.length > 0) this.#isrcs.add(seed.isrc.toUpperCase());
+  }
+}
+
 export class CollectorService {
   readonly #fetch: typeof fetch;
   readonly #musicbrainz: MusicBrainzClient;
@@ -55,8 +97,28 @@ export class CollectorService {
     };
   }
 
-  async run(): Promise<CollectionReport> {
-    const report: CollectionReport = { discovered: 0, identified: 0, submitted: 0, review: 0, skipped: 0, errors: [] };
+  /** An outage here costs a wasted run, not a wrong one, so it degrades to collecting everything. */
+  async #collected(): Promise<CollectedIndex> {
+    try {
+      const response = await this.#fetch(`${this.config.adminUrl.replace(/\/$/u, "")}/admin/api/collector/collected`, {
+        headers: { authorization: `Bearer ${this.config.adminToken}` },
+      });
+      if (!response.ok) throw new Error(await adminErrorCode(response));
+      const payload = (await response.json()) as { recordings?: Array<{ artist?: string; title?: string; isrc?: string }> };
+      return new CollectedIndex(
+        (payload.recordings ?? []).flatMap((item) =>
+          typeof item.artist === "string" && typeof item.title === "string"
+            ? [{ artist: item.artist, title: item.title, isrc: item.isrc }]
+            : [],
+        ),
+      );
+    } catch {
+      return new CollectedIndex([]);
+    }
+  }
+
+  /** The day's shortlist: every market's charts folded together and cut to the budget. */
+  async discover(): Promise<RecordingSeed[]> {
     const pools: RecordingSeed[] = [];
     this.config.onProgress?.({ stage: "discovering", markets: this.config.markets });
     for (const market of this.config.markets) {
@@ -68,7 +130,7 @@ export class CollectorService {
     }
     const unique = new Map<string, RecordingSeed>();
     for (const seed of pools) {
-      const key = `${seed.artist.normalize("NFKC").toLowerCase()}\0${seed.title.normalize("NFKC").toLowerCase()}`;
+      const key = songKey(seed.artist, seed.title);
       const old = unique.get(key);
       if (old === undefined) unique.set(key, seed);
       else
@@ -78,14 +140,30 @@ export class CollectorService {
           freshness: Math.max(old.freshness, seed.freshness),
         });
     }
-    const ranked = [...unique.values()]
+    return [...unique.values()]
       .sort((a, b) => b.popularity * 0.65 + b.freshness * 0.35 - (a.popularity * 0.65 + a.freshness * 0.35))
       .slice(0, this.config.dailyBudget);
+  }
+
+  async run(): Promise<CollectionReport> {
+    return this.collect(await this.discover());
+  }
+
+  async collect(ranked: RecordingSeed[]): Promise<CollectionReport> {
+    const report: CollectionReport = { discovered: 0, identified: 0, submitted: 0, review: 0, skipped: 0, errors: [] };
+    const collected = await this.#collected();
     report.discovered = ranked.length;
     this.config.onProgress?.({ stage: "selected", total: ranked.length });
     for (const [index, seed] of ranked.entries()) {
       this.config.onProgress?.({ stage: "processing", current: index + 1, total: ranked.length, song: `${seed.artist} - ${seed.title}` });
       const song = `${seed.artist} - ${seed.title}`;
+      // Already in the catalogue. Checked before anything is spent, because this is most of a
+      // second run: the charts barely move between days.
+      if (collected.hasName(seed)) {
+        report.skipped++;
+        this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "collected" });
+        continue;
+      }
       // Nothing downstream can use a track with no words: the pipeline aligns lyrics to audio,
       // so submitting one only parks a recording in review that no one can ever act on.
       if (hasNoLyricsToAlign(seed)) {
@@ -96,6 +174,14 @@ export class CollectorService {
       try {
         const identified = await this.#enrich(await this.#musicbrainz.identify(seed).catch(() => seed));
         if (identified.isrc) report.identified++;
+        // The charts name the same recording several ways — "IU" and "아이유", a single and its
+        // album cut. Identification is what settles that, so the second look happens here, still
+        // ahead of the YouTube search and the lyrics providers.
+        if (collected.hasIsrc(identified)) {
+          report.skipped++;
+          this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "collected" });
+          continue;
+        }
         const sources = await (this.config.youtubeSearch ?? searchYoutubeMusic)(identified);
         const durationMs = resolveDurationMs(identified, sources);
         if (durationMs === undefined) throw new Error("DURATION_UNAVAILABLE");
@@ -121,6 +207,9 @@ export class CollectorService {
         });
         if (!response.ok) throw new Error(await adminErrorCode(response));
         const result = (await response.json()) as { job_id?: string | null; deduplicated?: boolean; blocked_by?: string[] };
+        // Under both names now, so a chart that lists this song twice cannot pay for it twice.
+        collected.remember(identified);
+        collected.remember(seed);
         if (result.job_id) report.submitted++;
         else report.review++;
         this.config.onProgress?.({

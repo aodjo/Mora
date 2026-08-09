@@ -261,6 +261,27 @@ function blockedBy(isrc: string | null, sourceId: string | null): string[] {
   return [...(isrc === null ? ["isrc"] : []), ...(sourceId === null ? ["source"] : [])];
 }
 
+/**
+ * Everything the catalogue already holds, so a run can skip it before spending anything.
+ * A song costs a YouTube search, five lyrics providers and a Spotify lookup to collect, and
+ * re-submitting one only lands another input revision beside the identical one already there.
+ */
+async function collectorCollected(env: WorkerEnv, actor: Actor): Promise<Response> {
+  requirePermission(actor, "collector.submit");
+  const { results } = await env.ADMIN_DB.prepare("SELECT artist,title,isrc FROM recordings").all<{
+    artist: string;
+    title: string;
+    isrc: string | null;
+  }>();
+  return json({
+    recordings: results.map((row) => ({
+      artist: row.artist,
+      title: row.title,
+      ...(row.isrc === null ? {} : { isrc: row.isrc }),
+    })),
+  });
+}
+
 async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "collector.submit");
   const recordingValue = value.recording;
@@ -1525,6 +1546,7 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   }
   if (request.method === "GET" && url.pathname === "/admin/api/settings") return listRuntimeConfig(env, actor);
   if (request.method === "GET" && url.pathname === "/admin/api/collector/config") return collectorRuntimeConfig(env, actor);
+  if (request.method === "GET" && url.pathname === "/admin/api/collector/collected") return collectorCollected(env, actor);
   if (request.method === "POST" && url.pathname === "/admin/api/collector/pairings/approve")
     return approveCollectorPairing(env, actor, await body(request, 16 * 1024));
   if (request.method === "POST" && url.pathname === "/admin/api/generator/pairings/approve")
