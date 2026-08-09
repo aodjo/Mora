@@ -1,7 +1,6 @@
 import {
   Activity,
   Archive,
-  AudioLines,
   Database,
   FileClock,
   Globe,
@@ -24,16 +23,14 @@ import { JobsView } from "./views/JobsView";
 import { RecordingDetail } from "./views/RecordingDetail";
 import { RecordingsView } from "./views/RecordingsView";
 import { ReleasesView } from "./views/ReleasesView";
-import { ReviewView } from "./views/ReviewView";
 import { WorkersView } from "./views/WorkersView";
 
-type Page = "overview" | "jobs" | "workers" | "recordings" | "review" | "releases" | "connections" | "audit" | "settings";
+type Page = "overview" | "jobs" | "workers" | "recordings" | "releases" | "connections" | "audit" | "settings";
 const pages: Array<[Page, string, typeof Activity]> = [
   ["overview", "상황판", Activity],
   ["jobs", "작업 큐", ListChecks],
   ["workers", "워커", Radio],
   ["recordings", "곡과 리비전", Database],
-  ["review", "검수·편집", AudioLines],
   ["releases", "릴리스", Globe],
   ["connections", "기기 연결", KeyRound],
   ["audit", "감사 로그", FileClock],
@@ -43,8 +40,7 @@ const descriptions: Record<Page, string> = {
   overview: "전체 처리 상태와 주요 지표를 확인합니다.",
   jobs: "수집 및 생성 작업의 진행 상태를 관리합니다.",
   workers: "연결된 Generator 워커의 상태를 확인합니다.",
-  recordings: "곡과 정렬 리비전을 조회합니다.",
-  review: "음원 소스를 확정하고 생성된 타이밍을 검수합니다.",
+  recordings: "곡을 열어 음원을 확정하고 타이밍을 검수합니다.",
   releases: "공개된 타이밍을 확인하고 필요하면 철회합니다.",
   connections: "Collector와 Generator의 10자리 PIN 연결을 승인합니다.",
   audit: "관리 작업과 보안 이벤트를 추적합니다.",
@@ -52,7 +48,6 @@ const descriptions: Record<Page, string> = {
 };
 
 function pathFor(page: Page): string {
-  if (page === "review") return "/reviews";
   // Settings and connections render their own panels; they only need the overview payload.
   if (page === "settings" || page === "connections") return "/overview";
   return `/${page}`;
@@ -65,22 +60,28 @@ const base = "/admin";
 interface Route {
   page: Page;
   selected: string | null;
+  /** 곡 안에서 열려 있는 타이밍 후보. 편집기도 주소로 남아 뒤로가기가 동작한다. */
+  child: string | null;
 }
 
-const detailPages = new Set<Page>(["review", "recordings"]);
-
-function urlFor({ page, selected }: Route): string {
-  if (detailPages.has(page) && selected !== null) return `${base}/${page}/${encodeURIComponent(selected)}`;
+function urlFor({ page, selected, child }: Route): string {
+  if (page === "recordings" && selected !== null)
+    return child === null
+      ? `${base}/recordings/${encodeURIComponent(selected)}`
+      : `${base}/recordings/${encodeURIComponent(selected)}/${encodeURIComponent(child)}`;
   return page === "overview" ? `${base}/` : `${base}/${page}`;
 }
 
 function parseUrl(pathname: string): Route {
   const rest = (pathname.startsWith(base) ? pathname.slice(base.length) : pathname).replace(/^\/+/u, "");
-  const [first, second] = rest.split("/");
+  const [first, second, third] = rest.split("/");
+  // 검수·편집은 곡 화면으로 합쳐졌다. 예전 주소는 버리지 않고 곡 목록으로 보낸다.
+  if (first === "review") return { page: "recordings", selected: null, child: null };
   const page = pages.find(([id]) => id === first)?.[0];
-  if (page === undefined) return { page: "overview", selected: null };
-  if (detailPages.has(page) && second !== undefined && second !== "") return { page, selected: decodeURIComponent(second) };
-  return { page, selected: null };
+  if (page === undefined) return { page: "overview", selected: null, child: null };
+  if (page === "recordings" && second !== undefined && second !== "")
+    return { page, selected: decodeURIComponent(second), child: third === undefined || third === "" ? null : decodeURIComponent(third) };
+  return { page, selected: null, child: null };
 }
 
 function initialTheme(): Theme {
@@ -97,16 +98,16 @@ export default function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [authError, setAuthError] = useState("");
   const [route, setRoute] = useState<Route>(() => parseUrl(window.location.pathname));
-  const { page, selected } = route;
+  const { page, selected, child } = route;
   const [data, setData] = useState<Record<string, unknown>>({});
   const [loadedPage, setLoadedPage] = useState<Page | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const request = useRef(0);
   const [live, setLive] = useState(false);
-  const navigate = useCallback((page: Page, selected: string | null = null) => {
-    const url = urlFor({ page, selected });
+  const navigate = useCallback((page: Page, selected: string | null = null, child: string | null = null) => {
+    const url = urlFor({ page, selected, child });
     if (url !== window.location.pathname) window.history.pushState(null, "", url);
-    setRoute({ page, selected });
+    setRoute({ page, selected, child });
   }, []);
   useEffect(() => {
     // Rewrite /admin, /admin/nope and the like to the address the app actually landed on.
@@ -118,9 +119,9 @@ export default function App() {
   }, []);
   useEffect(() => {
     // Names the entry in the browser's history and tab, so back is navigable by label.
-    const label = selected === null ? (pages.find(([id]) => id === page)?.[1] ?? "Admin") : page === "review" ? "타이밍 편집" : "곡 상세";
+    const label = selected === null ? (pages.find(([id]) => id === page)?.[1] ?? "Admin") : child !== null ? "타이밍 편집" : "곡 상세";
     document.title = `${label} · Mora Admin`;
-  }, [page, selected]);
+  }, [page, selected, child]);
   const [theme, setTheme] = useState<Theme>(initialTheme);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -205,11 +206,9 @@ export default function App() {
     );
   if (auth.actor === null) return <Auth status={auth} onAuthenticated={refreshAuth} theme={theme} onToggleTheme={toggleTheme} />;
   const items = Array.isArray(data.items) ? (data.items as Array<Record<string, unknown>>) : [];
-  const sourceItems = Array.isArray(data.source_items) ? (data.source_items as Array<Record<string, unknown>>) : [];
-  const candidateItems = Array.isArray(data.candidate_items) ? (data.candidate_items as Array<Record<string, unknown>>) : [];
   const activeLabel = pages.find(([id]) => id === page)?.[1];
   // Settings, connections and the editor fetch their own data, so they never wait on this.
-  const selfLoading = page === "settings" || page === "connections" || (page === "review" && selected !== null);
+  const selfLoading = page === "settings" || page === "connections" || selected !== null;
   const ready = selfLoading || loadedPage === page;
   return (
     <div className="app-shell">
@@ -273,8 +272,14 @@ export default function App() {
         <div className="page-content">
           <div className="page-heading">
             <div>
-              <h1>{selected === null ? activeLabel : page === "review" ? "타이밍 편집" : "곡 상세"}</h1>
-              <p>{selected !== null && page === "review" ? "단어별 시작·종료 시간을 검수합니다." : descriptions[page]}</p>
+              <h1>{selected === null ? activeLabel : child !== null ? "타이밍 편집" : "곡 상세"}</h1>
+              <p>
+                {child !== null
+                  ? "단어별 시작·종료 시간을 검수합니다."
+                  : selected !== null
+                    ? "음원을 확정하고 타이밍을 검수합니다."
+                    : descriptions[page]}
+              </p>
             </div>
             {page !== "overview" && page !== "settings" && selected === null && (
               <button onClick={refresh} disabled={refreshing} className="secondary-button">
@@ -294,24 +299,22 @@ export default function App() {
           ) : page === "recordings" ? (
             selected === null ? (
               <RecordingsView items={items} onSelect={(id) => navigate("recordings", id)} />
+            ) : child !== null ? (
+              <Editor
+                candidateId={child}
+                onPublished={() => {
+                  navigate("recordings", selected);
+                  refresh();
+                }}
+              />
             ) : (
-              <RecordingDetail recordingId={selected} onBack={() => navigate("recordings")} refresh={refresh} />
+              <RecordingDetail
+                recordingId={selected}
+                onBack={() => navigate("recordings")}
+                onEditTiming={(candidateId) => navigate("recordings", selected, candidateId)}
+                refresh={refresh}
+              />
             )
-          ) : page === "review" && selected !== null ? (
-            <Editor
-              candidateId={selected}
-              onPublished={() => {
-                navigate("review");
-                refresh();
-              }}
-            />
-          ) : page === "review" ? (
-            <ReviewView
-              sourceItems={sourceItems}
-              candidateItems={candidateItems}
-              onSelect={(id) => navigate("review", id)}
-              refresh={refresh}
-            />
           ) : page === "releases" ? (
             <ReleasesView items={items} refresh={refresh} />
           ) : page === "audit" ? (
@@ -421,7 +424,6 @@ const skeletons: Record<Page, SkeletonSpec | null> = {
   jobs: { view: "jobs-view", filters: 38, wrapper: "job-list", count: 4, height: 74 },
   workers: { wrapper: "worker-grid", count: 2, height: 316 },
   recordings: { view: "recordings-view", filters: 36, head: 41, wrapper: "table-wrap", count: 6, height: 62 },
-  review: { view: "review-workspace", filters: 38, band: 76, wrapper: "source-review-list", count: 2, height: 240 },
   releases: { view: "releases-view", wrapper: "release-list", count: 4, height: 88 },
   audit: { panel: 71, wrapper: "audit-list", count: 5, height: 75 },
   connections: null,

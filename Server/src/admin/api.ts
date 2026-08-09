@@ -280,11 +280,22 @@ async function recordingDetail(env: WorkerEnv, actor: Actor, recordingId: string
     `SELECT i.id,i.state,i.source_id,i.created_at,
        (SELECT COUNT(*) FROM lyric_revisions l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count,
        (SELECT j.id FROM jobs j WHERE j.input_revision_id=i.id) job_id,
-       (SELECT j.state FROM jobs j WHERE j.input_revision_id=i.id) job_state
+       (SELECT j.state FROM jobs j WHERE j.input_revision_id=i.id) job_state,
+       (SELECT j.current_stage FROM jobs j WHERE j.input_revision_id=i.id) current_stage
      FROM input_revisions i WHERE i.recording_id=?1 ORDER BY i.created_at DESC`,
     [recordingId],
   );
-  return json({ recording, sources, revisions });
+  // The song's timings live here too, so one screen covers a recording end to end.
+  const candidates = await list(
+    env.ADMIN_DB,
+    `SELECT c.id,c.job_id,c.input_revision_id,c.status,c.tokenizer,c.quality,c.quality_score,c.created_at,
+       l.provider,l.language
+     FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id
+     JOIN lyric_revisions l ON l.id=c.variant_id
+     WHERE i.recording_id=?1 ORDER BY c.quality_score DESC,c.created_at DESC`,
+    [recordingId],
+  );
+  return json({ recording, sources, revisions, candidates });
 }
 
 /** Proxied so the key stays on the server; without one the screen falls back to a plain link. */
@@ -563,86 +574,6 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
     },
     201,
   );
-}
-
-interface SourceReviewItem {
-  input_revision_id: string;
-  recording_id: string;
-  artist: string;
-  title: string;
-  album: string | null;
-  isrc: string | null;
-  duration_ms: number;
-  language: string;
-  created_at: number;
-  lyrics_count: number;
-  sources: Array<{
-    id: string;
-    url: string;
-    video_id: string;
-    rank: number;
-    official: boolean;
-    source_type: string;
-    score: number;
-    metadata: Record<string, unknown>;
-  }>;
-}
-
-async function reviewQueues(env: WorkerEnv, actor: Actor): Promise<Response> {
-  requirePermission(actor, "recordings.read");
-  requirePermission(actor, "candidates.read");
-  const [rows, candidates] = await Promise.all([
-    env.ADMIN_DB.prepare(
-      `SELECT i.id input_revision_id,i.created_at,r.id recording_id,r.artist,r.title,r.album,r.isrc,r.duration_ms,r.language,
-      (SELECT COUNT(*) FROM lyric_revisions l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count,
-      s.id source_id,s.url,s.video_id,s.rank,s.official,s.source_type,s.score,s.metadata
-      FROM input_revisions i JOIN recordings r ON r.id=i.recording_id LEFT JOIN media_sources s ON s.recording_id=r.id
-      WHERE i.state='draft' AND i.source_id IS NULL AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.input_revision_id=i.id)
-      ORDER BY CASE WHEN s.id IS NULL THEN 1 ELSE 0 END,i.created_at DESC,s.rank LIMIT 1000`,
-    ).all<Record<string, unknown>>(),
-    env.ADMIN_DB.prepare(
-      `SELECT c.id,c.job_id,c.input_revision_id,c.variant_id,c.status,c.tokenizer,c.quality,c.quality_score,c.created_at,
-        r.artist,r.title,l.provider,l.language
-       FROM alignment_candidates c
-       JOIN input_revisions i ON i.id=c.input_revision_id
-       JOIN recordings r ON r.id=i.recording_id
-       JOIN lyric_revisions l ON l.id=c.variant_id
-       ORDER BY c.created_at DESC LIMIT 200`,
-    ).all<Record<string, unknown>>(),
-  ]);
-  const grouped = new Map<string, SourceReviewItem>();
-  for (const row of rows.results) {
-    const inputId = String(row.input_revision_id);
-    let item = grouped.get(inputId);
-    if (item === undefined) {
-      item = {
-        input_revision_id: inputId,
-        recording_id: String(row.recording_id),
-        artist: String(row.artist),
-        title: String(row.title),
-        album: typeof row.album === "string" ? row.album : null,
-        isrc: typeof row.isrc === "string" ? row.isrc : null,
-        duration_ms: Number(row.duration_ms),
-        language: String(row.language),
-        created_at: Number(row.created_at),
-        lyrics_count: Number(row.lyrics_count),
-        sources: [],
-      };
-      grouped.set(inputId, item);
-    }
-    if (typeof row.source_id === "string")
-      item.sources.push({
-        id: row.source_id,
-        url: String(row.url),
-        video_id: String(row.video_id),
-        rank: Number(row.rank),
-        official: row.official === 1,
-        source_type: String(row.source_type),
-        score: Number(row.score),
-        metadata: typeof row.metadata === "string" ? (JSON.parse(row.metadata) as Record<string, unknown>) : {},
-      });
-  }
-  return json({ source_items: [...grouped.values()], candidate_items: candidates.results });
 }
 
 async function updateSourceReview(env: WorkerEnv, actor: Actor, inputId: string, value: Record<string, unknown>): Promise<Response> {
@@ -1544,6 +1475,10 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
         (SELECT COUNT(*) FROM input_revisions i WHERE i.recording_id=r.id) revision_count,
         (SELECT COUNT(*) FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id WHERE i.recording_id=r.id) alignment_count,
         (SELECT COUNT(*) FROM media_sources s WHERE s.recording_id=r.id) source_count,
+        EXISTS(SELECT 1 FROM input_revisions i WHERE i.recording_id=r.id AND i.state='draft' AND i.source_id IS NULL
+               AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.input_revision_id=i.id)) needs_source,
+        (SELECT COUNT(*) FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id
+         WHERE i.recording_id=r.id AND c.status IN ('draft','pending')) needs_timing,
         (SELECT j.state FROM jobs j JOIN input_revisions i ON i.id=j.input_revision_id WHERE i.recording_id=r.id ORDER BY j.created_at DESC LIMIT 1) job_state,
         (SELECT j.current_stage FROM jobs j JOIN input_revisions i ON i.id=j.input_revision_id WHERE i.recording_id=r.id ORDER BY j.created_at DESC LIMIT 1) current_stage,
         EXISTS(SELECT 1 FROM releases x WHERE x.recording_id=r.id AND x.state='active') published
@@ -1561,7 +1496,6 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
       ),
     });
   }
-  if (request.method === "GET" && url.pathname === "/admin/api/reviews") return reviewQueues(env, actor);
   if (request.method === "GET" && url.pathname === "/admin/api/audit") {
     requirePermission(actor, "audit.read");
     return json({ items: await list(env.ADMIN_DB, "SELECT * FROM audit_log ORDER BY id DESC LIMIT 500") });

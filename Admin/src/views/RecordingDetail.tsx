@@ -1,14 +1,22 @@
-import { ArrowLeft, Check, ExternalLink, Play, Search, TriangleAlert } from "lucide-react";
+import { ArrowLeft, AudioLines, Check, ChevronRight, ExternalLink, Play, Save, Search, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { useToast } from "../Toast";
-import { number, parseObject, text, time, type AdminItem } from "./utils";
+import { number, parseObject, stateLabel, stateTone, text, time, type AdminItem } from "./utils";
 
 interface Detail {
   recording: AdminItem;
   sources: AdminItem[];
   revisions: AdminItem[];
+  candidates: AdminItem[];
 }
+
+const qualityNames: Record<string, string> = {
+  duration_match: "길이",
+  language_match: "언어",
+  monotonicity: "순서",
+  token_coverage: "토큰",
+};
 
 interface SearchHit {
   video_id: string;
@@ -59,7 +67,17 @@ function Player({ videoId, title }: { videoId: string; title: string }) {
   );
 }
 
-export function RecordingDetail({ recordingId, onBack, refresh }: { recordingId: string; onBack: () => void; refresh: () => void }) {
+export function RecordingDetail({
+  recordingId,
+  onBack,
+  onEditTiming,
+  refresh,
+}: {
+  recordingId: string;
+  onBack: () => void;
+  onEditTiming: (candidateId: string) => void;
+  refresh: () => void;
+}) {
   const { showToast } = useToast();
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState("");
@@ -68,12 +86,18 @@ export function RecordingDetail({ recordingId, onBack, refresh }: { recordingId:
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [isrc, setIsrc] = useState("");
+  const [language, setLanguage] = useState<"auto" | "ko" | "en" | "ja">("auto");
+  const [lyrics, setLyrics] = useState("");
 
   const load = useCallback(() => {
     api<Detail>(`/recordings/${encodeURIComponent(recordingId)}`)
       .then((value) => {
         setDetail(value);
         setQuery((current) => (current.length > 0 ? current : `${text(value.recording.artist)} ${text(value.recording.title)}`.trim()));
+        setIsrc((current) => (current.length > 0 ? current : text(value.recording.isrc, "")));
+        const found = text(value.recording.language);
+        if (found === "ko" || found === "en" || found === "ja") setLanguage(found);
       })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "곡 정보를 불러오지 못했습니다"));
   }, [recordingId]);
@@ -99,18 +123,33 @@ export function RecordingDetail({ recordingId, onBack, refresh }: { recordingId:
   const hasIsrc = text(recording.isrc).length > 0;
   const hasLyrics = draft !== undefined && number(draft.lyrics_count) > 0;
   const canSelect = draftId !== null && hasIsrc && hasLyrics;
-  const blockedReason = !hasIsrc
-    ? "ISRC가 없어 작업을 만들 수 없습니다. 소스 검수 화면에서 먼저 입력하세요."
-    : draftId === null
+  const needsMetadata = draftId !== null && (!hasIsrc || !hasLyrics);
+  const blockedReason =
+    draftId === null && detail.sources.some((source) => source.selected === 1)
       ? "이미 작업이 만들어져 소스를 바꿀 수 없습니다."
-      : !hasLyrics
-        ? "전처리된 가사가 없습니다. 소스 검수 화면에서 먼저 입력하세요."
+      : draftId === null
+        ? "소스를 확정할 수 있는 리비전이 없습니다."
         : "";
+
+  async function saveMetadata(notify = true): Promise<void> {
+    if (draftId === null) return;
+    await api(`/source-reviews/${encodeURIComponent(draftId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ isrc, language, ...(lyrics.trim().length > 0 ? { lyrics } : {}) }),
+    });
+    if (notify) {
+      showToast("곡 정보와 가사를 저장하고 전처리했습니다.");
+      load();
+      refresh();
+    }
+  }
 
   async function choose(value: { source_id: string } | { url: string }): Promise<void> {
     if (draftId === null) return;
     setBusy(true);
     try {
+      // 정보가 비어 있으면 확정과 같은 동작으로 먼저 채운다 — 두 번 누르게 하지 않는다.
+      if (!hasIsrc || !hasLyrics) await saveMetadata(false);
       await api(`/source-reviews/${encodeURIComponent(draftId)}/select`, { method: "POST", body: JSON.stringify(value) });
       showToast("음원을 확정하고 Generator 작업을 생성했습니다.");
       load();
@@ -145,7 +184,9 @@ export function RecordingDetail({ recordingId, onBack, refresh }: { recordingId:
   }
 
   const selected = detail.sources.find((source) => source.selected === 1);
-  const candidates = detail.sources.filter((source) => source.selected !== 1);
+  const alternatives = detail.sources.filter((source) => source.selected !== 1);
+  const validIsrc = /^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$/u.test(isrc.replaceAll("-", "").trim().toUpperCase());
+  const canSaveMetadata = (hasIsrc || validIsrc) && (hasLyrics || lyrics.trim().length > 0);
 
   return (
     <div className="recording-detail">
@@ -183,6 +224,70 @@ export function RecordingDetail({ recordingId, onBack, refresh }: { recordingId:
         </p>
       )}
 
+      {needsMetadata && (
+        <section className="detail-section">
+          <h3>곡 정보 보완</h3>
+          <p className="detail-empty">
+            {!hasIsrc && "ISRC가 없습니다. "}
+            {!hasLyrics && "전처리된 가사가 없습니다. "}
+            음원을 고르면 함께 저장되고, 아래 버튼으로 먼저 저장할 수도 있습니다.
+          </p>
+          <div className="source-metadata-form">
+            <label>
+              <span>ISRC</span>
+              <input
+                value={isrc}
+                onChange={(event) => setIsrc(event.target.value.toUpperCase())}
+                disabled={busy}
+                placeholder="KRA302600330"
+                maxLength={15}
+                className="form-control"
+              />
+            </label>
+            <label>
+              <span>가사 언어</span>
+              <select
+                value={language}
+                onChange={(event) => setLanguage(event.target.value as "auto" | "ko" | "en" | "ja")}
+                disabled={busy}
+                className="form-control"
+              >
+                <option value="auto">자동 감지</option>
+                <option value="ko">한국어</option>
+                <option value="en">영어</option>
+                <option value="ja">일본어</option>
+              </select>
+            </label>
+            {!hasLyrics && (
+              <label className="lyrics-field">
+                <span>원문 가사</span>
+                <textarea
+                  value={lyrics}
+                  onChange={(event) => setLyrics(event.target.value)}
+                  disabled={busy}
+                  rows={7}
+                  placeholder="확보한 원문 가사를 붙여넣으세요. 저장하면 원문과 전처리 리비전을 만듭니다."
+                  className="form-control"
+                />
+              </label>
+            )}
+            <button
+              disabled={!canSaveMetadata || busy}
+              onClick={() => {
+                setBusy(true);
+                void saveMetadata()
+                  .catch((reason: unknown) => showToast(reason instanceof Error ? reason.message : "정보 저장 실패", { variant: "error" }))
+                  .finally(() => setBusy(false));
+              }}
+              className="primary-button"
+            >
+              <Save size={13} />
+              정보 저장
+            </button>
+          </div>
+        </section>
+      )}
+
       <section className="detail-section">
         <h3>확정된 음원</h3>
         {selected === undefined ? (
@@ -193,11 +298,48 @@ export function RecordingDetail({ recordingId, onBack, refresh }: { recordingId:
       </section>
 
       <section className="detail-section">
-        <h3>수집된 후보 {candidates.length > 0 && <b>{candidates.length}</b>}</h3>
-        {candidates.length === 0 ? (
+        <h3>타이밍 후보 {detail.candidates.length > 0 && <b>{detail.candidates.length}</b>}</h3>
+        {detail.candidates.length === 0 ? (
+          <p className="detail-empty">
+            {selected === undefined
+              ? "음원을 확정하면 Generator가 정렬을 시작합니다."
+              : "Generator가 정렬을 마치면 품질 지표와 함께 표시됩니다."}
+          </p>
+        ) : (
+          detail.candidates.map((candidate) => {
+            const score = Math.max(0, Math.min(1, number(candidate.quality_score)));
+            const metrics = Object.entries(parseObject(candidate.quality))
+              .filter(([key, value]) => key in qualityNames && typeof value === "number")
+              .slice(0, 4);
+            return (
+              <button key={text(candidate.id)} className="timing-row" onClick={() => onEditTiming(text(candidate.id))}>
+                <span className="timing-score">{Math.round(score * 100)}</span>
+                <span className="timing-main">
+                  <strong>
+                    {text(candidate.provider)} 가사 · {text(candidate.language).toUpperCase()}
+                  </strong>
+                  <span className="timing-metrics">
+                    {metrics.map(([key, value]) => (
+                      <em key={key}>
+                        {qualityNames[key]} {Math.round(Number(value) * 100)}
+                      </em>
+                    ))}
+                  </span>
+                </span>
+                <span className={`state-badge ${stateTone(candidate.status)}`}>{stateLabel(candidate.status)}</span>
+                <ChevronRight size={16} />
+              </button>
+            );
+          })
+        )}
+      </section>
+
+      <section className="detail-section">
+        <h3>수집된 후보 {alternatives.length > 0 && <b>{alternatives.length}</b>}</h3>
+        {alternatives.length === 0 ? (
           <p className="detail-empty">Collector가 찾은 후보가 없습니다.</p>
         ) : (
-          candidates.map((source) => (
+          alternatives.map((source) => (
             <SourceRow
               key={text(source.id)}
               source={source}

@@ -1,4 +1,4 @@
-import { CheckCircle2, Disc3, Hourglass } from "lucide-react";
+import { CheckCircle2, Disc3, Hourglass, ListChecks } from "lucide-react";
 import { useState } from "react";
 import { number, stageLabel, text, time, type AdminItem } from "./utils";
 
@@ -8,7 +8,7 @@ function duration(value: unknown): string {
 }
 
 export function RecordingsView({ items, onSelect }: { items: AdminItem[]; onSelect: (id: string) => void }) {
-  const [filter, setFilter] = useState<"all" | "pending" | "complete">("all");
+  const [filter, setFilter] = useState<"all" | "review" | "pending" | "complete">("all");
   if (items.length === 0)
     return (
       <div className="empty-panel">
@@ -17,16 +17,28 @@ export function RecordingsView({ items, onSelect }: { items: AdminItem[]; onSele
         <p>Collector가 확인한 첫 곡부터 카탈로그에 추가됩니다.</p>
       </div>
     );
-  const rows = items.map((item) => ({ item, lifecycle: lifecycle(item) }));
+  const rows = items.map((item) => ({ item, lifecycle: lifecycle(item), waiting: needsReview(item) }));
   const pending = rows.filter((row) => row.lifecycle.group === "pending").length;
   const complete = rows.length - pending;
-  const visible = filter === "all" ? rows : rows.filter((row) => row.lifecycle.group === filter);
+  // 검수 대기는 별도 화면이 아니라 이 목록의 필터다 — 곡 하나가 곧 할 일 하나다.
+  const review = rows.filter((row) => row.waiting !== null).length;
+  const visible =
+    filter === "all"
+      ? rows
+      : filter === "review"
+        ? rows.filter((row) => row.waiting !== null)
+        : rows.filter((row) => row.lifecycle.group === filter);
   return (
     <div className="recordings-view">
       <div className="recording-filters" role="group" aria-label="곡 처리 상태 필터">
         <button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>
           <span>전체</span>
           <b>{rows.length}</b>
+        </button>
+        <button className={filter === "review" ? "active" : ""} onClick={() => setFilter("review")}>
+          <ListChecks size={13} />
+          <span>검수 대기</span>
+          <b>{review}</b>
         </button>
         <button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>
           <Hourglass size={13} />
@@ -41,7 +53,9 @@ export function RecordingsView({ items, onSelect }: { items: AdminItem[]; onSele
       </div>
       {visible.length === 0 ? (
         <div className="empty-panel compact">
-          <strong>{filter === "complete" ? "완료된 곡이 없습니다" : "대기 중인 곡이 없습니다"}</strong>
+          <strong>
+            {filter === "complete" ? "완료된 곡이 없습니다" : filter === "review" ? "검수할 곡이 없습니다" : "대기 중인 곡이 없습니다"}
+          </strong>
         </div>
       ) : (
         <div className="table-wrap">
@@ -68,7 +82,7 @@ export function RecordingsView({ items, onSelect }: { items: AdminItem[]; onSele
               </tr>
             </thead>
             <tbody>
-              {visible.map(({ item, lifecycle }) => (
+              {visible.map(({ item, lifecycle, waiting }) => (
                 <tr
                   key={text(item.id)}
                   className="row-link"
@@ -96,7 +110,7 @@ export function RecordingsView({ items, onSelect }: { items: AdminItem[]; onSele
                   <td className="numeric cell-mono">{number(item.revision_count)}</td>
                   <td className="numeric cell-mono">{number(item.alignment_count)}</td>
                   <td>
-                    <span className={`state-badge ${lifecycle.tone}`}>{lifecycle.label}</span>
+                    <span className={`state-badge ${waiting === null ? lifecycle.tone : "warn"}`}>{waiting ?? lifecycle.label}</span>
                   </td>
                   <td className="cell-muted">{time(item.updated_at)}</td>
                 </tr>
@@ -107,6 +121,13 @@ export function RecordingsView({ items, onSelect }: { items: AdminItem[]; onSele
       )}
     </div>
   );
+}
+
+/** 사람이 손대야 넘어가는 곡인지, 그리고 무엇을 기다리는지. */
+function needsReview(item: AdminItem): string | null {
+  if (number(item.needs_timing) > 0) return "타이밍 검수";
+  if (item.needs_source === 1) return number(item.source_count) > 0 ? "음원 선택" : "음원 없음";
+  return null;
 }
 
 interface Lifecycle {
