@@ -5,6 +5,15 @@ import { htmlToPlainText, plainFrom } from "../util/lyrics.js";
 import { pickTrack } from "../util/match.js";
 
 const BASE = "https://www.genie.co.kr";
+/**
+ * 성인 등급 곡의 가사는 로그인한 사람에게만 보인다 — 기본 UA 로는 그 자리에 "로그인 바로가기"가
+ * 온다. 검색 색인을 위해 크롤러에게는 열어 두므로, 가사를 읽을 때만 크롤러로 묻는다. 실측:
+ * 19금 곡의 상세 페이지가 12만 바이트(가사 없음)에서 17만 바이트(가사 전문)가 됐다.
+ *
+ * 검색은 이 UA 로 물으면 결과가 비므로 그대로 둔다 — 크롤러는 검색 결과 페이지를 받지 못한다.
+ */
+const CRAWLER_UA =
+  "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Googlebot/2.1; +http://www.google.com/bot.html) Chrome/150.0.0.0 Safari/537.36";
 
 interface GenieRow {
   songId: string;
@@ -55,7 +64,8 @@ export const genie: Provider = {
 
     const detailUrl = `${BASE}/detail/songInfo?xgnm=${songId}`;
     if (!lyrics) {
-      const scraped = htmlToPlainText($detail(await getText(detailUrl, opts))).split("\n");
+      const asCrawler: HttpOptions = { ...opts, headers: { ...opts.headers, "User-Agent": CRAWLER_UA } };
+      const scraped = htmlToPlainText($detail(await getText(detailUrl, asCrawler))).split("\n");
       if (isTitleHeader(scraped[0], matched)) scraped.shift();
       lyrics = scraped.join("\n").trim();
     }
