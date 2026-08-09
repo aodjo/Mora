@@ -27,7 +27,8 @@ test("runtime configuration rejects unsafe values", () => {
     ["server.dump_url", "https://user:secret@example.com/dump.sqlite"],
     ["server.admin_origin", "https://mora.example.com/admin"],
     ["server.admin_rp_id", "https://mora.example.com"],
-    ["collector.daily_budget", "0"],
+    ["collector.daily_budget", "-1"],
+    ["collector.daily_budget", "5001"],
     ["collector.markets", "KR,GB"],
     ["collector.songtitle_providers", "melon,unknown"],
     ["collector.lyrics_library_module", "relative/provider.js"],
@@ -37,4 +38,14 @@ test("runtime configuration rejects unsafe values", () => {
       (error) => error instanceof ServiceError && error.code === "INVALID_SETTING_VALUE",
     );
   }
+});
+
+test("collecting nothing is the default, so starting a Collector does not start collecting", () => {
+  // 켰다는 이유만으로 곡이 모이면 안 된다 — 모을지 말지는 사람이 상황판에서 정한다.
+  const definition = runtimeConfigDefinitions.find((item) => item.key === "collector.daily_budget");
+  assert.ok(definition !== undefined);
+  assert.equal(definition.defaultValue, "0");
+  assert.equal(definition.min, 0);
+  // 0 이 유효해야 콘솔의 C 가 설정을 깨뜨리지 않는다.
+  assert.equal(normalizeRuntimeValue(definition, "0"), "0");
 });

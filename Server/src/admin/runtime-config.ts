@@ -101,15 +101,16 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
   {
     key: "collector.daily_budget",
     label: "수집 목표 곡 수",
-    description: "이번 회차에 전체 Collector가 함께 채울 곡 수입니다. 상황판에서 조절합니다.",
+    description: "전체 Collector가 함께 대기열에 채워 둘 곡 수입니다. 상황판에서 조절합니다.",
     // 얼마나 모을지는 설정이 아니라 운영 판단이라, 진행 상황 옆에서 바로 만지는 편이 낫다.
     ownedElsewhere: true,
     type: "number",
     secret: false,
     component: "collector",
     environmentName: "COLLECTOR_DAILY_BUDGET",
-    defaultValue: "300",
-    min: 1,
+    // 켰다는 이유만으로 수집이 시작되면 안 된다. 모을지 말지는 사람이 정하고, 기본은 정하지 않은 것이다.
+    defaultValue: "0",
+    min: 0,
     max: 5000,
   },
   {

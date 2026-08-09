@@ -72,3 +72,27 @@ test("one chart failing does not empty the market", async () => {
   const seeds = await chartSeeds("KR", fetcher);
   assert.equal(seeds.length, 2);
 });
+
+test("an artist's two names are separated by a space, not by markup", async () => {
+  // 실측: 멜론이 이름 사이에 &nbsp; 를 쓴다. "RESCENE&nbsp;(리센느)" 로 수집돼 카탈로그와
+  // 맞지 않았고 화면에도 그대로 나왔다.
+  const page = `
+<tr><td>
+<div class="ellipsis rank01"><span><a href="javascript:melon.play(1);" title="재생">LOVE&nbsp;ATTACK</a></span></div>
+<div class="ellipsis rank02"><a href="javascript:melon.link(2);" title="RESCENE">RESCENE&nbsp;(리센느)</a></div>
+</td></tr>`;
+  const hits = await melonTop100((async () => new Response(page)) as typeof fetch);
+  assert.equal(hits[0]?.artist, "RESCENE (리센느)");
+  assert.equal(hits[0]?.title, "LOVE ATTACK");
+});
+
+test("a numeric entity is a character too", async () => {
+  const page = `
+<tr><td>
+<div class="ellipsis rank01"><span><a href="javascript:melon.play(1);" title="재생">&#66;oy</a></span></div>
+<div class="ellipsis rank02"><a href="javascript:melon.link(2);" title="Ada">&#x41;da</a></div>
+</td></tr>`;
+  const hits = await melonTop100((async () => new Response(page)) as typeof fetch);
+  assert.equal(hits[0]?.title, "Boy");
+  assert.equal(hits[0]?.artist, "Ada");
+});

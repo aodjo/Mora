@@ -1,4 +1,5 @@
 import type { RecordingSeed } from "./types.js";
+import { decodeHtml } from "./html.js";
 
 type Market = RecordingSeed["market"];
 
@@ -25,8 +26,8 @@ export async function melonTop100(fetcher: typeof fetch = fetch): Promise<Record
   );
   const seeds: RecordingSeed[] = [];
   for (const row of rows) {
-    const title = decode(row[1] ?? "");
-    const artist = decode(row[2] ?? "");
+    const title = decodeHtml(row[1] ?? "");
+    const artist = decodeHtml(row[2] ?? "");
     if (title.length === 0 || artist.length === 0) continue;
     seeds.push(seed(artist, title, "KR", seeds.length));
   }
@@ -64,14 +65,4 @@ function seed(artist: string, title: string, market: Market, rank: number): Reco
 /** Popularity by final position, so a short chart still spans the full range. */
 function rerank(seeds: RecordingSeed[]): RecordingSeed[] {
   return seeds.map((entry, index) => ({ ...entry, popularity: 1 - index / Math.max(1, seeds.length) }));
-}
-
-function decode(value: string): string {
-  return value
-    .replace(/&amp;/gu, "&")
-    .replace(/&lt;/gu, "<")
-    .replace(/&gt;/gu, ">")
-    .replace(/&quot;/gu, '"')
-    .replace(/&#0?39;/gu, "'")
-    .trim();
 }

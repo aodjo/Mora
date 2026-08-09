@@ -450,6 +450,17 @@ async function completeBasketSong(env: WorkerEnv, actor: Actor, id: string, valu
   return json({ accepted: true });
 }
 
+/**
+ * How many songs should be waiting, as the console set it.
+ *
+ * Unset means nobody has asked for any. Falling back to a number here made starting a
+ * Collector enough to begin collecting, which is a decision the operator had not made.
+ */
+function collectionTarget(stored: string | undefined): number {
+  const value = Number(stored);
+  return Number.isFinite(value) && value > 0 ? Math.min(5000, Math.round(value)) : 0;
+}
+
 /** How long a Collector may hold the discovery job before another may take it. */
 const DISCOVERY_LEASE_MS = 3 * 60_000;
 /**
@@ -501,7 +512,7 @@ async function claimCollectionWork(env: WorkerEnv, actor: Actor): Promise<Respon
   }
 
   // Nothing queued. Someone has to go and look, but only one of us.
-  const target = Number((await runtimeValue(env, "collector.daily_budget")) ?? 300);
+  const target = collectionTarget(await runtimeValue(env, "collector.daily_budget"));
   const outstanding = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue").first<{ n: number }>();
   const missing = Math.max(0, target - (outstanding?.n ?? 0));
   if (missing === 0) return json({ work: { kind: "idle" } });
@@ -529,7 +540,7 @@ async function claimCollectionWork(env: WorkerEnv, actor: Actor): Promise<Respon
 async function fillCollectionQueue(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "collector.submit");
   const songs = Array.isArray(value.songs) ? value.songs : [];
-  const target = Number((await runtimeValue(env, "collector.daily_budget")) ?? 300);
+  const target = collectionTarget(await runtimeValue(env, "collector.daily_budget"));
   const outstanding = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue").first<{ n: number }>();
   let room = Math.max(0, target - (outstanding?.n ?? 0));
   const now = Date.now();
@@ -592,7 +603,7 @@ async function readCollectionQueue(env: WorkerEnv, actor: Actor): Promise<Respon
     n: number;
   }>();
   const counts = Object.fromEntries(results.map((row) => [row.state, row.n]));
-  const target = Number((await runtimeValue(env, "collector.daily_budget")) ?? 300);
+  const target = collectionTarget(await runtimeValue(env, "collector.daily_budget"));
   return json({ target, pending: counts.pending ?? 0, claimed: counts.claimed ?? 0 });
 }
 

@@ -1,4 +1,5 @@
 import type { RecordingSeed } from "./types.js";
+import { decodeHtml, stripTags } from "./html.js";
 import { LyricFindCatalogue } from "./lyricfind.js";
 import { SpotifyClient } from "./spotify.js";
 
@@ -43,8 +44,8 @@ export async function searchMelon(query: string, fetcher: typeof fetch = fetch):
     const artist = /goArtistDetail\('\d+'\)[\s\S]{0,200}?class="fc_mgray">([^<]+)<\/a>/u.exec(row)?.[1];
     const album = /goAlbumDetail\('\d+'\);"[^>]*class="fc_mgray">([^<]+)<\/a>/u.exec(row)?.[1];
     if (title === undefined || artist === undefined) continue;
-    const entry: SongHit = { provider: "melon", title: decode(title), artist: decode(artist) };
-    if (album !== undefined) entry.album = decode(album);
+    const entry: SongHit = { provider: "melon", title: decodeHtml(title), artist: decodeHtml(artist) };
+    if (album !== undefined) entry.album = decodeHtml(album);
     if (entry.title.length === 0 || entry.artist.length === 0) continue;
     if (hits.some((seen) => seen.title === entry.title && seen.artist === entry.artist)) continue;
     hits.push(entry);
@@ -69,9 +70,9 @@ export async function searchGenie(query: string, fetcher: typeof fetch = fetch):
     if (title === undefined || artist === undefined) continue;
     hits.push({
       provider: "genie",
-      title: strip(title),
-      artist: strip(artist),
-      ...(album === undefined ? {} : { album: strip(album) }),
+      title: stripTags(title),
+      artist: stripTags(artist),
+      ...(album === undefined ? {} : { album: stripTags(album) }),
     });
     if (hits.length >= 20) break;
   }
@@ -215,7 +216,7 @@ export interface MergedHit {
 export function merge(hits: SongHit[]): MergedHit[] {
   const merged = new Map<string, MergedHit>();
   for (const hit of hits) {
-    const key = `${fold(hit.artist)} ${fold(hit.title)}`;
+    const key = `${fold(hit.artist)}\0${fold(hit.title)}`;
     const existing = merged.get(key);
     if (existing === undefined) {
       merged.set(key, {
@@ -267,21 +268,4 @@ function fold(value: string): string {
     .normalize("NFKC")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, "");
-}
-
-function strip(value: string): string {
-  return decode(value.replace(/<[^>]*>/gu, " "))
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
-function decode(value: string): string {
-  return value
-    .replace(/&amp;/gu, "&")
-    .replace(/&lt;/gu, "<")
-    .replace(/&gt;/gu, ">")
-    .replace(/&quot;/gu, '"')
-    .replace(/&#0?39;/gu, "'")
-    .replace(/&nbsp;/gu, " ")
-    .trim();
 }
