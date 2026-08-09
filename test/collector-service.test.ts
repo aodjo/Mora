@@ -142,3 +142,26 @@ test("a song collected during the run is not collected twice", () => {
   assert.equal(index.hasName(swim), true);
   assert.equal(index.hasIsrc({ ...seed, artist: "방탄소년단", title: "Swim", isrc: "USA2P2600449" }), true);
 });
+
+test("a Spotify rate limit stops the calls instead of hammering through the run", async () => {
+  // 실측: 429 한 번에 retry-after 61159초(17시간). 계속 두드리면 차단이 연장된다.
+  let searches = 0;
+  const fetcher = (async (input: string | URL | Request) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("accounts.spotify.com")) return Response.json({ access_token: "t", expires_in: 3600 });
+    searches++;
+    return new Response("limited", { status: 429, headers: { "retry-after": "61159" } });
+  }) as typeof fetch;
+  const logged: string[] = [];
+  const client = new SpotifyClient("id", "secret", fetcher, (message) => logged.push(message));
+
+  await assert.rejects(() => client.identify({ artist: "BTS", title: "SWIM", popularity: 1, freshness: 0, market: "KR" }));
+  assert.equal(searches, 1);
+  assert.match(logged[0] ?? "", /시간 동안 Spotify 없이/u);
+  assert.ok(client.blockedForMs > 60_000_000, String(client.blockedForMs));
+
+  // 차단 중에는 요청 없이 즉시 물러난다 — 280곡이 429를 280번 만들지 않는다.
+  for (let i = 0; i < 5; i++)
+    assert.equal(await client.identify({ artist: "IU", title: "Love wins all", popularity: 1, freshness: 0, market: "KR" }), undefined);
+  assert.equal(searches, 1);
+});

@@ -81,7 +81,11 @@ async function run(config: CollectorRuntimeConfig): Promise<void> {
     markets: config.markets,
     lyricsProvider: await loadProvider(config),
     ...(config.spotifyClientId !== undefined && config.spotifyClientSecret !== undefined
-      ? { spotify: new SpotifyClient(config.spotifyClientId, config.spotifyClientSecret) }
+      ? {
+          spotify: new SpotifyClient(config.spotifyClientId, config.spotifyClientSecret, fetch, (message) =>
+            process.stdout.write(`${message}\n`),
+          ),
+        }
       : {}),
     onProgress: (progress) => {
       if (progress.stage === "discovering") {
