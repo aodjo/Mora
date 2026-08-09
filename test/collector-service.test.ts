@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CollectedIndex,
+  CollectorService,
   canAutoSelect,
   hasNoLyricsToAlign,
   lyricsSearchInput,
@@ -164,4 +165,60 @@ test("a Spotify rate limit stops the calls instead of hammering through the run"
   for (let i = 0; i < 5; i++)
     assert.equal(await client.identify({ artist: "IU", title: "Love wins all", popularity: 1, freshness: 0, market: "KR" }), undefined);
   assert.equal(searches, 1);
+});
+
+test("LyricFind fills what a rate-limited Spotify cannot", async () => {
+  // Spotify가 17시간 차단된 실행: ISRC와 카탈로그 길이가 LyricFind에서 온다.
+  const submitted: Array<Record<string, unknown>> = [];
+  const searchSeeds: RecordingSeed[] = [];
+  const service = new CollectorService({
+    adminUrl: "https://admin.test",
+    adminToken: "t",
+    userAgent: "test",
+    dailyBudget: 5,
+    markets: ["KR"],
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/collector/collected")) return Response.json({ recordings: [], skipped: [] });
+      if (url.includes("/collector/recordings")) {
+        submitted.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return Response.json({ job_id: "job-1", deduplicated: false });
+      }
+      return Response.json({ accepted: true });
+    }) as typeof fetch,
+    youtubeSearch: async (seed) => {
+      // 보강이 검색까지 도달했는지가 핵심이다 — 드리프트 계산은 실제 검색 모듈을 흉내 낸다.
+      searchSeeds.push(seed);
+      return [
+        {
+          url: "https://music.youtube.com/watch?v=abcdefghijk",
+          video_id: "abcdefghijk",
+          title: seed.title,
+          artist: seed.artist,
+          duration_ms: 159_007,
+          official: false,
+          source_type: "unofficial",
+          score: 0.95,
+          ...(seed.catalogue_duration_ms === undefined ? {} : { catalogue_drift_ms: Math.abs(seed.catalogue_duration_ms - 159_007) }),
+        },
+      ];
+    },
+    lyricsProvider: { search: async () => [{ provider: "test", text: "가사 한 줄", fetched_at: Date.now() }] },
+    spotify: {
+      identify: async () => {
+        throw new Error("SPOTIFY_RATE_LIMITED");
+      },
+    },
+    lyricfind: { identify: async () => ({ isrc: "USA2P2600449", durationMs: 159_000 }) },
+  });
+  const report = await service.collect([{ artist: "BTS", title: "SWIM", popularity: 1, freshness: 0, market: "KR" }]);
+  assert.equal(report.submitted, 1);
+  assert.equal(searchSeeds[0]?.isrc, "USA2P2600449");
+  assert.equal(searchSeeds[0]?.catalogue_duration_ms, 159_000);
+  const recording = submitted[0]?.recording as { isrc?: string };
+  assert.equal(recording.isrc, "USA2P2600449");
+  // 길이가 생겼으니 드리프트 게이트가 비공식 업로드도 자동 선택할 수 있다.
+  const sources = submitted[0]?.sources as Array<{ selected?: boolean; catalogue_drift_ms?: number }>;
+  assert.equal(sources[0]?.selected, true);
+  assert.equal(sources[0]?.catalogue_drift_ms, 7);
 });

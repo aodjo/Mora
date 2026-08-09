@@ -8,6 +8,7 @@ import { startCollectorPairing, waitForCollectorPairing } from "./pairing.js";
 import { CollectorService } from "./service.js";
 import { createSongTitleProvider } from "./songtitle-provider.js";
 import { startSearchWorker } from "./search-worker.js";
+import { LyricFindCatalogue } from "./lyricfind.js";
 import { SpotifyClient } from "./spotify.js";
 
 try {
@@ -87,6 +88,7 @@ async function run(config: CollectorRuntimeConfig): Promise<void> {
           ),
         }
       : {}),
+    lyricfind: new LyricFindCatalogue(),
     onProgress: (progress) => {
       if (progress.stage === "discovering") {
         process.stdout.write(`차트 후보를 수집하는 중: ${progress.markets.join(", ")}\n`);

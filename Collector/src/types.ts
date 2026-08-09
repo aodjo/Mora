@@ -43,6 +43,8 @@ export interface CollectorConfig {
   fetch?: typeof globalThis.fetch;
   youtubeSearch?: (seed: RecordingSeed) => Promise<YoutubeCandidate[]>;
   spotify?: { identify: (seed: RecordingSeed) => Promise<{ isrc?: string; durationMs?: number; album?: string } | undefined> };
+  /** Keyless catalogue fallback; fills whatever Spotify could not. */
+  lyricfind?: { identify: (seed: RecordingSeed) => Promise<{ isrc?: string; durationMs?: number; album?: string } | undefined> };
   onProgress?: (progress: CollectorProgress) => void;
 }
 

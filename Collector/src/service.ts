@@ -87,19 +87,28 @@ export class CollectorService {
    * every real candidate below auto-selection. A Spotify outage costs nothing but the gap.
    */
   async #enrich(seed: RecordingSeed): Promise<RecordingSeed> {
-    if (this.config.spotify === undefined) return seed;
-    const found = await this.config.spotify.identify(seed).catch(() => undefined);
-    if (found === undefined) return seed;
-    // Different ISRCs mean different releases, so Spotify's length describes another cut and is
-    // no longer evidence about ours.
-    const sameRelease = seed.isrc === undefined || found.isrc === undefined || seed.isrc === found.isrc;
-    const catalogue = sameRelease ? found.durationMs : undefined;
-    return {
-      ...seed,
-      ...(seed.isrc === undefined && found.isrc !== undefined ? { isrc: found.isrc } : {}),
-      ...(catalogue === undefined ? {} : { duration_ms: catalogue, catalogue_duration_ms: catalogue }),
-      ...(seed.album === undefined && found.album !== undefined ? { album: found.album } : {}),
-    };
+    // Spotify first for its exact lengths, then LyricFind for what Spotify missed — or for
+    // everything, the day Spotify rate-limits the whole run.
+    let enriched = seed;
+    for (const catalogue of [this.config.spotify, this.config.lyricfind]) {
+      if (catalogue === undefined) continue;
+      if (enriched.isrc !== undefined && enriched.duration_ms !== undefined) break;
+      const found = await catalogue.identify(enriched).catch(() => undefined);
+      if (found === undefined) continue;
+      // Different ISRCs mean different releases, so the catalogue's length describes another
+      // cut and is no longer evidence about ours.
+      const sameRelease = enriched.isrc === undefined || found.isrc === undefined || enriched.isrc === found.isrc;
+      const length = sameRelease ? found.durationMs : undefined;
+      enriched = {
+        ...enriched,
+        ...(enriched.isrc === undefined && found.isrc !== undefined ? { isrc: found.isrc } : {}),
+        ...(length === undefined || enriched.catalogue_duration_ms !== undefined
+          ? {}
+          : { duration_ms: length, catalogue_duration_ms: length }),
+        ...(enriched.album === undefined && found.album !== undefined ? { album: found.album } : {}),
+      };
+    }
+    return enriched;
   }
 
   /** An outage here costs a wasted run, not a wrong one, so it degrades to collecting everything. */
