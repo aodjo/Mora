@@ -381,18 +381,54 @@ async function completeSearchRequest(env: WorkerEnv, actor: Actor, id: string, v
  */
 async function collectorCollected(env: WorkerEnv, actor: Actor): Promise<Response> {
   requirePermission(actor, "collector.submit");
-  const { results } = await env.ADMIN_DB.prepare("SELECT artist,title,isrc FROM recordings").all<{
-    artist: string;
-    title: string;
-    isrc: string | null;
-  }>();
+  const now = Date.now();
+  const [recordings, skipped] = await Promise.all([
+    env.ADMIN_DB.prepare("SELECT artist,title,isrc FROM recordings").all<{ artist: string; title: string; isrc: string | null }>(),
+    // A skip whose retry time has come is offered again; an instrumental never is.
+    env.ADMIN_DB.prepare("SELECT artist,title,reason FROM skipped_songs WHERE retry_after IS NULL OR retry_after > ?1")
+      .bind(now)
+      .all<{ artist: string; title: string; reason: string }>(),
+  ]);
   return json({
-    recordings: results.map((row) => ({
+    recordings: recordings.results.map((row) => ({
       artist: row.artist,
       title: row.title,
       ...(row.isrc === null ? {} : { isrc: row.isrc }),
     })),
+    skipped: skipped.results.map((row) => ({ artist: row.artist, title: row.title, reason: row.reason })),
   });
+}
+
+/** How long before a skip is worth another try. Instrumentals never gain words. */
+const SKIP_RETRY_MS: Record<string, number | null> = {
+  instrumental: null,
+  "no-lyrics": 30 * 24 * 60 * 60_000,
+};
+
+/**
+ * A song the run decided not to collect. Nothing else records this — the recording is never
+ * created — so without it every run pays five lyrics providers again to reach the same answer.
+ */
+async function collectorSkipped(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
+  requirePermission(actor, "collector.submit");
+  const artist = requiredString(value.artist, 500);
+  const title = requiredString(value.title, 500);
+  const reason = requiredString(value.reason, 40);
+  const now = Date.now();
+  // An unknown reason is treated like a missing lyric: worth another look eventually.
+  const retryAfter = reason in SKIP_RETRY_MS ? (SKIP_RETRY_MS[reason] ?? null) : 30 * 24 * 60 * 60_000;
+  await env.ADMIN_DB.prepare(
+    `INSERT INTO skipped_songs (song_key,artist,title,reason,retry_after,created_at) VALUES (?1,?2,?3,?4,?5,?6)
+     ON CONFLICT(song_key) DO UPDATE SET reason=excluded.reason,retry_after=excluded.retry_after,created_at=excluded.created_at`,
+  )
+    .bind(songKey(artist, title), artist, title, reason, retryAfter === null ? null : now + retryAfter, now)
+    .run();
+  return json({ accepted: true }, 202);
+}
+
+/** Must fold the same way the Collector folds it, or the two sides disagree about a song. */
+function songKey(artist: string, title: string): string {
+  return `${artist.normalize("NFKC").toLowerCase()}\0${title.normalize("NFKC").toLowerCase()}`;
 }
 
 const SOURCE_TYPES = new Set(["song", "topic", "unofficial"]);
@@ -1521,7 +1557,8 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
     return json({
       items: await list(
         env.ADMIN_DB,
-        `SELECT j.*, r.artist, r.title, r.isrc
+        // recording_id so a row can open the song it belongs to.
+        `SELECT j.*, r.id AS recording_id, r.artist, r.title, r.isrc
          FROM jobs j
          JOIN input_revisions i ON i.id = j.input_revision_id
          JOIN recordings r ON r.id = i.recording_id
@@ -1634,6 +1671,8 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
       decodeURIComponent(url.pathname.slice("/admin/api/collector/searches/".length)),
       await body(request),
     );
+  if (request.method === "POST" && url.pathname === "/admin/api/collector/skipped")
+    return collectorSkipped(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/collector/recordings")
     return collectorSubmit(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/generator/events") return stageEvent(env, actor, await body(request));

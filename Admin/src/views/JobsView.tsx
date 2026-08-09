@@ -1,5 +1,5 @@
 import { Ban, LoaderCircle, RotateCcw } from "lucide-react";
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { api } from "../api";
 import { useToast } from "../Toast";
 import { number, relativeTime, stageLabel, stateLabel, stateTone, text, type AdminItem } from "./utils";
@@ -12,7 +12,15 @@ const filters: Array<[JobFilter, string, (state: string) => boolean]> = [
   ["done", "완료", (state) => ["candidate_ready", "published", "cancelled"].includes(state)],
 ];
 
-export function JobsView({ items, refresh }: { items: AdminItem[]; refresh: () => void }) {
+export function JobsView({
+  items,
+  refresh,
+  onSelect,
+}: {
+  items: AdminItem[];
+  refresh: () => void;
+  onSelect: (recordingId: string) => void;
+}) {
   const { showToast } = useToast();
   const [filter, setFilter] = useState<JobFilter>("all");
   const visible = items.filter((item) => (filters.find(([id]) => id === filter)?.[2] ?? (() => true))(text(item.state, "")));
@@ -66,8 +74,26 @@ export function JobsView({ items, refresh }: { items: AdminItem[]; refresh: () =
           const running = state === "running" || state === "claimed";
           // unsupported_language gets its own friendly line below instead of a raw error code.
           const failed = state === "failed";
+          const recordingId = text(item.recording_id);
           return (
-            <article key={id} className="job-row">
+            <article
+              key={id}
+              className={`job-row ${recordingId === "" ? "" : "row-link"}`}
+              {...(recordingId === ""
+                ? {}
+                : {
+                    tabIndex: 0,
+                    role: "button",
+                    "aria-label": `${text(item.title, "제목 없음")} 곡 상세 보기`,
+                    onClick: () => onSelect(recordingId),
+                    onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onSelect(recordingId);
+                      }
+                    },
+                  })}
+            >
               <div className="job-row-main">
                 <div className="job-song">
                   <strong>{text(item.title, "제목 없음")}</strong>
@@ -94,7 +120,7 @@ export function JobsView({ items, refresh }: { items: AdminItem[]; refresh: () =
                     </span>
                   )}
                   {/* Terminal states: the badge already names the state, so this line says what happens next. */}
-                  {state === "candidate_ready" && <span className="job-stage">검수·편집에서 타이밍 검수 대기</span>}
+                  {state === "candidate_ready" && <span className="job-stage">타이밍 검수 대기</span>}
                   {state === "published" && <span className="job-stage">공개 API에 반영됨</span>}
                   {state === "unsupported_language" && <span className="job-stage">정렬 모델이 없는 언어입니다</span>}
                 </div>
@@ -102,7 +128,7 @@ export function JobsView({ items, refresh }: { items: AdminItem[]; refresh: () =
               <div className="job-row-side">
                 <span className={`state-badge ${stateTone(state)}`}>{stateLabel(state)}</span>
                 <time>{relativeTime(item.updated_at)}</time>
-                <div className="job-actions">
+                <div className="job-actions" onClick={(event) => event.stopPropagation()}>
                   {state === "failed" && (
                     <button className="job-retry" onClick={() => void retry(id)}>
                       <RotateCcw size={13} />

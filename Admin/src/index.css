@@ -3215,3 +3215,18 @@ textarea:focus-visible {
   border-bottom: 0;
   padding: 12px 0 0;
 }
+
+/* 작업 행에서 그 곡으로 바로 넘어간다 — 재시도·취소 버튼은 이동을 유발하지 않는다. */
+.job-row.row-link {
+  cursor: pointer;
+}
+.job-row.row-link:hover {
+  border-color: var(--border-strong);
+}
+.job-row.row-link:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+.job-actions {
+  cursor: default;
+}

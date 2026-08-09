@@ -293,7 +293,7 @@ export default function App() {
           ) : page === "overview" ? (
             <Overview data={data} />
           ) : page === "jobs" ? (
-            <JobsView items={items} refresh={refresh} />
+            <JobsView items={items} refresh={refresh} onSelect={(recordingId) => navigate("recordings", recordingId)} />
           ) : page === "workers" ? (
             <WorkersView items={items} refresh={refresh} />
           ) : page === "recordings" ? (

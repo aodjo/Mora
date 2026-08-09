@@ -37,11 +37,16 @@ export class CollectedIndex {
   readonly #keys = new Set<string>();
   readonly #isrcs = new Set<string>();
 
-  constructor(recordings: ReadonlyArray<{ artist: string; title: string; isrc?: string | undefined }>) {
+  constructor(
+    recordings: ReadonlyArray<{ artist: string; title: string; isrc?: string | undefined }>,
+    skipped: ReadonlyArray<{ artist: string; title: string }> = [],
+  ) {
     for (const recording of recordings) {
       this.#keys.add(songKey(recording.artist, recording.title));
       if (recording.isrc !== undefined && recording.isrc.length > 0) this.#isrcs.add(recording.isrc.toUpperCase());
     }
+    // A song we decided not to collect is as settled as one we did; it just left no recording.
+    for (const song of skipped) this.#keys.add(songKey(song.artist, song.title));
   }
 
   get size(): number {
@@ -104,14 +109,15 @@ export class CollectorService {
         headers: { authorization: `Bearer ${this.config.adminToken}` },
       });
       if (!response.ok) throw new Error(await adminErrorCode(response));
-      const payload = (await response.json()) as { recordings?: Array<{ artist?: string; title?: string; isrc?: string }> };
-      return new CollectedIndex(
-        (payload.recordings ?? []).flatMap((item) =>
-          typeof item.artist === "string" && typeof item.title === "string"
-            ? [{ artist: item.artist, title: item.title, isrc: item.isrc }]
-            : [],
-        ),
-      );
+      const payload = (await response.json()) as {
+        recordings?: Array<{ artist?: string; title?: string; isrc?: string }>;
+        skipped?: Array<{ artist?: string; title?: string }>;
+      };
+      const named = <T extends { artist?: string; title?: string }>(rows: T[] | undefined): Array<T & { artist: string; title: string }> =>
+        (rows ?? []).flatMap((item) =>
+          typeof item.artist === "string" && typeof item.title === "string" ? [item as T & { artist: string; title: string }] : [],
+        );
+      return new CollectedIndex(named(payload.recordings), named(payload.skipped));
     } catch {
       return new CollectedIndex([]);
     }
@@ -155,6 +161,15 @@ export class CollectorService {
       .slice(0, this.config.dailyBudget);
   }
 
+  /** Remembered so the next run does not pay to reach the same answer. */
+  async #remember(seed: RecordingSeed, reason: "instrumental" | "no-lyrics"): Promise<void> {
+    await this.#fetch(`${this.config.adminUrl.replace(/\/$/u, "")}/admin/api/collector/skipped`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.config.adminToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ artist: seed.artist, title: seed.title, reason }),
+    }).catch(() => undefined);
+  }
+
   async run(): Promise<CollectionReport> {
     const collected = await this.#collected();
     return this.collect(await this.discover(collected), collected);
@@ -179,6 +194,8 @@ export class CollectorService {
       // so submitting one only parks a recording in review that no one can ever act on.
       if (hasNoLyricsToAlign(seed)) {
         report.skipped++;
+        collected.remember(seed);
+        await this.#remember(seed, "instrumental");
         this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "instrumental" });
         continue;
       }
@@ -202,6 +219,9 @@ export class CollectorService {
         // time, and the recording would sit in review blocked on lyrics that do not exist.
         if (lyrics.length === 0) {
           report.skipped++;
+          collected.remember(identified);
+          collected.remember(seed);
+          await this.#remember(seed, "no-lyrics");
           this.config.onProgress?.({ stage: "skipped", current: index + 1, total: ranked.length, song, reason: "no-lyrics" });
           continue;
         }

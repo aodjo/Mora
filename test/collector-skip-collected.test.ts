@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CollectedIndex, CollectorService } from "../Collector/src/service.js";
+import type { LyricsProviderResult } from "../packages/contracts/src/index.js";
 import type { CollectorProgress, RecordingSeed, YoutubeCandidate } from "../Collector/src/types.js";
 
 const SWIM: RecordingSeed = { artist: "BTS", title: "SWIM", duration_ms: 159_000, popularity: 1, freshness: 0, market: "KR" };
@@ -19,15 +20,38 @@ const CHART = [
  * The point of the skip is that it happens before anything is spent, so the harness counts what
  * the expensive stages were asked to do rather than only what came out the other end.
  */
-function harness(collected: Array<{ artist: string; title: string; isrc?: string }>) {
+interface Harness {
+  service: CollectorService;
+  searched: string[];
+  lyricsFor: string[];
+  submitted: string[];
+  skips: Array<{ artist: string; title: string; reason: string }>;
+  progress: CollectorProgress[];
+  catalogue: Array<{ artist: string; title: string; isrc?: string }>;
+  /** 이 실행에서 가사 제공자가 내놓을 결과. 빈 배열이면 "가사 없음" 경로를 탄다. */
+  lyrics: LyricsProviderResult[];
+}
+
+function harness(
+  collected: Array<{ artist: string; title: string; isrc?: string }>,
+  skipped: Array<{ artist: string; title: string }> = [],
+): Harness {
+  const lyricsBox: { value: LyricsProviderResult[] } = {
+    value: [{ provider: "test", text: "가사 한 줄", fetched_at: Date.now() }],
+  };
   const searched: string[] = [];
   const lyricsFor: string[] = [];
   const submitted: string[] = [];
+  const skips: Array<{ artist: string; title: string; reason: string }> = [];
   const progress: CollectorProgress[] = [];
 
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
-    if (url.endsWith("/admin/api/collector/collected")) return Response.json({ recordings: collected });
+    if (url.endsWith("/admin/api/collector/collected")) return Response.json({ recordings: collected, skipped });
+    if (url.endsWith("/admin/api/collector/skipped")) {
+      skips.push(JSON.parse(String(init?.body)) as { artist: string; title: string; reason: string });
+      return Response.json({ accepted: true });
+    }
     if (url.startsWith("https://api.listenbrainz.org/")) {
       return Response.json({
         payload: {
@@ -73,13 +97,27 @@ function harness(collected: Array<{ artist: string; title: string; isrc?: string
     lyricsProvider: {
       search: async (input) => {
         lyricsFor.push(`${input.artist} - ${input.title}`);
-        return [{ provider: "test", text: "가사 한 줄", fetched_at: Date.now() }];
+        return lyricsBox.value;
       },
     },
     onProgress: (event) => progress.push(event),
   });
 
-  return { service, searched, lyricsFor, submitted, progress, catalogue: collected };
+  return {
+    service,
+    searched,
+    lyricsFor,
+    submitted,
+    skips,
+    progress,
+    catalogue: collected,
+    get lyrics() {
+      return lyricsBox.value;
+    },
+    set lyrics(value: LyricsProviderResult[]) {
+      lyricsBox.value = value;
+    },
+  };
 }
 
 test("an already-collected song costs no search, no lyrics fetch and no submission", async () => {
@@ -163,4 +201,29 @@ test("repeated runs walk down the chart instead of standing still", async () => 
   }
 
   assert.deepEqual(order, ["A - 1", "B - 2", "C - 3", "D - 4", "E - 5"]);
+});
+
+test("a song skipped for having no lyrics is not paid for again next run", async () => {
+  // 건너뛴 곡은 recordings 에 남지 않으므로, 서버가 따로 기억해 주지 않으면
+  // 매 실행마다 가사 제공자 다섯 곳을 다시 묻게 된다.
+  const first = harness([]);
+  first.lyrics = [];
+  const report = await first.service.collect([SWIM]);
+  assert.equal(report.skipped, 1);
+  assert.deepEqual(first.skips, [{ artist: "BTS", title: "SWIM", reason: "no-lyrics" }]);
+
+  // 서버가 그 스킵을 돌려주면 다음 실행은 검색도 가사 조회도 하지 않는다.
+  const next = harness([], [{ artist: "BTS", title: "SWIM" }]);
+  const again = await next.service.collect([SWIM]);
+  assert.deepEqual(next.searched, []);
+  assert.deepEqual(next.lyricsFor, []);
+  assert.equal(again.skipped, 1);
+});
+
+test("an instrumental is recorded as one and never costs a lyrics lookup", async () => {
+  const h = harness([]);
+  const report = await h.service.collect([{ ...SWIM, title: "SWIM (instrumental)" }]);
+  assert.equal(report.skipped, 1);
+  assert.deepEqual(h.lyricsFor, []);
+  assert.deepEqual(h.skips, [{ artist: "BTS", title: "SWIM (instrumental)", reason: "instrumental" }]);
 });
