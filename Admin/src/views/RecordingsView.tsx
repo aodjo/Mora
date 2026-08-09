@@ -7,7 +7,7 @@ function duration(value: unknown): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
-export function RecordingsView({ items }: { items: AdminItem[] }) {
+export function RecordingsView({ items, onSelect }: { items: AdminItem[]; onSelect: (id: string) => void }) {
   const [filter, setFilter] = useState<"all" | "pending" | "complete">("all");
   if (items.length === 0)
     return (
@@ -69,7 +69,20 @@ export function RecordingsView({ items }: { items: AdminItem[] }) {
             </thead>
             <tbody>
               {visible.map(({ item, lifecycle }) => (
-                <tr key={text(item.id)}>
+                <tr
+                  key={text(item.id)}
+                  className="row-link"
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`${text(item.title, "제목 없음")} 상세 보기`}
+                  onClick={() => onSelect(text(item.id))}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelect(text(item.id));
+                    }
+                  }}
+                >
                   <td>
                     <div className="cell-song">
                       <strong>{text(item.title, "제목 없음")}</strong>

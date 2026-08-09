@@ -21,6 +21,7 @@ import { ConnectionsPanel, SettingsPanel } from "./Settings";
 import { ThemeToggle, type Theme } from "./ThemeToggle";
 import { AuditView } from "./views/AuditView";
 import { JobsView } from "./views/JobsView";
+import { RecordingDetail } from "./views/RecordingDetail";
 import { RecordingsView } from "./views/RecordingsView";
 import { ReleasesView } from "./views/ReleasesView";
 import { ReviewView } from "./views/ReviewView";
@@ -66,8 +67,10 @@ interface Route {
   selected: string | null;
 }
 
+const detailPages = new Set<Page>(["review", "recordings"]);
+
 function urlFor({ page, selected }: Route): string {
-  if (page === "review" && selected !== null) return `${base}/review/${encodeURIComponent(selected)}`;
+  if (detailPages.has(page) && selected !== null) return `${base}/${page}/${encodeURIComponent(selected)}`;
   return page === "overview" ? `${base}/` : `${base}/${page}`;
 }
 
@@ -76,7 +79,7 @@ function parseUrl(pathname: string): Route {
   const [first, second] = rest.split("/");
   const page = pages.find(([id]) => id === first)?.[0];
   if (page === undefined) return { page: "overview", selected: null };
-  if (page === "review" && second !== undefined && second !== "") return { page, selected: decodeURIComponent(second) };
+  if (detailPages.has(page) && second !== undefined && second !== "") return { page, selected: decodeURIComponent(second) };
   return { page, selected: null };
 }
 
@@ -115,7 +118,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     // Names the entry in the browser's history and tab, so back is navigable by label.
-    const label = page === "review" && selected !== null ? "타이밍 편집" : (pages.find(([id]) => id === page)?.[1] ?? "Admin");
+    const label = selected === null ? (pages.find(([id]) => id === page)?.[1] ?? "Admin") : page === "review" ? "타이밍 편집" : "곡 상세";
     document.title = `${label} · Mora Admin`;
   }, [page, selected]);
   const [theme, setTheme] = useState<Theme>(initialTheme);
@@ -270,7 +273,7 @@ export default function App() {
         <div className="page-content">
           <div className="page-heading">
             <div>
-              <h1>{selected !== null && page === "review" ? "타이밍 편집" : activeLabel}</h1>
+              <h1>{selected === null ? activeLabel : page === "review" ? "타이밍 편집" : "곡 상세"}</h1>
               <p>{selected !== null && page === "review" ? "단어별 시작·종료 시간을 검수합니다." : descriptions[page]}</p>
             </div>
             {page !== "overview" && page !== "settings" && selected === null && (
@@ -289,7 +292,11 @@ export default function App() {
           ) : page === "workers" ? (
             <WorkersView items={items} refresh={refresh} />
           ) : page === "recordings" ? (
-            <RecordingsView items={items} />
+            selected === null ? (
+              <RecordingsView items={items} onSelect={(id) => navigate("recordings", id)} />
+            ) : (
+              <RecordingDetail recordingId={selected} onBack={() => navigate("recordings")} refresh={refresh} />
+            )
           ) : page === "review" && selected !== null ? (
             <Editor
               candidateId={selected}

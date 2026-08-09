@@ -47,6 +47,14 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
     component: "server",
   },
   {
+    key: "server.youtube_api_key",
+    label: "YouTube Data API 키",
+    description: "곡 상세 화면에서 음원을 직접 검색할 때 사용합니다. 비워두면 검색창 대신 YouTube 링크만 표시합니다.",
+    type: "secret",
+    secret: true,
+    component: "server",
+  },
+  {
     key: "quality_threshold",
     label: "자동 승격 품질 임계치",
     description: "캘리브레이션 완료 후 자동 공개할 최소 품질 점수입니다.",

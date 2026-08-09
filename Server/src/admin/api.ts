@@ -16,6 +16,7 @@ import { bootstrapOptions, bootstrapVerify, credentialOptions, credentialVerify,
 import { serveArtifact } from "./artifacts.js";
 import { approveCollectorPairing, pollCollectorPairing, startCollectorPairing } from "./collector-pairing.js";
 import { approveGeneratorPairing, pollGeneratorPairing, startGeneratorPairing } from "./generator-pairing.js";
+import { searchYoutube } from "./youtube.js";
 import {
   collectorRuntimeConfig,
   deleteRuntimeConfig,
@@ -262,6 +263,40 @@ function blockedBy(isrc: string | null, sourceId: string | null): string[] {
 }
 
 /**
+ * One song with everything a person needs to judge its audio: the candidates the collector
+ * found, which one is selected, and the revision each belongs to so a choice can be applied.
+ */
+async function recordingDetail(env: WorkerEnv, actor: Actor, recordingId: string): Promise<Response> {
+  requirePermission(actor, "recordings.read");
+  const recording = await env.ADMIN_DB.prepare("SELECT * FROM recordings WHERE id=?1").bind(recordingId).first();
+  if (recording === null) throw new ServiceError(404, "NOT_FOUND");
+  const sources = await list(
+    env.ADMIN_DB,
+    "SELECT id,url,video_id,rank,official,source_type,score,selected,metadata,created_at FROM media_sources WHERE recording_id=?1 ORDER BY selected DESC,rank",
+    [recordingId],
+  );
+  const revisions = await list(
+    env.ADMIN_DB,
+    `SELECT i.id,i.state,i.source_id,i.created_at,
+       (SELECT COUNT(*) FROM lyric_revisions l WHERE l.input_revision_id=i.id AND l.layer!='raw') lyrics_count,
+       (SELECT j.id FROM jobs j WHERE j.input_revision_id=i.id) job_id,
+       (SELECT j.state FROM jobs j WHERE j.input_revision_id=i.id) job_state
+     FROM input_revisions i WHERE i.recording_id=?1 ORDER BY i.created_at DESC`,
+    [recordingId],
+  );
+  return json({ recording, sources, revisions });
+}
+
+/** Proxied so the key stays on the server; without one the screen falls back to a plain link. */
+async function youtubeSearch(env: WorkerEnv, actor: Actor, query: string): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const apiKey = await runtimeValue(env, "server.youtube_api_key");
+  if (apiKey === undefined || apiKey.length === 0) throw new ServiceError(409, "YOUTUBE_KEY_MISSING");
+  if (query.trim().length === 0) throw new ServiceError(400, "INVALID_REQUEST");
+  return json({ items: await searchYoutube(apiKey, query.trim()) });
+}
+
+/**
  * Everything the catalogue already holds, so a run can skip it before spending anything.
  * A song costs a YouTube search, five lyrics providers and a Spotify lookup to collect, and
  * re-submitting one only lands another input revision beside the identical one already there.
@@ -280,6 +315,28 @@ async function collectorCollected(env: WorkerEnv, actor: Actor): Promise<Respons
       ...(row.isrc === null ? {} : { isrc: row.isrc }),
     })),
   });
+}
+
+const SOURCE_TYPES = new Set(["song", "topic", "unofficial"]);
+
+function sourceType(item: Record<string, unknown>): string {
+  if (typeof item.source_type === "string" && SOURCE_TYPES.has(item.source_type)) return item.source_type;
+  return item.official === true ? "song" : "unofficial";
+}
+
+/** The upload's own description, kept so review can compare it against the catalogue entry. */
+function describeSource(item: Record<string, unknown>): Record<string, unknown> {
+  const supplied = typeof item.metadata === "object" && item.metadata !== null && !Array.isArray(item.metadata) ? item.metadata : {};
+  const carry = (key: string, kind: "string" | "number"): Record<string, unknown> =>
+    typeof item[key] === kind && (kind !== "string" || (item[key] as string).length > 0) ? { [key]: item[key] } : {};
+  return {
+    ...(supplied as Record<string, unknown>),
+    ...carry("title", "string"),
+    ...carry("artist", "string"),
+    ...carry("album", "string"),
+    ...carry("duration_ms", "number"),
+    ...carry("catalogue_drift_ms", "number"),
+  };
 }
 
 async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
@@ -364,10 +421,12 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
         requiredString(item.video_id, 32),
         numberValue(item.rank ?? 1, 1, 10),
         item.official === true ? 1 : 0,
-        item.official === true ? "topic" : "unofficial",
+        sourceType(item),
         numberValue(item.score ?? 0, 0, 1),
         selected ? 1 : 0,
-        JSON.stringify(item.metadata ?? {}),
+        // What the candidate is, not just where it lives. Review shows the upload's own title,
+        // channel and length beside the catalogue's, and none of that survived being dropped.
+        JSON.stringify(describeSource(item)),
         now,
       )
       .run();
@@ -1547,6 +1606,10 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "GET" && url.pathname === "/admin/api/settings") return listRuntimeConfig(env, actor);
   if (request.method === "GET" && url.pathname === "/admin/api/collector/config") return collectorRuntimeConfig(env, actor);
   if (request.method === "GET" && url.pathname === "/admin/api/collector/collected") return collectorCollected(env, actor);
+  if (request.method === "GET" && url.pathname === "/admin/api/youtube/search")
+    return youtubeSearch(env, actor, url.searchParams.get("q") ?? "");
+  if (request.method === "GET" && url.pathname.startsWith("/admin/api/recordings/"))
+    return recordingDetail(env, actor, decodeURIComponent(url.pathname.slice("/admin/api/recordings/".length)));
   if (request.method === "POST" && url.pathname === "/admin/api/collector/pairings/approve")
     return approveCollectorPairing(env, actor, await body(request, 16 * 1024));
   if (request.method === "POST" && url.pathname === "/admin/api/generator/pairings/approve")
