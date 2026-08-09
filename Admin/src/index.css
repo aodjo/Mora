@@ -3422,3 +3422,24 @@ textarea:focus-visible {
 .basket .icon-button:hover {
   color: var(--text);
 }
+
+/* 목표는 진행 상황 옆에서 바로 만진다 — 설정 화면까지 갈 일이 아니다. */
+.target-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.target-control label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.target-control input {
+  width: 84px;
+  text-align: right;
+}
+.target-control span {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-left: -4px;
+}

@@ -17,6 +17,8 @@ export interface RuntimeConfigDefinition {
   defaultValue?: string;
   min?: number;
   max?: number;
+  /** 자기 화면에서 다루는 값. 설정 목록에는 나오지 않는다. */
+  ownedElsewhere?: boolean;
   normalize?: (value: string) => string;
   validate?: (value: string) => boolean;
 }
@@ -99,7 +101,9 @@ export const runtimeConfigDefinitions: readonly RuntimeConfigDefinition[] = [
   {
     key: "collector.daily_budget",
     label: "수집 목표 곡 수",
-    description: "이번 주기에 전체 Collector가 함께 채울 곡 수입니다. 한 대당이 아니라 합계입니다.",
+    description: "이번 회차에 전체 Collector가 함께 채울 곡 수입니다. 상황판에서 조절합니다.",
+    // 얼마나 모을지는 설정이 아니라 운영 판단이라, 진행 상황 옆에서 바로 만지는 편이 낫다.
+    ownedElsewhere: true,
     type: "number",
     secret: false,
     component: "collector",
@@ -331,22 +335,24 @@ export async function listRuntimeConfig(env: WorkerEnv, actor: Actor): Promise<R
     updated_at: number;
   }>();
   const byKey = new Map(rows.results.map((row) => [row.key, row]));
-  const items = runtimeConfigDefinitions.map((definition) => {
-    const row = byKey.get(definition.key);
-    return {
-      key: definition.key,
-      label: definition.label,
-      description: definition.description,
-      type: definition.type,
-      secret: definition.secret,
-      component: definition.component,
-      configured: row !== undefined,
-      source: row === undefined ? "default" : "database",
-      ...(definition.secret ? {} : { value: row?.value ?? definition.defaultValue ?? "" }),
-      ...(definition.defaultValue === undefined ? {} : { default_value: definition.defaultValue }),
-      ...(row === undefined ? {} : { updated_by: row.updated_by, updated_at: row.updated_at }),
-    };
-  });
+  const items = runtimeConfigDefinitions
+    .filter((definition) => definition.ownedElsewhere !== true)
+    .map((definition) => {
+      const row = byKey.get(definition.key);
+      return {
+        key: definition.key,
+        label: definition.label,
+        description: definition.description,
+        type: definition.type,
+        secret: definition.secret,
+        component: definition.component,
+        configured: row !== undefined,
+        source: row === undefined ? "default" : "database",
+        ...(definition.secret ? {} : { value: row?.value ?? definition.defaultValue ?? "" }),
+        ...(definition.defaultValue === undefined ? {} : { default_value: definition.defaultValue }),
+        ...(row === undefined ? {} : { updated_by: row.updated_by, updated_at: row.updated_at }),
+      };
+    });
   const bindings = [
     { key: "PUBLIC_DB", kind: "D1 binding", configured: env.PUBLIC_DB !== undefined },
     { key: "ADMIN_DB", kind: "D1 binding", configured: env.ADMIN_DB !== undefined },

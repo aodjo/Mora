@@ -562,6 +562,29 @@ async function readCollectionQueue(env: WorkerEnv, actor: Actor): Promise<Respon
   });
 }
 
+/**
+ * How many songs this round should reach.
+ *
+ * Kept out of the settings screen on purpose: how much to collect is a decision made while
+ * watching the run, not a value configured once, and it belongs beside the progress it moves.
+ */
+async function setCollectionTarget(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const target = Math.round(numberValue(value.target, 1, 5000));
+  const now = Date.now();
+  await env.ADMIN_DB.prepare(
+    `INSERT INTO settings (key,value,secret,updated_by,updated_at) VALUES ('collector.daily_budget',?1,0,?2,?3)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_by=excluded.updated_by,updated_at=excluded.updated_at`,
+  )
+    .bind(String(target), actor.id, now)
+    .run();
+  // Raising the target after the charts came back empty should start another sweep now, not
+  // in ten minutes: the cooldown exists for a queue nobody asked to grow.
+  await env.ADMIN_DB.prepare("UPDATE collection_lease SET finished_at=0,added=1 WHERE id='discovery' AND finished_at IS NOT NULL").run();
+  await audit(env, actor, "collection.target", "collection_queue", "all", { target });
+  return json({ target }, 202);
+}
+
 /** Start the next round: clear what the last one left and let the Collectors fill again. */
 async function resetCollectionQueue(env: WorkerEnv, actor: Actor): Promise<Response> {
   requirePermission(actor, "jobs.manage");
@@ -1964,6 +1987,7 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
       await body(request),
     );
   if (request.method === "GET" && url.pathname === "/admin/api/collection") return readCollectionQueue(env, actor);
+  if (request.method === "PUT" && url.pathname === "/admin/api/collection") return setCollectionTarget(env, actor, await body(request));
   if (request.method === "DELETE" && url.pathname === "/admin/api/collection") return resetCollectionQueue(env, actor);
   if (request.method === "GET" && url.pathname === "/admin/api/basket") return readBasket(env, actor);
   if (request.method === "POST" && url.pathname === "/admin/api/basket") return addToBasket(env, actor, await body(request));

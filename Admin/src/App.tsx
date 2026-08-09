@@ -405,8 +405,11 @@ function CollectionPanel() {
   const { showToast } = useToast();
   const [status, setStatus] = useState<CollectionStatus | null>(null);
   const [resetting, setResetting] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const load = useCallback(() => {
     void api<CollectionStatus>("/collection")
+      // 목표 입력칸은 건드리지 않는다: 5초마다 오는 새로고침이 타이핑을 지우면 안 된다.
       .then(setStatus)
       .catch(() => undefined);
   }, []);
@@ -417,6 +420,24 @@ function CollectionPanel() {
   }, [load]);
   if (status === null) return null;
   const filled = status.pending + status.claimed + status.done + status.failed;
+  const typed = draft ?? String(status.target);
+  const wanted = Number(typed);
+  const valid = Number.isFinite(wanted) && wanted >= 1 && wanted <= 5000;
+  const changed = valid && Math.round(wanted) !== status.target;
+  async function saveTarget(): Promise<void> {
+    if (!changed) return;
+    setSaving(true);
+    try {
+      await api("/collection", { method: "PUT", body: JSON.stringify({ target: Math.round(wanted) }) });
+      setDraft(null);
+      showToast(`목표를 ${Math.round(wanted)}곡으로 바꿨습니다.`);
+      load();
+    } catch (reason) {
+      showToast(reason instanceof Error ? reason.message : "목표 변경에 실패했습니다", { variant: "error" });
+    } finally {
+      setSaving(false);
+    }
+  }
   const settled = status.done + status.failed;
   const progress = filled === 0 ? 0 : Math.min(1, settled / filled);
   async function startRound(): Promise<void> {
@@ -438,13 +459,32 @@ function CollectionPanel() {
         <div>
           <h3>수집 진행</h3>
           <p>
-            목표 {status.target}곡 · 대기열 {filled}곡 · 남은 {status.pending}곡{status.claimed > 0 && ` · ${status.claimed}곡 수집 중`}
+            대기열 {filled}곡 · 남은 {status.pending}곡{status.claimed > 0 && ` · ${status.claimed}곡 수집 중`}
             {status.failed > 0 && ` · ${status.failed}곡 실패`}
           </p>
         </div>
-        <button className="ghost-button" onClick={() => void startRound()} disabled={resetting}>
-          새 회차 시작
-        </button>
+        <div className="target-control">
+          <label htmlFor="collection-target">목표</label>
+          <input
+            id="collection-target"
+            className="form-control"
+            type="number"
+            min={1}
+            max={5000}
+            value={typed}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void saveTarget();
+            }}
+          />
+          <span>곡</span>
+          <button className="primary-button" onClick={() => void saveTarget()} disabled={!changed || saving}>
+            적용
+          </button>
+          <button className="ghost-button" onClick={() => void startRound()} disabled={resetting}>
+            새 회차
+          </button>
+        </div>
       </div>
       <div className="calibration-bar" aria-label={`${settled}/${filled}곡 완료`}>
         <i style={{ width: `${progress * 100}%` }} />
