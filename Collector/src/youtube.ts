@@ -5,7 +5,8 @@ import { promisify } from "node:util";
 import type { RecordingSeed, YoutubeCandidate } from "./types.js";
 
 const run = promisify(execFile);
-interface YtEntry {
+/** yt-dlp 의 평면 검색 결과 한 줄. 테스트가 검색을 대신할 수 있도록 내보낸다. */
+export interface YtEntry {
   id?: string;
   title?: string;
   track?: string;
@@ -123,16 +124,36 @@ export async function searchYoutube(query: string, limit = 20): Promise<YoutubeS
   );
 }
 
-export async function searchYoutubeMusic(seed: RecordingSeed): Promise<YoutubeCandidate[]> {
+/**
+ * The uploads worth considering for this song.
+ *
+ * Asking for "audio" puts the official audio above the music video for a song people search
+ * for — "aespa Whiplash audio" opens with Official Audio where the plain query opens with the
+ * MV. For a song nobody searches for it does the opposite of helping: "uruma 하치와레girl
+ * feat.pshine audio" returns nothing at all, while the artist's own upload sits at the top of
+ * the query without it. So the narrow question is asked first and the plain one only when the
+ * narrow one leaves us with nothing, which is exactly when the answer was "음원 없음".
+ */
+export async function searchYoutubeMusic(
+  seed: RecordingSeed,
+  ask: (query: string) => Promise<YtEntry[]> = askYoutube,
+): Promise<YoutubeCandidate[]> {
   // Deliberately without the album: it pulls the search towards the record rather than the
   // track, and "BTS Come Over Proof audio" returns the album's other songs and a live stream
   // where "BTS Come Over audio" returns the official audio first.
-  const query = `${seed.artist} ${seed.title} audio`;
+  const found = await candidatesFor(seed, await ask(`${seed.artist} ${seed.title} audio`));
+  return found.length > 0 ? found : candidatesFor(seed, await ask(`${seed.artist} ${seed.title}`));
+}
+
+async function askYoutube(query: string): Promise<YtEntry[]> {
   const { stdout } = await run(youtubeDlCommand(), ["--dump-single-json", "--flat-playlist", "--no-warnings", `ytsearch25:${query}`], {
     maxBuffer: 10 * 1024 * 1024,
   });
-  const parsed = JSON.parse(stdout) as { entries?: YtEntry[] };
-  return (parsed.entries ?? [])
+  return (JSON.parse(stdout) as { entries?: YtEntry[] }).entries ?? [];
+}
+
+function candidatesFor(seed: RecordingSeed, entries: YtEntry[]): YoutubeCandidate[] {
+  return entries
     .flatMap((entry): YoutubeCandidate[] => {
       if (!entry.id || !entry.title || entry.live_status === "is_live") return [];
       const title = entry.track ?? entry.title;
