@@ -159,8 +159,9 @@ export function RecordingDetail({
   const draftId = draft === undefined ? null : text(draft.id);
   const hasIsrc = text(recording.isrc).length > 0;
   const hasLyrics = draft !== undefined && number(draft.lyrics_count) > 0;
-  const canSelect = draftId !== null && hasIsrc && hasLyrics;
-  const needsMetadata = draftId !== null && (!hasIsrc || !hasLyrics);
+  // 타이밍은 글자에 붙으므로 가사만은 있어야 한다. ISRC는 식별자일 뿐이라 나중에 채워도 된다.
+  const canSelect = draftId !== null && hasLyrics;
+  const needsMetadata = draftId !== null && !hasLyrics;
   const blockedReason =
     draftId === null && detail.sources.some((source) => source.selected === 1)
       ? "이미 작업이 만들어져 소스를 바꿀 수 없습니다."
@@ -186,7 +187,7 @@ export function RecordingDetail({
     setBusy(true);
     try {
       // 정보가 비어 있으면 확정과 같은 동작으로 먼저 채운다 — 두 번 누르게 하지 않는다.
-      if (!hasIsrc || !hasLyrics) await saveMetadata(false);
+      if (!hasLyrics || (!hasIsrc && validIsrc)) await saveMetadata(false);
       await api(`/source-reviews/${encodeURIComponent(draftId)}/select`, { method: "POST", body: JSON.stringify(value) });
       showToast("음원을 확정하고 Generator 작업을 생성했습니다.");
       load();
@@ -224,7 +225,7 @@ export function RecordingDetail({
   const selected = detail.sources.find((source) => source.selected === 1);
   const alternatives = detail.sources.filter((source) => source.selected !== 1);
   const validIsrc = /^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$/u.test(isrc.replaceAll("-", "").trim().toUpperCase());
-  const canSaveMetadata = (hasIsrc || validIsrc) && (hasLyrics || lyrics.trim().length > 0);
+  const canSaveMetadata = hasLyrics || lyrics.trim().length > 0 || validIsrc;
 
   return (
     <div className="recording-detail">
@@ -265,11 +266,7 @@ export function RecordingDetail({
       {needsMetadata && (
         <section className="detail-section">
           <h3>곡 정보 보완</h3>
-          <p className="detail-empty">
-            {!hasIsrc && "ISRC가 없습니다. "}
-            {!hasLyrics && "전처리된 가사가 없습니다. "}
-            음원을 고르면 함께 저장되고, 아래 버튼으로 먼저 저장할 수도 있습니다.
-          </p>
+          <p className="detail-empty">맞출 가사가 없습니다. 아래에 붙여넣으면 음원을 고를 때 함께 저장됩니다.</p>
           <div className="source-metadata-form">
             <label>
               <span>ISRC</span>

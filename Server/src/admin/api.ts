@@ -468,8 +468,8 @@ async function claimCollectionWork(env: WorkerEnv, actor: Actor): Promise<Respon
 
   // Nothing queued. Someone has to go and look, but only one of us.
   const target = Number((await runtimeValue(env, "collector.daily_budget")) ?? 300);
-  const filled = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue").first<{ n: number }>();
-  const missing = Math.max(0, target - (filled?.n ?? 0));
+  const outstanding = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue").first<{ n: number }>();
+  const missing = Math.max(0, target - (outstanding?.n ?? 0));
   if (missing === 0) return json({ work: { kind: "idle" } });
   const last = await env.ADMIN_DB.prepare("SELECT holder,taken_at,finished_at,added FROM collection_lease WHERE id='discovery'").first<{
     holder: string;
@@ -496,8 +496,8 @@ async function fillCollectionQueue(env: WorkerEnv, actor: Actor, value: Record<s
   requirePermission(actor, "collector.submit");
   const songs = Array.isArray(value.songs) ? value.songs : [];
   const target = Number((await runtimeValue(env, "collector.daily_budget")) ?? 300);
-  const filled = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue").first<{ n: number }>();
-  let room = Math.max(0, target - (filled?.n ?? 0));
+  const outstanding = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue").first<{ n: number }>();
+  let room = Math.max(0, target - (outstanding?.n ?? 0));
   const now = Date.now();
   const statements: D1PreparedStatement[] = [];
   for (const entry of songs) {
@@ -535,12 +535,18 @@ async function fillCollectionQueue(env: WorkerEnv, actor: Actor, value: Record<s
 }
 
 /** A song the Collector finished with, however it turned out. */
+/**
+ * A song the Collector finished with, however it turned out.
+ *
+ * The row goes rather than settling into a "done" state. The target is how many songs should
+ * be waiting, not how many a round contained, so a finished song that stayed would hold a
+ * place in the queue forever and the count would never come back down.
+ */
 async function completeCollectionWork(env: WorkerEnv, actor: Actor, id: string, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "collector.submit");
   const failure = typeof value.error === "string" && value.error.length > 0 ? value.error.slice(0, 200) : null;
-  await env.ADMIN_DB.prepare("UPDATE collection_queue SET state=?1,error=?2 WHERE id=?3 AND claimed_by=?4")
-    .bind(failure === null ? "done" : "failed", failure, id, actor.id)
-    .run();
+  await env.ADMIN_DB.prepare("DELETE FROM collection_queue WHERE id=?1 AND claimed_by=?2").bind(id, actor.id).run();
+  if (failure !== null) await event(env, "collection.failed", { id, error: failure });
   return json({ accepted: true });
 }
 
@@ -553,13 +559,7 @@ async function readCollectionQueue(env: WorkerEnv, actor: Actor): Promise<Respon
   }>();
   const counts = Object.fromEntries(results.map((row) => [row.state, row.n]));
   const target = Number((await runtimeValue(env, "collector.daily_budget")) ?? 300);
-  return json({
-    target,
-    pending: counts.pending ?? 0,
-    claimed: counts.claimed ?? 0,
-    done: counts.done ?? 0,
-    failed: counts.failed ?? 0,
-  });
+  return json({ target, pending: counts.pending ?? 0, claimed: counts.claimed ?? 0 });
 }
 
 /**
@@ -579,19 +579,21 @@ async function setCollectionTarget(env: WorkerEnv, actor: Actor, value: Record<s
   )
     .bind(String(target), actor.id, now)
     .run();
+  // Lowering it has to shorten the queue, or "collect nothing more" leaves three hundred songs
+  // still queued. Only songs nobody has started are dropped; one being collected is left alone.
+  const claimed = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM collection_queue WHERE state='claimed'").first<{ n: number }>();
+  const keep = Math.max(0, target - (claimed?.n ?? 0));
+  await env.ADMIN_DB.prepare(
+    `DELETE FROM collection_queue WHERE state='pending' AND id NOT IN
+       (SELECT id FROM collection_queue WHERE state='pending' ORDER BY priority DESC, rowid LIMIT ?1)`,
+  )
+    .bind(keep)
+    .run();
   // Raising the target after the charts came back empty should start another sweep now, not
   // in ten minutes: the cooldown exists for a queue nobody asked to grow.
   await env.ADMIN_DB.prepare("UPDATE collection_lease SET finished_at=0,added=1 WHERE id='discovery' AND finished_at IS NOT NULL").run();
   await audit(env, actor, "collection.target", "collection_queue", "all", { target });
   return json({ target }, 202);
-}
-
-/** Start the next round: clear what the last one left and let the Collectors fill again. */
-async function resetCollectionQueue(env: WorkerEnv, actor: Actor): Promise<Response> {
-  requirePermission(actor, "jobs.manage");
-  await env.ADMIN_DB.batch([env.ADMIN_DB.prepare("DELETE FROM collection_queue"), env.ADMIN_DB.prepare("DELETE FROM collection_lease")]);
-  await audit(env, actor, "collection.reset", "collection_queue", "all");
-  return json({ reset: true }, 202);
 }
 
 const SEARCH_KINDS = new Set(["youtube", "song"]);
@@ -1076,7 +1078,9 @@ async function selectSourceReview(env: WorkerEnv, actor: Actor, inputId: string,
     .first<{ id: string; recording_id: string; state: string; isrc: string | null; lyrics_count: number }>();
   if (input === null) throw new ServiceError(404, "NOT_FOUND");
   if (input.state !== "draft") throw new ServiceError(409, "CONFLICT");
-  if (input.isrc === null || input.lyrics_count < 1) throw new ServiceError(409, "AMBIGUOUS_RECORDING");
+  // Words are what gets timed, so without them there is nothing to align — but the ISRC is
+  // only an identifier, and demanding one here refused the very choice that unblocks the song.
+  if (input.lyrics_count < 1) throw new ServiceError(409, "LYRICS_REQUIRED");
   let sourceId = typeof value.source_id === "string" ? value.source_id : null;
   if (sourceId === null) {
     const url = requiredString(value.url, 4096);
@@ -1989,7 +1993,6 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
     );
   if (request.method === "GET" && url.pathname === "/admin/api/collection") return readCollectionQueue(env, actor);
   if (request.method === "PUT" && url.pathname === "/admin/api/collection") return setCollectionTarget(env, actor, await body(request));
-  if (request.method === "DELETE" && url.pathname === "/admin/api/collection") return resetCollectionQueue(env, actor);
   if (request.method === "GET" && url.pathname === "/admin/api/basket") return readBasket(env, actor);
   if (request.method === "POST" && url.pathname === "/admin/api/basket") return addToBasket(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/basket/process") return processBasket(env, actor);

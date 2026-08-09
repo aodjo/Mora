@@ -8,6 +8,7 @@ function server(target: number, chart: Array<{ artist: string; title: string }>)
   const queue = chart.map((song, index) => ({ ...song, id: `q${index}`, state: "pending" as string, claimedBy: "" }));
   const filled = { done: false };
   const discoveries: number[] = [];
+  const failures: string[] = [];
   const leases = new Set<string>();
   const make = (who: string): typeof fetch =>
     (async (input: string | URL | Request, init?: RequestInit) => {
@@ -32,10 +33,14 @@ function server(target: number, chart: Array<{ artist: string; title: string }>)
       }
       const id = url.slice(url.lastIndexOf("/") + 1);
       const song = queue.find((entry) => entry.id === id);
-      if (song !== undefined) song.state = JSON.parse(String(init?.body ?? "{}")).error === undefined ? "done" : "failed";
+      // 회차가 없으니 끝난 곡은 남지 않는다. 실패는 따로 적어 둔다.
+      if (song !== undefined) {
+        song.state = "gone";
+        if (JSON.parse(String(init?.body ?? "{}")).error !== undefined) failures.push(id);
+      }
       return Response.json({ accepted: true });
     }) as typeof fetch;
-  return { queue, discoveries, make };
+  return { queue, discoveries, failures, make };
 }
 
 const CHART = [
@@ -66,7 +71,7 @@ test("several Collectors share one queue and each song is collected once", async
   const all = [...taken.A!, ...taken.B!, ...taken.C!];
   assert.equal(all.length, 3, "곡 수만큼만 수집되어야 한다");
   assert.equal(new Set(all).size, 3, "같은 곡을 두 대가 가져가면 안 된다");
-  assert.ok(queue.every((song) => song.state === "done"));
+  assert.ok(queue.every((song) => song.state === "gone"));
 });
 
 test("only the Collector holding the lease walks the charts", async () => {
@@ -94,7 +99,7 @@ test("only the Collector holding the lease walks the charts", async () => {
 });
 
 test("a song that fails comes back as failed rather than disappearing", async () => {
-  const { queue, make } = server(1, [{ artist: "Megasound", title: "Keep On Running" }]);
+  const { queue, failures, make } = server(1, [{ artist: "Megasound", title: "Keep On Running" }]);
   const stop = startPlanWorker({
     adminUrl: "https://admin.test",
     adminToken: "t",
@@ -107,7 +112,7 @@ test("a song that fails comes back as failed rather than disappearing", async ()
   });
   await new Promise((resolve) => setTimeout(resolve, 60));
   stop();
-  assert.equal(queue[0]?.state, "failed");
+  assert.deepEqual(failures, [queue[0]?.id], "실패도 보고되어야 다시 시도할지 판단할 수 있다");
 });
 
 test("an idle queue is not a busy loop", async () => {

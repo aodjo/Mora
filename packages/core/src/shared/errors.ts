@@ -13,6 +13,8 @@ export type ErrorCode =
   | "FORBIDDEN"
   | "DURATION_REQUIRED"
   | "AMBIGUOUS_RECORDING"
+  /** 맞출 가사가 없다 — 타이밍은 글자에 붙는 것이라 이것만은 없으면 안 된다. */
+  | "LYRICS_REQUIRED"
   | "CANCELLED"
   | "EDIT_LOCKED"
   | "INVALID_DRAFT"

@@ -394,20 +394,18 @@ interface CollectionStatus {
   target: number;
   pending: number;
   claimed: number;
-  done: number;
-  failed: number;
 }
 
 /**
- * How far the run has got against the number the console set.
+ * How much work is waiting, against how much the console asked for.
  *
- * The target is a total for every Collector together, not each — so this is the one place
- * that says whether the round is finished, and the only way to start another.
+ * There are no rounds. The target is simply how many songs should be queued at any moment,
+ * shared by every Collector: raise it and they go and find more, lower it and the surplus is
+ * dropped, set it to zero and they stop taking on anything new.
  */
 function CollectionPanel() {
   const { showToast } = useToast();
   const [status, setStatus] = useState<CollectionStatus | null>(null);
-  const [resetting, setResetting] = useState(false);
   const [saving, setSaving] = useState(false);
   const load = useCallback(() => {
     void api<CollectionStatus>("/collection")
@@ -421,7 +419,7 @@ function CollectionPanel() {
     return () => window.clearInterval(timer);
   }, [load]);
   if (status === null) return null;
-  const filled = status.pending + status.claimed + status.done + status.failed;
+  const queued = status.pending + status.claimed;
   async function setTarget(next: number, said: string): Promise<void> {
     const bounded = Math.max(0, Math.min(5000, Math.round(next)));
     if (bounded === status?.target) return;
@@ -436,29 +434,20 @@ function CollectionPanel() {
       setSaving(false);
     }
   }
-  const settled = status.done + status.failed;
-  const progress = filled === 0 ? 0 : Math.min(1, settled / filled);
-  async function startRound(): Promise<void> {
-    if (!window.confirm("이번 회차를 비우고 다시 시작합니다. 진행 중인 곡은 끝난 뒤 결과가 버려집니다. 계속할까요?")) return;
-    setResetting(true);
-    try {
-      await api("/collection", { method: "DELETE" });
-      showToast("수집 대기열을 비웠습니다. Collector가 다시 채웁니다.");
-      load();
-    } catch (reason) {
-      showToast(reason instanceof Error ? reason.message : "초기화에 실패했습니다", { variant: "error" });
-    } finally {
-      setResetting(false);
-    }
-  }
+  // 목표에 대해 대기열이 얼마나 차 있는지 — 진행률이 아니라 채워진 정도다.
+  const filled = status.target === 0 ? 0 : Math.min(1, queued / status.target);
   return (
     <section className="calibration-panel">
       <div className="calibration-head">
         <div>
           <h3>수집 진행</h3>
           <p>
-            대기열 {filled}곡 · 남은 {status.pending}곡{status.claimed > 0 && ` · ${status.claimed}곡 수집 중`}
-            {status.failed > 0 && ` · ${status.failed}곡 실패`}
+            {status.target === 0
+              ? queued === 0
+                ? "새 곡을 담지 않습니다."
+                : `새 곡은 담지 않고, ${queued}곡만 마무리합니다.`
+              : `대기열 ${queued}곡`}
+            {status.claimed > 0 && ` · ${status.claimed}곡 수집 중`}
           </p>
         </div>
         {/*
@@ -501,13 +490,10 @@ function CollectionPanel() {
               C
             </button>
           </div>
-          <button className="secondary-button" onClick={() => void startRound()} disabled={resetting}>
-            새 회차
-          </button>
         </div>
       </div>
-      <div className="calibration-bar" aria-label={`${settled}/${filled}곡 완료`}>
-        <i style={{ width: `${progress * 100}%` }} />
+      <div className="calibration-bar" aria-label={`목표 ${status.target}곡 중 ${queued}곡 대기`}>
+        <i style={{ width: `${filled * 100}%` }} />
       </div>
     </section>
   );
