@@ -1,6 +1,29 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
+
+/**
+ * The tools the pipeline runs on live in Generator/.venv, not on the system path.
+ *
+ * run-macos.sh puts them there before it starts the worker, so anything launched through it
+ * works. Anything not launched through it — `npm run dev:generator`, a direct node invocation,
+ * a test — got the system python instead, and the daemon then reported yt-dlp, demucs and
+ * whisperx all missing, which is true of that python and says nothing about the machine.
+ * The daemon knows which interpreter it needs, so it is the one that should ask for it.
+ */
+const VENV_BIN = resolve(process.cwd(), "Generator/.venv/bin");
+
+function venvPython(): string | undefined {
+  const interpreter = resolve(VENV_BIN, "python");
+  return existsSync(interpreter) ? interpreter : undefined;
+}
+
+function daemonEnvironment(): NodeJS.ProcessEnv {
+  if (!existsSync(VENV_BIN)) return process.env;
+  const path = process.env.PATH === undefined ? VENV_BIN : `${VENV_BIN}${delimiter}${process.env.PATH}`;
+  return { ...process.env, PATH: path };
+}
 
 interface RpcResponse<T> {
   id: number;
@@ -44,10 +67,10 @@ export class MlDaemon {
   readonly #stderrTail: string[] = [];
   onStage: ((value: { stage: string; state: string; progress: number; metrics: Record<string, number> }) => void) | undefined;
   constructor(
-    command = process.env.MORA_PYTHON ?? "python3",
+    command = process.env.MORA_PYTHON ?? venvPython() ?? "python3",
     script = process.env.MORA_ML_DAEMON_SCRIPT ?? resolve(process.cwd(), "Generator/python/mora_ml_daemon.py"),
   ) {
-    this.#process = spawn(command, [script], { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+    this.#process = spawn(command, [script], { stdio: ["pipe", "pipe", "pipe"], env: daemonEnvironment() });
     // Python/ML libraries are noisy on stderr, but stderr is also where a crashed pipeline
     // leaves its traceback. Draining it blind meant every failure surfaced as the bare code
     // ML_PIPELINE_FAILED and the reason vanished — so the tail is kept, to hand back with
