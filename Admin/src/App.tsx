@@ -441,12 +441,14 @@ function CollectionPanel() {
       <div className="calibration-head">
         <div>
           <h3>수집 진행</h3>
+          {/*
+            목표와 대기열은 같은 축의 두 얼굴이라 나란히 두면 "293과 300이 왜 다르지"를 매번
+            생각하게 된다. 그 차이는 방금 몇 곡이 집어가졌는지일 뿐 읽을 값이 아니므로, 숫자는
+            정한 것 하나만 두고 실제로 얼마나 차 있는지는 아래 막대가 말한다.
+          */}
           <p>
-            {status.target === 0
-              ? queued === 0
-                ? "새 곡을 담지 않습니다."
-                : `새 곡은 담지 않고, ${queued}곡만 마무리합니다.`
-              : `대기열 ${queued}곡`}
+            <b className="target-now">목표 {status.target}곡</b>
+            {status.target === 0 && (queued === 0 ? " · 새 곡을 담지 않습니다" : ` · ${queued}곡만 마무리합니다`)}
             {status.claimed > 0 && ` · ${status.claimed}곡 수집 중`}
           </p>
         </div>
@@ -455,9 +457,6 @@ function CollectionPanel() {
           지금 값에 더하고 빼는 편이 실제 판단에 가깝다. C는 0으로 되돌려 수집을 멈춘다.
         */}
         <div className="target-control">
-          <span className="target-now">
-            목표 <b>{status.target}</b>곡
-          </span>
           <div className="target-keys" role="group" aria-label="수집 목표 조절">
             {STEPS.map((step) => (
               <button
