@@ -430,7 +430,19 @@ def match_sequences(lyric: list[str], heard: list[dict[str, Any]]) -> dict[int, 
         if word not in anchors:
             anchors[word] = heard[heard_owner[heard_index]]
     # 한두 글자가 우연히 겹친 것은 앵커가 아니다. 단어의 절반은 맞아야 그 단어를 봤다고 한다.
-    return {index: word for index, word in anchors.items() if matched_chars[index] * 2 >= len(lyric[index])}
+    # 두 글자짜리에는 절반이 너무 헐겁다: 받아쓰기가 인트로에 지어낸 "한국어" 에 가사의 "싶어"
+    # 가 '어' 하나로 붙어, 그 줄이 노래가 시작하기도 전으로 끌려간 적이 있다. 한 글자 낱말만
+    # 제 한 글자로 족하고, 그보다 길면 최소 두 글자는 맞아야 한다.
+    return {
+        index: word
+        for index, word in anchors.items()
+        if matched_chars[index] >= needed_characters(lyric[index])
+    }
+
+
+def needed_characters(word: str) -> int:
+    """How much of a written word must be heard before we say we heard it."""
+    return 1 if len(word) <= 1 else max(2, (len(word) + 1) // 2)
 
 
 def align_streams(left: list[str], right: list[str]) -> list[tuple[int, int]]:
@@ -801,6 +813,40 @@ def snap_words_to_witness(words: list[list[int | float]], counts: list[int], wit
             words[index][2] = round(warp(control, float(words[index][2])))
 
 
+def spread_in_window(window: list[int], token_index: int, count: int, weights: list[float]) -> list[list[int | float]]:
+    """The words of a line laid out across its own window, by syllable, when nothing was heard."""
+    share = sum(weight_of(weights, token_index + offset) for offset in range(count)) or float(count)
+    span = max(0, window[1] - window[0])
+    placed: list[list[int | float]] = []
+    cursor = float(window[0])
+    for offset in range(count):
+        width = span * weight_of(weights, token_index + offset) / share
+        start = round(cursor)
+        cursor += width
+        placed.append([token_index + offset, start, round(cursor), 0.2])
+    return placed
+
+
+def close_lines_over_words(words: list[list[int | float]], lines: list[list[int]], counts: list[int]) -> None:
+    """
+    A line lasts as long as its words last, and no longer.
+
+    Every step up to here may move a word — the aligner, the witness, the redistribution — but
+    the line's own span was only ever allowed to grow, so it kept whichever start the very first
+    guess had given it. When the words then landed somewhere else, the line stretched to cover
+    both: on the measured song the opening line was written 12.6s–32.4s, nineteen seconds for
+    four words whose own spans occupied 30.0s–32.4s, and it swallowed the six lines after it.
+    The words are the answer; the line is only their outline.
+    """
+    position = 0
+    for line_index, count in enumerate(counts):
+        held = [word for word in words if position <= int(word[0]) < position + count]
+        position += max(0, count)
+        if not held or line_index >= len(lines):
+            continue
+        lines[line_index] = [round(min(float(word[1]) for word in held)), round(max(float(word[2]) for word in held))]
+
+
 def place_backing_runs(
     words: list[list[int | float]],
     counts: list[int],
@@ -1132,8 +1178,10 @@ def align_variant(
                 ]
                 aligned_token_weight += count * min(len(candidates), count) / max(len(candidates), count)
             else:
-                fallback = [word for word in fallback_words if token_index <= int(word[0]) < token_index + count]
-                result_words.extend(fallback)
+                # 정렬기가 이 줄에서 아무것도 못 찾았다. 곡 전체를 낱말 수로 나눈 자리를 쓰면
+                # 이 줄의 창과 아무 상관 없는 데로 간다 — 실측에서 첫 줄이 30초에 놓였고, 창은
+                # 12.6초였다. 창을 아는데 곡 전체를 다시 짐작할 이유가 없다.
+                result_words.extend(spread_in_window(line_windows[line_index], token_index, count, token_weights(text_lines, counts)))
             token_index += count
             last_token_of_line[token_index - 1] = line_index
         snap_line_starts(result_words, line_windows, counts, line_start_witness_ms)
@@ -1143,6 +1191,7 @@ def align_variant(
         spread_crushed_words(result_words, line_windows, counts, weights)
         # 겹쳐 부른 말은 옆에 적혀 있을 뿐 뒤에 부른 것이 아니다. 들린 자리가 있으면 그리로.
         place_backing_runs(result_words, counts, text_lines, weights, second_voice or [])
+        close_lines_over_words(result_words, line_windows, counts)
         coverage = aligned_token_weight / max(1, sum(counts))
         quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, language, detected)
         return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}

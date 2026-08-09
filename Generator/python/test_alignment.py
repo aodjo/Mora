@@ -488,6 +488,34 @@ check("줄 전체가 괄호면 그대로 둔다", whole == same, str(whole))
 check("numpy 가 없으면 구간을 지어내지 않는다", isinstance(daemon.second_voice_regions(Path("없음.wav"), Path("없음.wav")), list))
 
 
+# ── 받아쓰기가 인트로에 지어낸 말: 실측한 Ruru "살인 아니고 사랑인데요??" ──
+# 노래가 시작하기 전 14.8~27.1초를 whisper 가 "한국어 자막을 사용하였습니다" 로 채웠다.
+# 가사의 "싶어" 가 그 "한국어" 에 '어' 한 글자로 붙어, 둘째 줄이 노래 앞으로 끌려갔다.
+check("한 글자 낱말은 제 한 글자로 족하다", daemon.needed_characters("날") == 1)
+check("두 글자는 두 글자 다 맞아야 한다", daemon.needed_characters("싶어") == 2)
+check("세 글자는 두 글자면 된다", daemon.needed_characters("사랑해") == 2)
+check("긴 낱말은 절반", daemon.needed_characters("사랑해줄래") == 3)
+
+HALLUCINATED = spoken_words([("한국어", 14.76, 22.56), ("자막을", 22.56, 26.24), ("사용하였습니다", 26.24, 27.12), ("아프지", 30.0, 30.78), ("않게", 30.78, 31.24)])
+stray_anchors = daemon.match_sequences([daemon.comparable(w) for w in ["너를", "내가", "혼자", "가지고", "싶어", "아프지", "않게"]], HALLUCINATED)
+check("지어낸 말에 두 글자 낱말이 붙지 않는다", 4 not in stray_anchors, f"싶어 → {stray_anchors.get(4, {}).get('start')}s")
+check("제대로 들린 낱말은 여전히 붙는다", 5 in stray_anchors and 6 in stray_anchors, str(sorted(stray_anchors)))
+
+# 정렬기가 한 줄에서 아무것도 못 찾으면, 곡 전체가 아니라 그 줄의 창 안에 편다.
+in_window = daemon.spread_in_window([12620, 15020], 0, 4, [3.0, 2.0, 1.0, 3.0])
+check("못 찾은 줄도 제 창 안에 있다", in_window[0][1] == 12620 and in_window[-1][2] == 15020, str(in_window))
+check("음절 수대로 나눈다", abs((in_window[0][2] - in_window[0][1]) - 3 * (in_window[2][2] - in_window[2][1])) <= 2, str([w[2] - w[1] for w in in_window]))
+check("순서가 지켜진다", all(in_window[i][2] == in_window[i + 1][1] for i in range(3)))
+check("짐작한 자리는 낮은 점수를 갖는다", all(w[3] == 0.2 for w in in_window))
+
+# 줄은 제 낱말이 있는 만큼만 간다 — 자라기만 하던 탓에 19.8초짜리 줄이 나왔다.
+stale_words: list[list[int | float]] = [[0, 30000, 30599, 0.5], [1, 30599, 31198, 0.5], [2, 31198, 32396, 0.5], [3, 40000, 41000, 0.5]]
+stale_lines = [[12620, 32396], [39000, 41000]]
+daemon.close_lines_over_words(stale_words, stale_lines, [3, 1])
+check("줄은 제 낱말에서 시작한다", stale_lines[0][0] == 30000, str(stale_lines[0]))
+check("줄은 제 낱말에서 끝난다", stale_lines[0][1] == 32396, str(stale_lines[0]))
+check("줄이 다음 줄을 삼키지 않는다", stale_lines[0][1] <= stale_lines[1][0], str(stale_lines))
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
