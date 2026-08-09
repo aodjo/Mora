@@ -1429,6 +1429,7 @@ const PIPELINE_STAGES: readonly string[] = [
   "transcode",
   "separate",
   "coarse_asr",
+  "split_voices",
   "language_validate",
   "forced_align",
   "diarize",

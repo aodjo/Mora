@@ -1291,7 +1291,9 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
         split = split_voices(stems["vocals"], directory, config["backend"])
         if split is not None:
             second_voice = second_voice_regions(*split)
-        notify("split_voices", "completed" if split is not None else "skipped", 0.65, {"regions": float(len(second_voice))})
+        # 갈라내지 못한 것은 실패가 아니다 — 겹쳐 부른 목소리를 못 들었을 뿐이고, 그 사실은
+        # 상태가 아니라 숫자로 전한다. 단계 상태는 서버가 아는 네 가지뿐이다.
+        notify("split_voices", "completed", 0.65, {"split": 1.0 if split is not None else 0.0, "regions": float(len(second_voice))})
     notify("language_validate", "started", 0.65)
     validate_language(detected, str(job["recording"].get("language", "und")))
     notify("forced_align", "started", 0.66)

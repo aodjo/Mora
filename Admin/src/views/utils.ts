@@ -80,6 +80,7 @@ export function stageLabel(value: unknown): string {
     transcode: "변환",
     separate: "음원 분리",
     coarse_asr: "받아쓰기",
+    split_voices: "목소리 나누기",
     language_validate: "언어 확인",
     forced_align: "타이밍 정렬",
     diarize: "화자 분석",
