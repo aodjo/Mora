@@ -354,9 +354,49 @@ export function lyricsSearchInput(seed: RecordingSeed): Parameters<LyricsProvide
     ...(seed.isrc ? { isrc: seed.isrc } : {}),
     ...(seed.mbid ? { mbid: seed.mbid } : {}),
     artist: seed.artist,
-    title: seed.title,
+    title: searchableTitle(seed.title),
     ...(seed.album ? { album: seed.album } : {}),
   };
+}
+
+/**
+ * The title as a lyrics search can find it.
+ *
+ * A credit clause belongs to the release, not to the words: "살인 아니고 사랑인데요??
+ * (Feat. $ATSUKI & 백노루양 of 나의 노랑말들)" found nothing on any of five services that all
+ * carry the song under the bare title. The clause is dropped from the query only — the song
+ * keeps its full name everywhere else.
+ */
+export function searchableTitle(title: string): string {
+  // 크레딧 절은 괄호가 중첩되기도 한다 — "(Prod. PATEKO (파테코))" — 그래서 정규식 대신
+  // 여닫음을 세며 걷어낸다. 크레딧 단어로 시작하는 괄호 묶음만 통째로.
+  const opens: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
+  let bare = "";
+  let index = 0;
+  while (index < title.length) {
+    const character = title[index]!;
+    const close = opens[character];
+    if (close !== undefined && /^\s*(?:featuring|feat|ft|prod|with)\b/iu.test(title.slice(index + 1))) {
+      let depth = 1;
+      let scan = index + 1;
+      while (scan < title.length && depth > 0) {
+        if (opens[title[scan]!] !== undefined) depth += 1;
+        else if (title[scan] === ")" || title[scan] === "]" || title[scan] === "}") depth -= 1;
+        scan += 1;
+      }
+      index = scan;
+      continue;
+    }
+    bare += character;
+    index += 1;
+  }
+  bare = bare
+    // "feat.pshine" 처럼 점 뒤에 붙여 쓰기도 한다 — 공백을 요구하면 놓친다.
+    .replace(/\s+(?:featuring|feat|ft)\b\.?\s*\S.*$/iu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  // 제목 전체가 크레딧처럼 생겼다면 지운 쪽이 잘못 본 것이다 — 원제를 그대로 쓴다.
+  return bare.length > 0 ? bare : title;
 }
 
 export function resolveDurationMs(seed: RecordingSeed, sources: YoutubeCandidate[]): number | undefined {

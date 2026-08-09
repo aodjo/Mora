@@ -8,6 +8,7 @@ import {
   lyricsSearchInput,
   resolveDurationMs,
   reviewReason,
+  searchableTitle,
 } from "../Collector/src/service.js";
 import type { RecordingSeed, YoutubeCandidate } from "../Collector/src/types.js";
 
@@ -219,4 +220,16 @@ test("a song with no ISRC still goes to the Generator", async () => {
   assert.equal(report.submitted, 1);
   assert.equal(report.review, 0);
   assert.equal((submitted[0]?.recording as { isrc?: string }).isrc, undefined);
+});
+
+test("a credit clause does not hide a song from its own lyrics", () => {
+  // 실측: 이 제목 그대로는 5개 서비스 전부 0건, feat 절을 빼면 genie·flo 가 바로 내놓았다.
+  assert.equal(searchableTitle("살인 아니고 사랑인데요?? (Feat. $ATSUKI & 백노루양 of 나의 노랑말들)"), "살인 아니고 사랑인데요??");
+  assert.equal(searchableTitle("하치와레girl feat.pshine"), "하치와레girl");
+  assert.equal(searchableTitle("떠나 (Prod. PATEKO (파테코))"), "떠나");
+  // 크레딧이 없는 제목은 손대지 않는다.
+  assert.equal(searchableTitle("좋은 날"), "좋은 날");
+  assert.equal(searchableTitle("With You"), "With You");
+  // 제목 자체가 With 로 시작해도 지워서 빈 문자열을 만들지는 않는다.
+  assert.equal(searchableTitle("(with UV)"), "(with UV)");
 });
