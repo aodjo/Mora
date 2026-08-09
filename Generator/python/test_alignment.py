@@ -195,6 +195,42 @@ check("토큰이 낱말이면 음절대로", daemon.token_weights(["못 도망�
 check("토큰이 낱말이 아니면 같은 몫", daemon.token_weights(["못 도망쳐"], [5]) == [1.0] * 5)
 
 
+# ── 줄 안의 경계는 들은 자리에서 다시 긋는다: 실측한 "…씨발 내 목 좀 놔줄래" ──
+# 정렬기는 네 낱말을 630ms 에 눌러 담고 놔줄래에 774ms 를 줬다. 바닥만 지켜서는
+# 목·좀이 121ms 에 붙어 있을 뿐이고, 놔줄래가 틀렸다는 건 줄 안에서 알 길이 없다.
+check("사상은 조절점 밖에서 평평하다", daemon.warp([(100.0, 200.0), (300.0, 500.0)], 50.0) == 200.0)
+check("사상은 조절점 사이에서 곧다", daemon.warp([(100.0, 200.0), (300.0, 500.0)], 200.0) == 350.0)
+check("사상은 조절점에서 정확하다", daemon.warp([(100.0, 200.0), (300.0, 500.0)], 300.0) == 500.0)
+
+WITNESS_LINE = "내 옆에 서 있어야해 씨발 내 목 좀 놔줄래"
+witness_words: list[list[int | float]] = [
+    [0, 78920, 79264, 0.63], [1, 79264, 79908, 0.83], [2, 79908, 80119, 0.68], [3, 80119, 80592, 0.73],
+    [4, 80592, 80907, 0.85], [5, 80907, 81064, 0.50], [6, 81064, 81185, 0.75], [7, 81185, 81306, 0.47],
+    [8, 81306, 82020, 0.62],
+]
+# 받아쓰기가 들은 자리. 내·옆에는 정렬기가 준 줄 앞이라 쓰이지 않는다.
+witness_heard = {0: 78600.0, 1: 78680.0, 2: 79660.0, 3: 79660.0, 4: 80700.0, 6: 81060.0, 7: 81280.0, 8: 81460.0}
+daemon.snap_words_to_witness(witness_words, [9], dict(witness_heard))
+spans = {int(w[0]): (w[2] - w[1]) for w in witness_words}
+check("눌린 낱말이 들은 만큼 길어진다", spans[6] >= 200 and spans[7] >= 170, f"목 {spans[6]}ms 좀 {spans[7]}ms")
+check("자리를 쥐고 있던 낱말이 내놓는다", spans[8] <= 600, f"놔줄래 {spans[8]}ms")
+check("줄의 시작과 끝은 못 박힌다", witness_words[0][1] == 78920 and witness_words[-1][2] == 82020, str([witness_words[0][1], witness_words[-1][2]]))
+check("순서가 뒤집히지 않는다", all(witness_words[i][2] <= witness_words[i + 1][1] for i in range(len(witness_words) - 1)))
+check("들은 자리에 정확히 온다", witness_words[6][1] == 81060 and witness_words[7][1] == 81280, str([witness_words[6][1], witness_words[7][1]]))
+
+# 증언 대부분이 줄 밖을 가리키면 어긋난 것은 줄이다 — 그런 줄은 건드리지 않는다.
+drifted: list[list[int | float]] = [[0, 110660, 111150, 0.9], [1, 111150, 111310, 0.9], [2, 111310, 111480, 0.9], [3, 111480, 112870, 0.9]]
+before = [row[:] for row in drifted]
+daemon.snap_words_to_witness(drifted, [4], {0: 109540.0, 1: 109800.0, 2: 110060.0, 3: 112120.0})
+check("줄 전체가 밀린 경우에는 손대지 않는다", drifted == before, str(drifted))
+
+# 말하는 인트로에서 들린 소리는 그 줄의 증인이 아니다.
+intro: list[list[int | float]] = [[0, 24260, 25000, 0.9], [1, 25000, 27500, 0.9]]
+untouched = [row[:] for row in intro]
+daemon.snap_words_to_witness(intro, [2], {0: 4940.0, 1: 5200.0})
+check("줄 밖의 증언은 무시한다", intro == untouched, str(intro))
+
+
 # ── 짓눌린 낱말: 실측한 "출근하는 아빠옆에 못 남아 난 도망쳐" ──
 # 앞 낱말이 1429ms 를 쥐고, 뒤의 일곱 음절이 300ms 를 나눠 가졌다. 초당 스무 음절은
 # 노래가 아니다 — 가장 빠른 랩이 열 음절이다.

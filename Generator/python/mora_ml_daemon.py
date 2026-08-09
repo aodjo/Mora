@@ -625,6 +625,63 @@ def token_weights(text_lines: list[str], counts: list[int]) -> list[float]:
     return weights
 
 
+def warp(points: list[tuple[float, float]], value: float) -> float:
+    """A monotone piecewise-linear map through the given control points, flat outside them."""
+    if value <= points[0][0]:
+        return points[0][1]
+    for index in range(1, len(points)):
+        left, right = points[index - 1], points[index]
+        if value <= right[0]:
+            width = right[0] - left[0]
+            return right[1] if width <= 0 else left[1] + (right[1] - left[1]) * (value - left[0]) / width
+    return points[-1][1]
+
+
+def snap_words_to_witness(words: list[list[int | float]], counts: list[int], witness: dict[int, float]) -> None:
+    """
+    Re-cut the boundaries inside a line at the moments the transcriber says it heard each word.
+
+    Giving a crushed word the floor and no more only proves it exists; it does not put it where
+    it was sung. On the measured line "…씨발 내 목 좀 놔줄래" the aligner pressed four words into
+    630ms and left 놔줄래 holding 774ms, so 목 and 좀 came out at the floor, 121ms each, while
+    the transcriber heard them at 220ms and 180ms with 놔줄래 taking 560ms. Nothing inside the
+    line could tell us the aligner was wrong about 놔줄래 — only a second witness could.
+
+    The witness is trusted for boundaries and not for placement: a heard time is used only when
+    it falls inside the span the aligner already gave the line, and the line's own start and end
+    are pinned. So this can move a word within its line and can never move a line. That matters —
+    the transcriber also hears lyric-like sounds in a spoken intro, and one such witness once
+    dragged a whole verse twenty seconds early.
+    """
+    position = 0
+    for count in counts:
+        indices = [index for index, word in enumerate(words) if position <= int(word[0]) < position + count]
+        position += max(0, count)
+        if len(indices) < 2:
+            continue
+        line_start, line_end = float(words[indices[0]][1]), float(words[indices[-1]][2])
+        control: list[tuple[float, float]] = [(line_start, line_start)]
+        spoken = 0
+        for index in indices:
+            heard = witness.get(int(words[index][0]))
+            if heard is None:
+                continue
+            spoken += 1
+            aligned = float(words[index][1])
+            if not (line_start < heard < line_end) or not (line_start < aligned < line_end):
+                continue
+            if heard > control[-1][1] and aligned > control[-1][0]:
+                control.append((aligned, heard))
+        # 증언 대부분이 줄 밖을 가리키면 어긋난 것은 낱말이 아니라 줄이다. 그런 줄은 남은
+        # 몇 마디로 다시 그을수록 나빠진다 — 안쪽에 반은 들어와야 손을 댄다.
+        if len(control) - 1 < max(1, (spoken + 1) // 2):
+            continue
+        control.append((line_end, line_end))
+        for index in indices:
+            words[index][1] = round(warp(control, float(words[index][1])))
+            words[index][2] = round(warp(control, float(words[index][2])))
+
+
 def spread_crushed_words(words: list[list[int | float]], lines: list[list[int]], counts: list[int], weights: list[float]) -> None:
     """
     Give back the time a word lost to the word that ran over it, in proportion to what it sings.
@@ -823,13 +880,29 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
     # When was each line's first word heard — the counter-witness against leading noise.
     anchors = match_sequences(lyric_words, heard_words)
     line_start_witness_ms: dict[int, float] = {}
+    # 그리고 낱말마다: 받아쓰기가 그 낱말을 들은 시각. 줄 안에서 경계를 다시 긋는 데 쓴다.
+    witness_ms: dict[int, float] = {}
     word_offset = 0
+    token_offset = 0
     for line_index, line in enumerate(text_lines):
-        line_word_count = len([word for word in line.split() if comparable(word)])
+        written = line.split()
+        line_word_count = len([word for word in written if comparable(word)])
         opening = anchors.get(word_offset)
         if line_word_count > 0 and opening is not None:
             line_start_witness_ms[line_index] = float(opening["start"]) * 1000
+        # 토큰이 낱말과 하나씩 맞아떨어질 때만 증언을 토큰에 붙일 수 있다.
+        count = counts[line_index] if line_index < len(counts) else 0
+        if count == len(written):
+            spoken = word_offset
+            for position, word in enumerate(written):
+                if not comparable(word):
+                    continue
+                heard_here = anchors.get(spoken)
+                if heard_here is not None:
+                    witness_ms[token_offset + position] = float(heard_here["start"]) * 1000
+                spoken += 1
         word_offset += line_word_count
+        token_offset += count
     line_windows = anchored or [span[:] for span in proportional_windows]
     anchored_by_asr = anchored is not None
     try:
@@ -869,6 +942,7 @@ def align_variant(vocals: Path, variant: dict[str, Any], asr: dict[str, Any], du
             last_token_of_line[token_index - 1] = line_index
         snap_line_starts(result_words, line_windows, counts, line_start_witness_ms)
         extend_held_endings(result_words, line_windows, last_token_of_line, heard_words)
+        snap_words_to_witness(result_words, counts, witness_ms)
         spread_crushed_words(result_words, line_windows, counts, token_weights(text_lines, counts))
         coverage = aligned_token_weight / max(1, sum(counts))
         quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, language, detected)
