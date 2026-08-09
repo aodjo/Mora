@@ -366,30 +366,37 @@ async function removeFromBasket(env: WorkerEnv, actor: Actor, id: string): Promi
   return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
 }
 
-/** Hand the basket to the collectors. Only held rows move; anything running stays put. */
+/**
+ * Hand the basket to the Collectors.
+ *
+ * Until this is pressed a song is only kept, not ordered — that is the whole point of having
+ * a basket, and it did not hold: the Collectors claimed songs the moment they were added, so
+ * a hit taken by mistake was downloaded before anyone could take it back out.
+ */
 async function processBasket(env: WorkerEnv, actor: Actor): Promise<Response> {
   requirePermission(actor, "jobs.manage");
-  const held = await env.ADMIN_DB.prepare("SELECT COUNT(*) AS n FROM song_basket WHERE state='held'").first<{ n: number }>();
-  await env.ADMIN_DB.prepare("UPDATE song_basket SET error=NULL WHERE state IN ('held','failed')").run();
-  await env.ADMIN_DB.prepare("UPDATE song_basket SET state='held' WHERE state='failed'").run();
-  await event(env, "basket.released", { count: held?.n ?? 0 });
-  return json({ released: held?.n ?? 0 }, 202);
+  const moved = await env.ADMIN_DB.prepare("UPDATE song_basket SET state='released',error=NULL WHERE state IN ('held','failed')").run();
+  const released = moved.meta.changes ?? 0;
+  await audit(env, actor, "basket.release", "song_basket", "all", { count: released });
+  await event(env, "basket.released", { count: released });
+  return json({ released }, 202);
 }
 
 /** A collector taking the next basket song, the same atomic claim the search queue uses. */
 async function claimBasketSong(env: WorkerEnv, actor: Actor): Promise<Response> {
   requirePermission(actor, "collector.submit");
   const now = Date.now();
-  await env.ADMIN_DB.prepare("UPDATE song_basket SET state='held',claimed_by=NULL WHERE state='claimed' AND claimed_at < ?1")
+  // 시간이 지나 놓친 곡은 다시 넘겨진 상태로 — 담긴 상태로 되돌리면 사람이 또 눌러야 한다.
+  await env.ADMIN_DB.prepare("UPDATE song_basket SET state='released',claimed_by=NULL WHERE state='claimed' AND claimed_at < ?1")
     .bind(now - 15 * 60_000)
     .run();
   for (let attempt = 0; attempt < 3; attempt++) {
     const next = await env.ADMIN_DB.prepare(
-      "SELECT id,artist,title,album,duration_ms,isrc FROM song_basket WHERE state='held' ORDER BY added_at LIMIT 1",
+      "SELECT id,artist,title,album,duration_ms,isrc FROM song_basket WHERE state='released' ORDER BY added_at LIMIT 1",
     ).first<{ id: string; artist: string; title: string; album: string | null; duration_ms: number | null; isrc: string | null }>();
     if (next === null) return json({ song: null });
     const claimed = await env.ADMIN_DB.prepare(
-      "UPDATE song_basket SET state='claimed',claimed_by=?1,claimed_at=?2 WHERE id=?3 AND state='held'",
+      "UPDATE song_basket SET state='claimed',claimed_by=?1,claimed_at=?2 WHERE id=?3 AND state='released'",
     )
       .bind(actor.id, now, next.id)
       .run();

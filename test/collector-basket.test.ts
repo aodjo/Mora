@@ -72,3 +72,36 @@ test("an empty basket keeps waiting without spending anything", async () => {
   assert.equal(collected, 0);
   assert.deepEqual(answers, []);
 });
+
+test("a song only kept is never handed to a Collector", async () => {
+  // 장바구니의 요점: 잘못 담은 곡을 내려받기 전에 뺄 수 있어야 한다. 담자마자 가져가면
+  // 처리 버튼은 이미 끝난 일에 대고 누르는 버튼이 된다.
+  const claimed: string[] = [];
+  const basket = [
+    { id: "b1", artist: "aespa", title: "Whiplash", state: "held" },
+    { id: "b2", artist: "IU", title: "Love wins all", state: "released" },
+  ];
+  const fetcher = (async (input: string | URL | Request) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.endsWith("/basket/claim")) {
+      const next = basket.find((song) => song.state === "released");
+      if (next === undefined) return Response.json({ song: null });
+      next.state = "claimed";
+      return Response.json({ song: { id: next.id, artist: next.artist, title: next.title } });
+    }
+    return Response.json({ accepted: true });
+  }) as typeof fetch;
+  const stop = startBasketWorker({
+    adminUrl: "https://admin.test",
+    adminToken: "t",
+    fetch: fetcher,
+    pollMs: 5,
+    collect: async (seed) => {
+      claimed.push(seed.title);
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  stop();
+  assert.deepEqual(claimed, ["Love wins all"], "넘긴 곡만 수집되어야 한다");
+  assert.equal(basket[0]?.state, "held", "담아둔 곡은 그대로 있어야 한다");
+});
