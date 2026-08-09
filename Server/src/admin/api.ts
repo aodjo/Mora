@@ -11,7 +11,6 @@ import type {
 import { JOB_SCHEMA_VERSION } from "../../../packages/contracts/src/index.js";
 import type { WorkerEnv } from "../env.js";
 import { audit, authenticate, requirePermission, sha256, type Actor } from "./auth.js";
-import { publishAdminEvent } from "./events.js";
 import { bootstrapOptions, bootstrapVerify, credentialOptions, credentialVerify, loginOptions, loginVerify, logout } from "./webauthn.js";
 import { serveArtifact } from "./artifacts.js";
 import { approveCollectorPairing, pollCollectorPairing, startCollectorPairing } from "./collector-pairing.js";
@@ -81,9 +80,25 @@ function randomSecret(): string {
   return `mora_${Array.from(data, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
+/**
+ * Tells whoever is watching that something happened.
+ *
+ * This used to fan out to a Durable Object that the console held open with an SSE stream, and
+ * an object with a stream attached is alive for as long as the stream is — a console left
+ * open on a desk spent the whole Durable Objects allowance, and once it ran out every write
+ * that reported something failed with it. The console polls instead, which costs a request
+ * rather than an object that has to stay awake, so what remains here is the outbound
+ * notification for the few events someone asked to be told about.
+ *
+ * It is still a side effect of the thing that happened, not part of it: the row is written
+ * before this runs and a webhook nobody answers must not turn it into a 500.
+ */
 async function event(env: WorkerEnv, type: string, data: Record<string, unknown>): Promise<void> {
-  await publishAdminEvent(env.ADMIN_EVENTS, { type, data, at: Date.now() });
-  await dispatchNotifications(env, type, data);
+  try {
+    await dispatchNotifications(env, type, data);
+  } catch (error) {
+    console.error(`event notify failed: ${type} ${error instanceof Error ? error.name : typeof error}`);
+  }
 }
 
 function actorJson(actor: Actor): unknown {
@@ -1944,10 +1959,6 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "GET" && pairingMatch?.[1] !== undefined) return pollCollectorPairing(request, env, pairingMatch[1]);
 
   const actor = await authenticate(request, env);
-  if (request.method === "GET" && url.pathname === "/admin/api/events") {
-    requirePermission(actor, "dashboard.read");
-    return env.ADMIN_EVENTS.get(env.ADMIN_EVENTS.idFromName("global")).fetch("https://events.internal/subscribe");
-  }
   if (request.method === "GET" && url.pathname === "/admin/api/overview") {
     requirePermission(actor, "dashboard.read");
     return json(await overview(env));

@@ -262,7 +262,7 @@ export default function App() {
           <div className="topbar-actions">
             <span className="connection">
               <i className={live ? "busy" : ""} />
-              실시간 연결
+              자동 새로고침
             </span>
             <ThemeToggle theme={theme} onToggle={toggleTheme} />
           </div>

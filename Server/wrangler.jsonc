@@ -50,18 +50,18 @@
       "40 4 * * *"
     ]
   },
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "ADMIN_EVENTS",
-        "class_name": "AdminEventHub"
-      }
-    ]
-  },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": [
+        "AdminEventHub"
+      ]
+    },
+    {
+      // 콘솔이 SSE 로 붙잡고 있는 동안 객체가 깨어 있어 Durable Objects 시간을 모두 썼다.
+      // 콘솔은 이제 폴링한다 — 요청 하나가 깨어 있는 객체보다 싸다.
+      "tag": "v2",
+      "deleted_classes": [
         "AdminEventHub"
       ]
     }

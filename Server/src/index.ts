@@ -2,7 +2,6 @@ import { serializeOutput } from "../../packages/core/src/api/formats.js";
 import { AlignmentService } from "../../packages/core/src/service.js";
 import { ServiceError } from "../../packages/core/src/shared/errors.js";
 import { handleAdmin } from "./admin/api.js";
-import { AdminEventHub } from "./admin/events.js";
 import { runtimeValue } from "./admin/runtime-config.js";
 import { D1AlignmentStore } from "./d1-store.js";
 import type { WorkerEnv } from "./env.js";
@@ -102,8 +101,6 @@ async function route(request: Request, env: WorkerEnv): Promise<Response> {
   if (url.pathname.startsWith("/admin/")) return adminAsset(request, env);
   return publicRoute(request, env);
 }
-
-export { AdminEventHub };
 
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {

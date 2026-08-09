@@ -4,7 +4,6 @@ export interface WorkerEnv {
   ADMIN_ARTIFACTS: R2Bucket;
   PUBLIC_DUMPS: R2Bucket;
   GENERATION_QUEUE: Queue;
-  ADMIN_EVENTS: DurableObjectNamespace;
   ASSETS: Fetcher;
   BOOTSTRAP_TOKEN?: string;
   ADMIN_RP_ID?: string;
