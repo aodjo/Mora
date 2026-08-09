@@ -56,3 +56,37 @@ CREATE INDEX lyric_sources_provider_idx ON lyric_sources(provider);
 DROP TABLE lyric_revisions;
 
 PRAGMA foreign_keys = ON;
+
+-- 후보가 가리키는 곳도 새 테이블로 옮긴다. SQLite 는 외래키만 따로 고칠 수 없어 표를 다시 만든다.
+PRAGMA foreign_keys = OFF;
+
+CREATE TABLE alignment_candidates_next (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jobs(id),
+  input_revision_id TEXT NOT NULL REFERENCES input_revisions(id),
+  variant_id TEXT NOT NULL REFERENCES lyric_texts(id),
+  parent_id TEXT NULL REFERENCES alignment_candidates_next(id),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('draft', 'pending', 'approved', 'rejected', 'published', 'withdrawn')),
+  tokenizer TEXT NOT NULL,
+  text_hash TEXT NOT NULL,
+  fp_lens BLOB NOT NULL,
+  fp_types BLOB NOT NULL,
+  line_spans BLOB NOT NULL,
+  word_spans BLOB NOT NULL,
+  speaker_turns BLOB NOT NULL,
+  word_speakers BLOB NOT NULL,
+  line_speakers BLOB NOT NULL,
+  quality TEXT NOT NULL,
+  quality_score REAL NOT NULL,
+  pipeline_version TEXT NOT NULL,
+  backend TEXT NOT NULL,
+  hardware TEXT NOT NULL,
+  created_by TEXT NULL,
+  created_at INTEGER NOT NULL
+);
+
+INSERT INTO alignment_candidates_next SELECT * FROM alignment_candidates;
+DROP TABLE alignment_candidates;
+ALTER TABLE alignment_candidates_next RENAME TO alignment_candidates;
+
+PRAGMA foreign_keys = ON;
