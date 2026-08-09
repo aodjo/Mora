@@ -278,6 +278,21 @@ check("첫 앵커 앞 줄들이 한 점에 뭉개지지 않는다", intro_window
 check("창이 거꾸로 되지 않는다", all(w[1] >= w[0] for w in intro_windows), str(intro_windows))
 check("앵커가 있는 줄은 들은 자리에 온다", abs(intro_windows[2][0] / 1000 - 30.6) < 0.2, f"{intro_windows[2][0] / 1000:.1f}s")
 
+
+# ── 어느 언어로 들을 것인가: 일본어 인트로가 한국어 곡의 언어를 정하면 안 된다 ──
+# 실측: language=und 로 자동 감지에 맡겼더니 첫 부분의 일본어 스킷으로 ja 를 골랐고,
+# 한국어 노래 전체를 일본어로 받아써 じゃ 를 오백 번 내놓았다. 가사는 언어를 알고 있다.
+check("녹음에 언어가 있으면 그것을 따른다",
+      daemon.expected_language({"recording": {"language": "ja"}, "lyrics": [{"language": "ko"}]}) == "ja")
+check("녹음이 모르면 가사가 말한다",
+      daemon.expected_language({"recording": {"language": "und"}, "lyrics": [{"language": "ko"}, {"language": "ko"}]}) == "ko")
+check("가사가 갈리면 다수를 따른다",
+      daemon.expected_language({"recording": {"language": "und"}, "lyrics": [{"language": "ko"}, {"language": "ko"}, {"language": "en"}]}) == "ko")
+check("아무도 모르면 자동 감지에 맡긴다",
+      daemon.expected_language({"recording": {"language": "und"}, "lyrics": []}) == "und")
+check("지역 꼬리표는 접는다",
+      daemon.expected_language({"recording": {"language": "ko-KR"}, "lyrics": []}) == "ko")
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")

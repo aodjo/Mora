@@ -119,6 +119,27 @@ def separate(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
     return stems
 
 
+def expected_language(job: dict[str, Any]) -> str:
+    """
+    The language the transcriber should listen in.
+
+    Left to itself Whisper decides from the opening seconds, and a track that opens with a
+    Japanese skit before a Korean song is then transcribed as Japanese end to end — on the
+    measured track it produced じゃ five hundred times and not one word of the lyrics. We are
+    not guessing: the lyric sheets name their language. When the recording does not say, the
+    lyrics do.
+    """
+    recorded = str(job["recording"].get("language", "und")).split("-")[0]
+    if recorded != "und":
+        return recorded
+    votes: dict[str, int] = {}
+    for variant in job.get("lyrics", []):
+        code = str(variant.get("language", "und")).split("-")[0]
+        if code != "und":
+            votes[code] = votes.get(code, 0) + 1
+    return max(votes, key=lambda code: votes[code]) if votes else "und"
+
+
 def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any], str]:
     if backend == "mps":
         import mlx_whisper
@@ -127,7 +148,15 @@ def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any
         # 증인이므로, 흘린 단어는 곧 앵커가 없는 줄이고 그것이 정렬을 무너뜨린다.
         model = os.getenv("MORA_MLX_WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
         with redirect_stdout(sys.stderr):
-            result = mlx_whisper.transcribe(str(vocals), path_or_hf_repo=model, word_timestamps=True, language=None if language == "und" else language.split("-")[0])
+            # condition_on_previous_text 가 켜져 있으면 한 번 삐끗한 뒤 같은 말을 되풀이한다 —
+            # 실측에서 じゃ 를 오백 번 받아썼다. 각 구간을 제 소리로만 듣게 한다.
+            result = mlx_whisper.transcribe(
+                str(vocals),
+                path_or_hf_repo=model,
+                word_timestamps=True,
+                condition_on_previous_text=False,
+                language=None if language == "und" else language.split("-")[0],
+            )
         return result, str(result.get("language", language))
     import whisperx
     device = "cuda" if backend == "cuda" else backend
@@ -825,7 +854,7 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     stems = separate(mixture, directory, config["backend"])
     notify("separate", "completed", 0.52)
     notify("coarse_asr", "started", 0.55)
-    asr, detected = coarse_asr(stems["vocals"], job["recording"].get("language", "und"), config["backend"])
+    asr, detected = coarse_asr(stems["vocals"], expected_language(job), config["backend"])
     notify("coarse_asr", "completed", 0.64)
     notify("language_validate", "started", 0.65)
     validate_language(detected, str(job["recording"].get("language", "und")))
