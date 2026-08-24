@@ -70,6 +70,8 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   const [published, setPublished] = useState(false);
   const audioRefs = useRef(new Map<string, HTMLAudioElement>());
   const playingId = useRef<string | null>(null);
+  const frame = useRef<number | null>(null);
+  useEffect(() => () => void (frame.current !== null && cancelAnimationFrame(frame.current)), []);
   const volumeSet = useRef(new Set<string>());
   const lineRefs = useRef(new Map<number, HTMLDivElement>());
   useEffect(() => {
@@ -212,10 +214,7 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   // 정렬기가 눌러 놓은 낱말은 바닥값만 받는다 — 잰 것이 아니라 구해 준 것이다. 스쳐 지나가
   // 눈에 안 띄므로, 어느 것이 그런지 먼저 보이게 한다.
   const rescued = useMemo(
-    () =>
-      new Set(
-        (detail?.word_scores ?? []).filter(([token, score]) => !touched.has(token) && wasGuessed(score)).map(([token]) => token),
-      ),
+    () => new Set((detail?.word_scores ?? []).filter(([token, score]) => !touched.has(token) && wasGuessed(score)).map(([token]) => token)),
     [detail, touched],
   );
   const activeToken = activeSpan?.[0] ?? null;
@@ -298,6 +297,28 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
     for (const [otherId, audio] of audioRefs.current) if (otherId !== id) audio.pause();
     playingId.current = id;
     setCurrentMs(element.currentTime * 1000);
+    follow(element);
+  }
+  /**
+   * Read the playhead every frame while the audio runs.
+   *
+   * The media element's timeupdate event was the only thing moving the cursor, and browsers fire
+   * it about four times a second — measured here at one every 266ms. A word is 150-400ms long, so
+   * the highlight sat up to a quarter second behind the sound and always felt a beat late, no
+   * matter how right the timings underneath were. Asking the element where it is, once a frame,
+   * costs nothing and removes all of that.
+   */
+  function follow(element: HTMLAudioElement): void {
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    const tick = (): void => {
+      if (element.paused || element.ended) {
+        frame.current = null;
+        return;
+      }
+      setCurrentMs(element.currentTime * 1000);
+      frame.current = requestAnimationFrame(tick);
+    };
+    frame.current = requestAnimationFrame(tick);
   }
 
   return (
