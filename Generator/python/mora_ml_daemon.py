@@ -100,10 +100,19 @@ def downloaded(directory: Path) -> Path | None:
 
 
 def download(job: dict[str, Any], directory: Path, cookie_file: str | None) -> Path:
+    """
+    The audio, from the first source that gives it up.
+
+    YouTube signs its media URLs with a challenge that has to be run as JavaScript. yt-dlp only
+    looks for deno by default, and without a runtime it falls back to a client whose URLs come
+    back 403 Forbidden. Node is always here — the worker that calls this daemon is a Node
+    program — so it is offered as a runtime rather than left unfound.
+    """
     urls = [job["source"]["url"], *job["source"].get("alternatives", [])]
+    refused: list[str] = []
     for url in urls:
         output = directory / "source.%(ext)s"
-        args = ["yt-dlp", "--no-playlist", "--no-write-info-json", "-f", "bestaudio/best", "-o", str(output)]
+        args = ["yt-dlp", "--no-playlist", "--no-write-info-json", "--js-runtimes", "node", "-f", "bestaudio/best", "-o", str(output)]
         if cookie_file:
             args += ["--cookies", cookie_file]
         args.append(url)
@@ -112,7 +121,13 @@ def download(job: dict[str, Any], directory: Path, cookie_file: str | None) -> P
             existing = downloaded(directory)
             if existing is not None:
                 return existing
-    raise RuntimeError("YTDLP_FAILED")
+        # yt-dlp 가 왜 안 됐는지 말했는데 그것을 버리면, 남는 것은 "안 됐다" 뿐이다.
+        said = [line for line in result.stderr.splitlines() if line.strip()]
+        refused.append(f"{url}: {said[-1] if said else f'exit {result.returncode}'}")
+    error = RuntimeError("YTDLP_FAILED")
+    error.detail = "\n".join(refused)  # type: ignore[attr-defined]
+    print(f"[download] {error.detail}", file=sys.stderr)
+    raise error
 
 
 def transcode(source: Path, directory: Path) -> Path:
