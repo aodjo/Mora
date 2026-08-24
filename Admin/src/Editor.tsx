@@ -220,7 +220,9 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   const activeToken = activeSpan?.[0] ?? null;
   const activeLine = activeToken === null ? null : (tokens.get(activeToken)?.line ?? null);
   useEffect(() => {
-    if (activeLine !== null) lineRefs.current.get(activeLine)?.scrollIntoView({ block: "nearest" });
+    // 부드럽게 굴리면 줄이 자리를 잡는 동안 눈이 그것을 쫓는다. 노래방 커서는 기다려 주지
+    // 않으므로 즉시 옮긴다.
+    if (activeLine !== null) lineRefs.current.get(activeLine)?.scrollIntoView({ block: "nearest", behavior: "instant" });
   }, [activeLine]);
   if (detail === null) return <p className="loading-copy">편집기를 불러오는 중…</p>;
   const jobId = detail.job_id;

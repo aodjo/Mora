@@ -2284,7 +2284,6 @@ textarea:focus-visible {
   max-height: 520px;
   overflow: auto;
   padding: 6px 20px 12px;
-  scroll-behavior: smooth;
 }
 .lyric-line {
   display: grid;
@@ -3786,4 +3785,14 @@ textarea:focus-visible {
 .tl-unplaced-row button.chosen {
   outline: 2px solid var(--link);
   outline-offset: 1px;
+}
+
+/* 켜지는 하이라이트는 서서히 물들면 안 된다.
+   낱말 단추는 전역 규칙에서 0.15s 색 전환을 물려받는데, 그 곡선(ease)은 앞이 가팔라
+   변화의 절반이 29% 지점에 온다 — 그래도 눈에는 40ms 남짓 늦게 켜진 것으로 읽힌다.
+   낱말이 150ms 인 판에서는 그만큼이 한 박자다. 마우스를 올릴 때의 전환은 남겨 둔다. */
+.lyric-tokens button.active,
+.tl-word.chosen,
+.lyric-line.active {
+  transition: none;
 }
