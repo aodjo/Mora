@@ -61,6 +61,7 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   const [regenerating, setRegenerating] = useState(false);
   const [resumed, setResumed] = useState<number | null>(null);
   const [chosen, setChosen] = useState<number | null>(null);
+  const [lyricsOpen, setLyricsOpen] = useState(true);
   const [publishing, setPublishing] = useState(false);
   const [published, setPublished] = useState(false);
   const audioRefs = useRef(new Map<string, HTMLAudioElement>());
@@ -345,16 +346,17 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
       </section>
 
       <section className="lyrics-review-panel">
-        <div className="editor-section-heading">
-          <div>
-            <h3>가사와 문장 타이밍</h3>
-            <p>문장이나 단어를 누르면 해당 위치로 이동합니다.</p>
-          </div>
-          <span>
+        <button type="button" className="editor-fold" aria-expanded={lyricsOpen} onClick={() => setLyricsOpen((open) => !open)}>
+          <span className={`editor-fold-mark${lyricsOpen ? " open" : ""}`} aria-hidden="true" />
+          <span className="editor-fold-title">
+            <span>가사와 문장 타이밍</span>
+            <small>문장이나 단어를 누르면 해당 위치로 이동합니다.</small>
+          </span>
+          <span className="editor-fold-count">
             {detail.lines.length}문장 · {detail.tokens.length}단어
           </span>
-        </div>
-        <div className="lyrics-lines">
+        </button>
+        <div className="lyrics-lines" hidden={!lyricsOpen}>
           {detail.lines.map((line) => {
             const lineSpans = line.token_indices.flatMap((index) => {
               const span = spans.get(index);
