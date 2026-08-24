@@ -154,8 +154,10 @@ KARAOKE_MODEL = "mel_band_roformer_karaoke_gabox_v2.ckpt"
 
 
 def model_cache() -> str:
-    root = os.getenv("MORA_CACHE_ROOT") or str(Path.home() / "Library/Caches/Mora")
-    directory = Path(root) / "audio-separator"
+    # 맥에서는 run-macos.sh 가 자리를 정해 준다. 도커/리눅스에서는 정해 주는 사람이 없으므로
+    # 그쪽 관례를 따른다 — 아니면 500MB 짜리 모델이 /root/Library 같은 데로 간다.
+    default = Path.home() / ("Library/Caches/Mora" if platform.system() == "Darwin" else ".cache/mora")
+    directory = Path(os.getenv("MORA_CACHE_ROOT") or default) / "audio-separator"
     directory.mkdir(parents=True, exist_ok=True)
     return str(directory)
 
@@ -173,7 +175,7 @@ def loaded_separator() -> Any:
     return separator_cache["separator"]
 
 
-def split_voices(vocals: Path, directory: Path, backend: str) -> tuple[Path, Path] | None:
+def split_voices(vocals: Path, directory: Path) -> tuple[Path, Path] | None:
     """
     The lead voice and the one singing over it, as two files.
 
@@ -186,6 +188,9 @@ def split_voices(vocals: Path, directory: Path, backend: str) -> tuple[Path, Pat
     "아 아 아". It can be *heard*, and that is all the timing needs: on the same song the split
     put four times more energy where the asides are than where the lead sings alone, and near
     silence in the interlude.
+
+    No backend is passed because the separator picks its own: CUDA first, then Apple's MPS, then
+    the processor. Telling it twice could only ever tell it something different.
     """
     lead = directory / "lead.wav"
     backing = directory / "backing.wav"
@@ -1634,7 +1639,7 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     second_voice: list[tuple[float, float]] = []
     if os.getenv("MORA_SPLIT_VOICES", "1") != "0":
         notify("split_voices", "started", 0.645)
-        split = split_voices(stems["vocals"], directory, config["backend"])
+        split = split_voices(stems["vocals"], directory)
         if split is not None:
             second_voice = second_voice_regions(*split)
         # 갈라내지 못한 것은 실패가 아니다 — 겹쳐 부른 목소리를 못 들었을 뿐이고, 그 사실은

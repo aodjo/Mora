@@ -15,6 +15,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certi
 COPY --from=ts-build /usr/local/bin/node /usr/local/bin/node
 WORKDIR /app
 COPY Generator/python ./Generator/python
-RUN pip install --no-cache-dir ./Generator/python
+RUN pip install --no-cache-dir "./Generator/python[cuda]"
 COPY --from=ts-build /app/dist ./dist
 CMD ["node", "dist/Generator/src/worker-cli.js"]

@@ -19,4 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-apple = ["mlx-whisper>=0.4"]
+# audio-separator 는 어떤 모델을 쓰든 onnxruntime 을 모듈 단계에서 불러온다. 우리가 쓰는
+# roformer 는 순수 torch 라 실행에는 쓰이지 않지만, 없으면 import 부터 실패한다.
+apple = ["mlx-whisper>=0.4", "onnxruntime>=1.17"]
+cuda = ["onnxruntime-gpu>=1.17"]
