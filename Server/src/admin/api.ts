@@ -1714,35 +1714,39 @@ async function acquireLease(env: WorkerEnv, actor: Actor, candidateId: string, f
   return json({ candidate_id: candidateId, holder: actor.id, expires_at: Date.now() + 10 * 60_000 });
 }
 
-function validDraft(value: Record<string, unknown>): boolean {
+/**
+ * Whether a draft is something we could publish.
+ *
+ * It used to demand that every span begin at or after the previous one ended. That is not a
+ * property this data has: a bracketed aside is a second voice sung over the line beside it, so
+ * it holds the same seconds as its neighbour and is written before it. On the measured song the
+ * aside ran 104.04-106.19 while the line it is sung over began at 104.02 — perfectly correct,
+ * and rejected. The draft was stored as unpublishable while the screen said it was saved, and
+ * submitting came back 409, so every song with an aside in its lyric was impossible to revise.
+ *
+ * What this is for is catching a slip in the editor, not re-arguing with the aligner. So a span
+ * has to be a real span, and the draft has to still be about the same words: no word dropped, no
+ * word invented, no line appearing or vanishing. Where two voices fall in the same seconds, that
+ * is the song, and it is left alone.
+ */
+export function validDraft(value: Record<string, unknown>, expected: { tokens: number[]; lines: number }): boolean {
   const lines = value.line_spans;
   const words = value.word_spans;
   if (!Array.isArray(lines) || !Array.isArray(words)) return false;
-  let previous = 0;
+  if (lines.length !== expected.lines || words.length !== expected.tokens.length) return false;
   for (const row of lines) {
-    if (
-      !Array.isArray(row) ||
-      row.length !== 2 ||
-      row.some((item) => typeof item !== "number") ||
-      Number(row[0]) < previous ||
-      Number(row[1]) <= Number(row[0])
-    )
-      return false;
-    previous = Number(row[1]);
+    if (!Array.isArray(row) || row.length !== 2 || row.some((item) => typeof item !== "number")) return false;
+    if (Number(row[0]) < 0 || !Number.isFinite(Number(row[1])) || Number(row[1]) <= Number(row[0])) return false;
   }
-  previous = 0;
+  const seen: number[] = [];
   for (const row of words) {
-    if (
-      !Array.isArray(row) ||
-      row.length < 3 ||
-      row.some((item, index) => index < 3 && typeof item !== "number") ||
-      Number(row[1]) < previous ||
-      Number(row[2]) <= Number(row[1])
-    )
-      return false;
-    previous = Number(row[2]);
+    if (!Array.isArray(row) || row.length < 3 || row.some((item, index) => index < 3 && typeof item !== "number")) return false;
+    if (Number(row[1]) < 0 || !Number.isFinite(Number(row[2])) || Number(row[2]) <= Number(row[1])) return false;
+    seen.push(Number(row[0]));
   }
-  return true;
+  const wanted = [...expected.tokens].sort((left, right) => left - right);
+  const given = seen.sort((left, right) => left - right);
+  return wanted.every((token, index) => token === given[index]);
 }
 
 async function saveDraft(env: WorkerEnv, actor: Actor, candidateId: string, value: Record<string, unknown>): Promise<Response> {
@@ -1751,7 +1755,12 @@ async function saveDraft(env: WorkerEnv, actor: Actor, candidateId: string, valu
     .bind(candidateId)
     .first<{ user_id: string; expires_at: number }>();
   if (lease === null || lease.user_id !== actor.id || lease.expires_at < Date.now()) throw new ServiceError(423, "EDIT_LOCKED");
-  const valid = validDraft(value);
+  const source = await env.ADMIN_DB.prepare("SELECT line_spans,word_spans FROM alignment_candidates WHERE id=?1")
+    .bind(candidateId)
+    .first<{ line_spans: ArrayBuffer; word_spans: ArrayBuffer }>();
+  if (source === null) throw new ServiceError(404, "NOT_FOUND");
+  const original = decode<Array<[number, number, number]>>(source.word_spans);
+  const valid = validDraft(value, { tokens: original.map((row) => row[0]), lines: decode<unknown[]>(source.line_spans).length });
   await env.ADMIN_DB.batch([
     env.ADMIN_DB.prepare(
       "INSERT INTO draft_edits (candidate_id,user_id,data,valid,updated_at) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(candidate_id,user_id) DO UPDATE SET data=excluded.data,valid=excluded.valid,updated_at=excluded.updated_at",
