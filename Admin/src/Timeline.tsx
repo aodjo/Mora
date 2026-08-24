@@ -53,6 +53,7 @@ interface Props {
   unplaced: TimelineToken[];
   onPlace: (token: number) => void;
   onPlaceAt: (ms: number) => void;
+  onConfirm: (token: number) => void;
 }
 
 type Grab = { row: number; edge: "start" | "end" | "body"; grabbedMs: number; from: [number, number] };
@@ -262,8 +263,16 @@ export function Timeline(props: Props): ReactElement {
                 key={span[0]}
                 className={`tl-word${chosen === span[0] ? " chosen" : ""}${rescued.has(span[0]) ? " rescued" : ""}${aside ? " aside" : ""}`}
                 style={{ left: `${x(span[1])}px`, width: `${Math.max(3, (span[2] - span[1]) * scale)}px` } as CSSProperties}
-                title={`${token?.text ?? span[0]} · ${span[1]}–${span[2]}ms`}
+                title={
+                  rescued.has(span[0])
+                    ? `${token?.text ?? span[0]} · ${span[1]}–${span[2]}ms · 정렬기가 재지 못한 낱말입니다. 두 번 누르면 확인 표시가 사라집니다`
+                    : `${token?.text ?? span[0]} · ${span[1]}–${span[2]}ms`
+                }
                 onPointerDown={(event) => startGrab(event, row, span)}
+                onDoubleClick={(event) => {
+                  event.stopPropagation();
+                  props.onConfirm(span[0]);
+                }}
               >
                 <span className="tl-word-text">{token?.text ?? span[0]}</span>
               </div>

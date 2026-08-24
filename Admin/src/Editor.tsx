@@ -414,6 +414,12 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
           onMove={(row, startMs, endMs) => moveWord(row, Math.round(startMs), Math.round(endMs))}
           unplaced={unplaced}
           onPlace={placeAtPlayhead}
+          onConfirm={(token) => {
+            // 눈으로 확인했다는 뜻이지 타이밍을 바꾼 것은 아니다 — 초안을 더럽히지 않는다.
+            if (!rescued.has(token)) return;
+            markTouched(token);
+            showToast("확인 표시를 지웠습니다.");
+          }}
           onPlaceAt={(ms) => {
             // 타임라인의 빈 곳을 두 번 누르면, 고른 낱말(없으면 첫 낱말)이 제 빈틈에 들어간다.
             const next = unplaced.find((token) => token.index === chosen) ?? unplaced[0];
