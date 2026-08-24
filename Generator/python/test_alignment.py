@@ -195,40 +195,40 @@ check("토큰이 낱말이면 음절대로", daemon.token_weights(["못 도망�
 check("토큰이 낱말이 아니면 같은 몫", daemon.token_weights(["못 도망쳐"], [5]) == [1.0] * 5)
 
 
-# ── 줄 안의 경계는 들은 자리에서 다시 긋는다: 실측한 "…씨발 내 목 좀 놔줄래" ──
-# 정렬기는 네 낱말을 630ms 에 눌러 담고 놔줄래에 774ms 를 줬다. 바닥만 지켜서는
-# 목·좀이 121ms 에 붙어 있을 뿐이고, 놔줄래가 틀렸다는 건 줄 안에서 알 길이 없다.
-check("사상은 조절점 밖에서 평평하다", daemon.warp([(100.0, 200.0), (300.0, 500.0)], 50.0) == 200.0)
-check("사상은 조절점 사이에서 곧다", daemon.warp([(100.0, 200.0), (300.0, 500.0)], 200.0) == 350.0)
-check("사상은 조절점에서 정확하다", daemon.warp([(100.0, 200.0), (300.0, 500.0)], 300.0) == 500.0)
+# ── 두 증인은 서로 다르게 틀린다: 정렬기는 정밀하고 받아쓰기는 거칠다 ──
+# 예전에는 줄 안의 모든 경계를 받아쓰기 시각으로 다시 그었다. 셋째 정렬기(둘 다 본 적
+# 없는 다국어 모델)를 심판으로 재보니, 그러면 일치가 세 배로 나빠졌다: 중앙 오차 46ms
+# → 148ms, 100ms 안에 드는 낱말 64% → 36%. 그래서 받아쓰기는 잘하는 일에만 쓴다 —
+# 줄이 통째로 어디쯤이었는지는 알고, 줄 안에서 어느 낱말이 언제인지는 모른다.
+DRIFTED_LINE = [[0, 110660, 111150, 0.9], [1, 111150, 111310, 0.9], [2, 111310, 111480, 0.9], [3, 111480, 112870, 0.9]]
+drifted = [row[:] for row in DRIFTED_LINE]
+widths = [row[2] - row[1] for row in drifted]
+daemon.snap_words_to_witness(drifted, [4], {0: 109540.0, 1: 109800.0, 2: 110060.0, 3: 111880.0})
+check("한참 밀린 줄은 들은 자리로 옮긴다", abs(drifted[0][1] - 109540) < 200, f"{drifted[0][1]}ms (들은 자리 109540ms)")
+check("줄 안의 간격은 그대로 지킨다", [row[2] - row[1] for row in drifted] == widths, str([row[2] - row[1] for row in drifted]))
+check("낱말끼리 벌어진 간격도 그대로", drifted[1][1] - drifted[0][2] == DRIFTED_LINE[1][1] - DRIFTED_LINE[0][2])
 
-WITNESS_LINE = "내 옆에 서 있어야해 씨발 내 목 좀 놔줄래"
-witness_words: list[list[int | float]] = [
-    [0, 78920, 79264, 0.63], [1, 79264, 79908, 0.83], [2, 79908, 80119, 0.68], [3, 80119, 80592, 0.73],
-    [4, 80592, 80907, 0.85], [5, 80907, 81064, 0.50], [6, 81064, 81185, 0.75], [7, 81185, 81306, 0.47],
-    [8, 81306, 82020, 0.62],
-]
-# 받아쓰기가 들은 자리. 내·옆에는 정렬기가 준 줄 앞이라 쓰이지 않는다.
-witness_heard = {0: 78600.0, 1: 78680.0, 2: 79660.0, 3: 79660.0, 4: 80700.0, 6: 81060.0, 7: 81280.0, 8: 81460.0}
-daemon.snap_words_to_witness(witness_words, [9], dict(witness_heard))
-spans = {int(w[0]): (w[2] - w[1]) for w in witness_words}
-check("눌린 낱말이 들은 만큼 길어진다", spans[6] >= 200 and spans[7] >= 170, f"목 {spans[6]}ms 좀 {spans[7]}ms")
-check("자리를 쥐고 있던 낱말이 내놓는다", spans[8] <= 600, f"놔줄래 {spans[8]}ms")
-check("줄의 시작과 끝은 못 박힌다", witness_words[0][1] == 78920 and witness_words[-1][2] == 82020, str([witness_words[0][1], witness_words[-1][2]]))
-check("순서가 뒤집히지 않는다", all(witness_words[i][2] <= witness_words[i + 1][1] for i in range(len(witness_words) - 1)))
-check("들은 자리에 정확히 온다", witness_words[6][1] == 81060 and witness_words[7][1] == 81280, str([witness_words[6][1], witness_words[7][1]]))
+# 작은 차이는 정렬기가 받아쓰기보다 정확하다 — 손대지 않는다.
+close = [row[:] for row in DRIFTED_LINE]
+daemon.snap_words_to_witness(close, [4], {0: 110900.0, 1: 111400.0, 2: 111560.0, 3: 111700.0})
+check("작은 차이는 그대로 둔다", close == DRIFTED_LINE, str(close))
 
-# 증언 대부분이 줄 밖을 가리키면 어긋난 것은 줄이다 — 그런 줄은 건드리지 않는다.
-drifted: list[list[int | float]] = [[0, 110660, 111150, 0.9], [1, 111150, 111310, 0.9], [2, 111310, 111480, 0.9], [3, 111480, 112870, 0.9]]
-before = [row[:] for row in drifted]
-daemon.snap_words_to_witness(drifted, [4], {0: 109540.0, 1: 109800.0, 2: 110060.0, 3: 112120.0})
-check("줄 전체가 밀린 경우에는 손대지 않는다", drifted == before, str(drifted))
-
-# 말하는 인트로에서 들린 소리는 그 줄의 증인이 아니다.
-intro: list[list[int | float]] = [[0, 24260, 25000, 0.9], [1, 25000, 27500, 0.9]]
+# 증언이 줄 밖 멀리를 가리키면 이 줄 것이 아니다 — 말하는 인트로에서 가사 비슷한 소리를 듣는다.
+intro = [[0, 24260, 25000, 0.9], [1, 25000, 27500, 0.9]]
 untouched = [row[:] for row in intro]
 daemon.snap_words_to_witness(intro, [2], {0: 4940.0, 1: 5200.0})
-check("줄 밖의 증언은 무시한다", intro == untouched, str(intro))
+check("줄 밖 멀리의 증언은 무시한다", intro == untouched, str(intro))
+
+# 옮기더라도 앞줄 위로 물러나지 않는다.
+back = [[0, 30000, 31000, 0.9], [1, 40000, 41000, 0.9]]
+daemon.snap_words_to_witness(back, [1, 1], {1: 30500.0})
+check("앞줄 위로 물러나지 않는다", back[1][1] >= back[0][2], str(back))
+
+# 증인이 절반도 안 되면 손대지 않는다.
+thin = [[0, 50000, 51000, 0.9], [1, 51000, 52000, 0.9], [2, 52000, 53000, 0.9], [3, 53000, 54000, 0.9]]
+kept_thin = [row[:] for row in thin]
+daemon.snap_words_to_witness(thin, [4], {0: 60000.0})
+check("증인이 모자라면 그대로 둔다", thin == kept_thin, str(thin))
 
 
 # ── 짓눌린 낱말: 실측한 "출근하는 아빠옆에 못 남아 난 도망쳐" ──

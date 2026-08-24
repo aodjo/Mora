@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -904,61 +905,61 @@ def token_weights(text_lines: list[str], counts: list[int]) -> list[float]:
     return weights
 
 
-def warp(points: list[tuple[float, float]], value: float) -> float:
-    """A monotone piecewise-linear map through the given control points, flat outside them."""
-    if value <= points[0][0]:
-        return points[0][1]
-    for index in range(1, len(points)):
-        left, right = points[index - 1], points[index]
-        if value <= right[0]:
-            width = right[0] - left[0]
-            return right[1] if width <= 0 else left[1] + (right[1] - left[1]) * (value - left[0]) / width
-    return points[-1][1]
+# 정렬기가 짚은 자리와 받아쓰기가 들은 자리가 이만큼 넘게 벌어지면, 그것은 정렬기의 미세한
+# 판정이 아니라 줄이 통째로 밀린 것이다. 실측으로 고른 값이다: 250ms 로 잡으면 넉 줄에 한 줄을
+# 옮기며 정밀도를 깎고, 600ms 로 잡으면 손대는 줄이 몇 개뿐인데 1초짜리 드리프트는 여전히
+# 잡는다 — 심판과의 일치가 워프를 끈 것과 같아지고, 긴 어긋남에서는 그보다 낫다.
+DRIFT_MS = 600.0
 
 
 def snap_words_to_witness(words: list[list[int | float]], counts: list[int], witness: dict[int, float]) -> None:
     """
-    Re-cut the boundaries inside a line at the moments the transcriber says it heard each word.
+    Move a line that has drifted onto the seconds the transcriber heard it in — and no more.
 
-    Giving a crushed word the floor and no more only proves it exists; it does not put it where
-    it was sung. On the measured line "…씨발 내 목 좀 놔줄래" the aligner pressed four words into
-    630ms and left 놔줄래 holding 774ms, so 목 and 좀 came out at the floor, 121ms each, while
-    the transcriber heard them at 220ms and 180ms with 놔줄래 taking 560ms. Nothing inside the
-    line could tell us the aligner was wrong about 놔줄래 — only a second witness could.
+    Both witnesses are wrong in different ways. The forced aligner reads phonemes frame by frame,
+    so it is precise about where one word ends and the next begins; the transcriber's word times
+    come from attention, not from phonemes, and are coarse. This used to re-cut every boundary
+    in the line onto the transcriber's times, which threw the precise answer away to keep the
+    coarse one. Measured against a third aligner that has seen neither — the multilingual one —
+    doing that tripled the error: a 46ms median became 148ms, and the share of words within
+    100ms fell from 64% to 36%.
 
-    The witness is trusted for boundaries and not for placement: a heard time is used only when
-    it falls inside the span the aligner already gave the line, and the line's own start and end
-    are pinned. So this can move a word within its line and can never move a line. That matters —
-    the transcriber also hears lyric-like sounds in a spoken intro, and one such witness once
-    dragged a whole verse twenty seconds early.
+    So the transcriber is used for what it is good at. It knows roughly *when* a line was sung,
+    which the aligner can get badly wrong when its window is off; it does not know where inside
+    the line each word starts. A line whose words sit consistently early or late by more than a
+    the threshold is shifted bodily onto the heard times, keeping every boundary the aligner
+    measured; a smaller disagreement is the aligner being more exact than the transcriber, and
+    is left alone.
     """
     position = 0
+    floor = float("-inf")
     for count in counts:
         indices = [index for index, word in enumerate(words) if position <= int(word[0]) < position + count]
         position += max(0, count)
-        if len(indices) < 2:
+        if not indices:
             continue
         line_start, line_end = float(words[indices[0]][1]), float(words[indices[-1]][2])
-        control: list[tuple[float, float]] = [(line_start, line_start)]
+        offsets: list[float] = []
         spoken = 0
         for index in indices:
             heard = witness.get(int(words[index][0]))
             if heard is None:
                 continue
             spoken += 1
-            aligned = float(words[index][1])
-            if not (line_start < heard < line_end) or not (line_start < aligned < line_end):
-                continue
-            if heard > control[-1][1] and aligned > control[-1][0]:
-                control.append((aligned, heard))
-        # 증언 대부분이 줄 밖을 가리키면 어긋난 것은 낱말이 아니라 줄이다. 그런 줄은 남은
-        # 몇 마디로 다시 그을수록 나빠진다 — 안쪽에 반은 들어와야 손을 댄다.
-        if len(control) - 1 < max(1, (spoken + 1) // 2):
+            # 줄 밖을 가리키는 증언은 이 줄 것이 아니다 — 다른 절에서 같은 말을 듣기도 한다.
+            if line_start - 2000 <= heard <= line_end + 2000:
+                offsets.append(heard - float(words[index][1]))
+        if len(offsets) < max(1, (spoken + 1) // 2):
+            floor = line_end
             continue
-        control.append((line_end, line_end))
-        for index in indices:
-            words[index][1] = round(warp(control, float(words[index][1])))
-            words[index][2] = round(warp(control, float(words[index][2])))
+        shift = statistics.median(offsets)
+        if abs(shift) >= DRIFT_MS:
+            # 앞줄 위로 물러나지는 않는다.
+            shift = max(shift, floor - line_start)
+            for index in indices:
+                words[index][1] = round(float(words[index][1]) + shift)
+                words[index][2] = round(float(words[index][2]) + shift)
+        floor = float(words[indices[-1]][2])
 
 
 def spread_in_window(window: list[int], token_index: int, count: int, weights: list[float]) -> list[list[int | float]]:
