@@ -3556,3 +3556,73 @@ textarea:focus-visible {
   font-style: normal;
   font-variant-numeric: tabular-nums;
 }
+
+/* 저장해 둔 초안을 이어서 고치는 중이라는 표시. 없으면 작업이 조용히 사라진다. */
+.resumed-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--border));
+  border-radius: 8px;
+  background: var(--amber-soft);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.resumed-banner button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 4px 10px;
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 자판이 겨누고 있는 낱말. [ ] 로 경계를 찍고 화살표로 밀 대상이다. */
+.lyric-tokens button.chosen {
+  outline: 2px solid var(--link);
+  outline-offset: 1px;
+}
+.editor-table tr.chosen td {
+  background: var(--link-soft);
+}
+.editor-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--faint);
+  font-size: 11px;
+}
+.editor-keys kbd {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  padding: 1px 5px;
+  color: var(--text);
+  font-size: 10px;
+}
+
+/* 곡마다 이미 만들어 올려 두던 파형. 낱말 구간 뒤에 깔아 소리와 대조할 수 있게 한다. */
+.timeline-wave {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.timeline-wave path {
+  stroke: color-mix(in srgb, var(--faint) 55%, transparent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.timeline-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--red);
+  pointer-events: none;
+}

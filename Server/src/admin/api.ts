@@ -1674,6 +1674,9 @@ async function candidateDetail(env: WorkerEnv, actor: Actor, candidateId: string
   const wordSpeakers = decode<Array<[number, number, number]>>(candidate.word_speakers as ArrayBuffer);
   const lyricText = String(candidate.lyric_text);
   const review = buildReviewLyrics(lyricText, String(candidate.lyric_language), wordSpeakers);
+  const draft = await env.ADMIN_DB.prepare("SELECT data,updated_at FROM draft_edits WHERE candidate_id=?1 AND user_id=?2")
+    .bind(candidateId, actor.id)
+    .first<{ data: string; updated_at: number }>();
   return json({
     id: candidate.id,
     job_id: candidate.job_id,
@@ -1688,6 +1691,9 @@ async function candidateDetail(env: WorkerEnv, actor: Actor, candidateId: string
     line_speakers: decode(candidate.line_speakers as ArrayBuffer),
     quality: JSON.parse(String(candidate.quality)),
     artifacts: artifacts.results,
+    // 자기가 저장해 둔 초안. 돌려주지 않으면 화면은 생성값을 다시 보여 주고, 다음 자동
+    // 저장이 그 위를 덮어 앞서 고친 것이 전부 사라진다. 남의 초안은 보이지 않는다.
+    draft: draft === null ? null : { word_spans: JSON.parse(draft.data).word_spans, saved_at: draft.updated_at },
   });
 }
 
@@ -1772,6 +1778,14 @@ async function saveDraft(env: WorkerEnv, actor: Actor, candidateId: string, valu
     ),
   ]);
   return json({ saved: true, valid });
+}
+
+/** 고치던 것을 버리고 생성값으로 돌아간다. 자기 초안만 지운다. */
+async function discardDraft(env: WorkerEnv, actor: Actor, candidateId: string): Promise<Response> {
+  requirePermission(actor, "timing.edit");
+  await env.ADMIN_DB.prepare("DELETE FROM draft_edits WHERE candidate_id=?1 AND user_id=?2").bind(candidateId, actor.id).run();
+  await audit(env, actor, "candidate.draft.discard", "candidate", candidateId);
+  return json({ discarded: true });
 }
 
 async function submitDraft(env: WorkerEnv, actor: Actor, candidateId: string): Promise<Response> {
@@ -2203,6 +2217,7 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
     return acquireLease(env, actor, match[1], url.searchParams.get("force") === "1");
   match = url.pathname.match(/^\/admin\/api\/candidates\/([^/]+)\/draft$/u);
   if (request.method === "PUT" && match?.[1] !== undefined) return saveDraft(env, actor, match[1], await body(request));
+  if (request.method === "DELETE" && match?.[1] !== undefined) return discardDraft(env, actor, match[1]);
   match = url.pathname.match(/^\/admin\/api\/candidates\/([^/]+)\/submit-draft$/u);
   if (request.method === "POST" && match?.[1] !== undefined) return submitDraft(env, actor, match[1]);
   match = url.pathname.match(/^\/admin\/api\/users\/([^/]+)\/roles$/u);

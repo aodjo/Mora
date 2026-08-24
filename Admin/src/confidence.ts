@@ -46,3 +46,24 @@ export function floorMs(word: string): number {
 export function onlyTheFloor(word: string, startMs: number, endMs: number): boolean {
   return endMs - startMs <= floorMs(word) + 1;
 }
+
+/**
+ * A line lasts as long as its own words last.
+ *
+ * The editor edits words; the line spans it was handed came from the pipeline and go stale the
+ * moment a word moves. Saving them unchanged writes a line that no longer covers its own words.
+ */
+export function linesOverWords(
+  wordSpans: Array<[number, number, number]>,
+  lines: Array<{ index: number; token_indices: number[] }>,
+  fallback: Array<[number, number]>,
+): Array<[number, number]> {
+  const byToken = new Map(wordSpans.map((span) => [span[0], span]));
+  return lines.map((line, position) => {
+    const held = line.token_indices
+      .map((token) => byToken.get(token))
+      .filter((span): span is [number, number, number] => span !== undefined);
+    if (held.length === 0) return fallback[position] ?? [0, 1];
+    return [Math.min(...held.map((span) => span[1])), Math.max(...held.map((span) => span[2]))];
+  });
+}

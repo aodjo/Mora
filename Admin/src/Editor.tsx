@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "./api";
 import { useToast } from "./Toast";
-import { onlyTheFloor } from "./confidence.js";
+import { linesOverWords, onlyTheFloor } from "./confidence.js";
 import { cursorSpan, isAside, type WordSpan } from "./cursor.js";
 
 type Span = [number, number];
@@ -35,6 +35,7 @@ interface Detail {
   line_spans: Span[];
   word_spans: WordSpan[];
   artifacts: Artifact[];
+  draft: { word_spans: WordSpan[]; saved_at: number } | null;
 }
 
 const trackNames: Record<string, string> = {
@@ -57,13 +58,26 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   const [currentMs, setCurrentMs] = useState(0);
   const [mediaDuration, setMediaDuration] = useState(0);
   const [regenerating, setRegenerating] = useState(false);
+  const [resumed, setResumed] = useState<number | null>(null);
+  const [chosen, setChosen] = useState<number | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [published, setPublished] = useState(false);
   const audioRefs = useRef(new Map<string, HTMLAudioElement>());
+  const playingId = useRef<string | null>(null);
   const lineRefs = useRef(new Map<number, HTMLDivElement>());
   useEffect(() => {
     void api<Detail>(`/candidates/${candidateId}`)
-      .then(setDetail)
+      .then((loaded) => {
+        // 저장해 둔 초안이 있으면 그것이 지금 고치던 상태다. 생성값을 보여 주면
+        // 다음 자동 저장이 그 위를 덮어 앞서 고친 것이 사라진다.
+        if (loaded.draft === null) return setDetail(loaded);
+        setResumed(loaded.draft.saved_at);
+        setDetail({
+          ...loaded,
+          word_spans: loaded.draft.word_spans,
+          line_spans: linesOverWords(loaded.draft.word_spans, loaded.lines, loaded.line_spans),
+        });
+      })
       .catch((reason: unknown) =>
         showToast(reason instanceof Error ? reason.message : "편집기를 불러오지 못했습니다.", { variant: "error" }),
       );
@@ -76,7 +90,10 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
     const timer = window.setTimeout(() => {
       void api(`/candidates/${candidateId}/draft`, {
         method: "PUT",
-        body: JSON.stringify({ line_spans: detail.line_spans, word_spans: detail.word_spans }),
+        body: JSON.stringify({
+          line_spans: linesOverWords(detail.word_spans, detail.lines, detail.line_spans),
+          word_spans: detail.word_spans,
+        }),
       })
         .then(() => {
           setDirty(false);
@@ -88,6 +105,76 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
     }, 800);
     return () => window.clearTimeout(timer);
   }, [candidateId, detail, dirty, showToast]);
+  // 토큰 번호로 표의 몇 번째 줄인지. change() 는 배열 위치로 고치므로 이 표가 필요하다.
+  const rowOf = useMemo(() => new Map((detail?.word_spans ?? []).map((span, index) => [span[0], index])), [detail]);
+  const order = useMemo(() => (detail?.word_spans ?? []).map((span) => span[0]), [detail]);
+  useEffect(() => {
+    function onKey(event: KeyboardEvent): void {
+      const target = event.target as HTMLElement | null;
+      // 입력칸이나 오디오에 초점이 있으면 그쪽이 임자다 — 숫자를 치다 스크럽되면 안 된다.
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "AUDIO" || target?.isContentEditable) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      // 한글 자판에서 event.key 는 "ㅔ"/"ㅐ" 가 된다. 물리 키로 본다.
+      const step = event.shiftKey ? 200 : 20;
+      const at = chosen === null ? null : rowOf.get(chosen);
+      if (event.code === "Tab") {
+        event.preventDefault();
+        const place = chosen === null ? -1 : order.indexOf(chosen);
+        const next = order[Math.min(order.length - 1, Math.max(0, place + (event.shiftKey ? -1 : 1)))];
+        if (next !== undefined) {
+          setChosen(next);
+          const span = spans.get(next);
+          if (span !== undefined) seek(Math.max(0, span[1] - 400));
+        }
+        return;
+      }
+      if (event.code === "KeyN") {
+        event.preventDefault();
+        const suspects = order.filter((token) => rescued.has(token));
+        const after = suspects.find((token) => chosen === null || order.indexOf(token) > order.indexOf(chosen)) ?? suspects[0];
+        if (after !== undefined) {
+          setChosen(after);
+          const span = spans.get(after);
+          if (span !== undefined) seek(Math.max(0, span[1] - 400));
+        }
+        return;
+      }
+      if (at === undefined || at === null) return;
+      const span = detail?.word_spans[at];
+      if (span === undefined) return;
+      // 아직 아무것도 재생하지 않았으면 재생 위치는 0 이다. 그걸 경계로 찍으면 낱말이
+      // 곡 맨 앞으로 날아간다 — 들으면서 쓰라고 있는 키다.
+      if ((event.code === "BracketLeft" || event.code === "BracketRight") && currentMs <= 0) {
+        event.preventDefault();
+        showToast("재생한 뒤에 눌러 주세요 — 재생 위치를 경계로 찍는 키입니다.", { variant: "error" });
+        return;
+      }
+      if (event.code === "BracketLeft") {
+        event.preventDefault();
+        change(at, 1, Math.min(Math.round(currentMs), span[2] - 20));
+      } else if (event.code === "BracketRight") {
+        event.preventDefault();
+        change(at, 2, Math.max(Math.round(currentMs), span[1] + 20));
+      } else if (event.code === "ArrowLeft" || event.code === "ArrowRight") {
+        event.preventDefault();
+        const by = event.code === "ArrowLeft" ? -step : step;
+        change(at, 1, Math.max(0, span[1] + by));
+        change(at, 2, Math.max(span[1] + by + 20, span[2] + by));
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+  const [peaks, setPeaks] = useState<number[] | null>(null);
+  useEffect(() => {
+    const drawn = detail?.artifacts.find((artifact) => artifact.kind === "waveform");
+    if (drawn === undefined) return setPeaks(null);
+    // 곡마다 이미 만들어 올려 두는 값이다. 읽기만 하면 된다.
+    void api<number[]>(`/artifacts/${drawn.id}/content`)
+      .then((values) => setPeaks(Array.isArray(values) ? values : null))
+      .catch(() => setPeaks(null));
+  }, [detail]);
   const playableArtifacts = useMemo(() => detail?.artifacts.filter((artifact) => canPlay(artifact.content_type)) ?? [], [detail]);
   const unsupportedCount = (detail?.artifacts.length ?? 0) - playableArtifacts.length;
   const duration = useMemo(
@@ -137,10 +224,14 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   }
   function seek(milliseconds: number): void {
     setCurrentMs(milliseconds);
-    for (const audio of audioRefs.current.values()) audio.currentTime = milliseconds / 1000;
+    // 재생 중인 것만 옮긴다. 전부 옮기면 스템 하나하나에 복호화 구간 요청이 나간다.
+    const listening = playingId.current === null ? undefined : audioRefs.current.get(playingId.current);
+    if (listening !== undefined) listening.currentTime = milliseconds / 1000;
+    else for (const audio of audioRefs.current.values()) audio.currentTime = milliseconds / 1000;
   }
   function play(id: string, element: HTMLAudioElement): void {
     for (const [otherId, audio] of audioRefs.current) if (otherId !== id) audio.pause();
+    playingId.current = id;
     setCurrentMs(element.currentTime * 1000);
   }
 
@@ -155,6 +246,42 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
             </p>
           </div>
           <span className="save-state">{message}</span>
+        </div>
+        {resumed !== null && (
+          <div className="resumed-banner">
+            <span>이어서 편집 중 · {new Date(resumed).toLocaleString("ko-KR")}에 저장한 초안입니다</span>
+            <button
+              type="button"
+              onClick={() => {
+                void api(`/candidates/${candidateId}/draft`, { method: "DELETE" })
+                  .then(() => {
+                    setResumed(null);
+                    setDirty(false);
+                    return api<Detail>(`/candidates/${candidateId}`).then(setDetail);
+                  })
+                  .then(() => showToast("생성된 타이밍으로 되돌렸습니다."))
+                  .catch((reason: unknown) =>
+                    showToast(reason instanceof Error ? reason.message : "되돌리지 못했습니다.", { variant: "error" }),
+                  );
+              }}
+            >
+              생성값으로 되돌리기
+            </button>
+          </div>
+        )}
+        <div className="editor-keys">
+          <span>
+            <kbd>Tab</kbd> 다음 낱말
+          </span>
+          <span>
+            <kbd>N</kbd> 다음 의심 낱말
+          </span>
+          <span>
+            <kbd>[</kbd> <kbd>]</kbd> 재생 위치를 시작·끝으로
+          </span>
+          <span>
+            <kbd>←</kbd> <kbd>→</kbd> 20ms 밀기 (<kbd>Shift</kbd> 200ms)
+          </span>
         </div>
         <div className="editor-section-heading">
           <h3>검수 오디오</h3>
@@ -197,6 +324,12 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
           </div>
         )}
         <div className="timeline" aria-label="단어 타이밍 개요">
+          {peaks !== null && (
+            <svg className="timeline-wave" viewBox={`0 0 ${peaks.length} 100`} preserveAspectRatio="none" aria-hidden="true">
+              <path d={peaks.map((peak, index) => `M${index} ${50 - peak * 46}V${50 + peak * 46}`).join("")} />
+            </svg>
+          )}
+          <div className="timeline-playhead" style={{ left: `${Math.min(100, (currentMs / duration) * 100)}%` }} aria-hidden="true" />
           {detail.word_spans.map((span, index) => {
             const token = tokens.get(span[0]);
             return (
@@ -258,10 +391,13 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
                         <button
                           key={index}
                           disabled={span === undefined}
-                          className={`${activeToken === index ? "active " : ""}${span === undefined ? "unmapped" : rescued.has(index) ? "rescued" : ""}`}
+                          className={`${activeToken === index ? "active " : ""}${chosen === index ? "chosen " : ""}${span === undefined ? "unmapped" : rescued.has(index) ? "rescued" : ""}`}
                           title={rescued.has(index) ? "정렬기가 재지 못해 최소 길이만 준 낱말" : undefined}
                           style={{ "--speaker-color": speakerColor(token?.speaker_id) } as CSSProperties}
-                          onClick={() => span !== undefined && seek(span[1])}
+                          onClick={() => {
+                            setChosen(index);
+                            if (span !== undefined) seek(span[1]);
+                          }}
                         >
                           <span>{token?.text ?? index}</span>
                           {token?.speaker_id === null || token?.speaker_id === undefined ? null : (
@@ -298,7 +434,11 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
             {detail.word_spans.map((span, index) => {
               const token = tokens.get(span[0]);
               return (
-                <tr key={index} className={`${activeToken === span[0] ? "active " : ""}${rescued.has(span[0]) ? "rescued" : ""}`}>
+                <tr
+                  key={index}
+                  className={`${activeToken === span[0] ? "active " : ""}${chosen === span[0] ? "chosen " : ""}${rescued.has(span[0]) ? "rescued" : ""}`}
+                  onClick={() => setChosen(span[0])}
+                >
                   <td>{span[0]}</td>
                   <td className="token-text">{token?.text ?? "—"}</td>
                   <td>{token?.speaker_id === null || token?.speaker_id === undefined ? "—" : `화자 ${token.speaker_id + 1}`}</td>
