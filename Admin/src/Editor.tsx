@@ -118,6 +118,15 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "AUDIO" || target?.isContentEditable) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       // 한글 자판에서 event.key 는 "ㅔ"/"ㅐ" 가 된다. 물리 키로 본다.
+      if (event.code === "Space") {
+        // 브라우저 기본 동작은 화면을 아래로 굴리는 것이다.
+        event.preventDefault();
+        const track = trackToToggle();
+        if (track === undefined) return;
+        if (track.paused) void track.play().catch(() => showToast("재생하지 못했습니다.", { variant: "error" }));
+        else track.pause();
+        return;
+      }
       const step = event.shiftKey ? 200 : 20;
       const at = chosen === null ? null : rowOf.get(chosen);
       if (event.code === "Tab") {
@@ -231,6 +240,18 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
     if (listening !== undefined) listening.currentTime = milliseconds / 1000;
     else for (const audio of audioRefs.current.values()) audio.currentTime = milliseconds / 1000;
   }
+  /**
+   * Space 로 재생·정지할 트랙.
+   *
+   * 스템이 여럿이라 "지금 곡" 이라는 것이 하나로 정해져 있지 않다. 듣고 있던 것이 있으면
+   * 그것, 없으면 원본 — 검수하는 사람이 먼저 트는 것이 원본이다.
+   */
+  function trackToToggle(): HTMLAudioElement | undefined {
+    const listening = playingId.current === null ? undefined : audioRefs.current.get(playingId.current);
+    if (listening !== undefined) return listening;
+    const source = playableArtifacts.find((artifact) => artifact.kind === "source") ?? playableArtifacts[0];
+    return source === undefined ? undefined : audioRefs.current.get(source.id);
+  }
   function play(id: string, element: HTMLAudioElement): void {
     for (const [otherId, audio] of audioRefs.current) if (otherId !== id) audio.pause();
     playingId.current = id;
@@ -272,6 +293,9 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
           </div>
         )}
         <div className="editor-keys">
+          <span>
+            <kbd>Space</kbd> 재생·정지
+          </span>
           <span>
             <kbd>Tab</kbd> 다음 낱말
           </span>
