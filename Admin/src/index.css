@@ -3723,50 +3723,37 @@ textarea:focus-visible {
   z-index: 3;
 }
 
-/* 접었다 펴는 머리. 제목 줄 전체가 단추라 어디를 눌러도 열린다. */
+/* 접었다 펴는 머리. 생김새는 다른 구역 제목 그대로 두고, 단추 노릇만 얹는다. */
 .editor-fold {
+  width: 100%;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.lyrics-review-panel > .editor-fold {
+  border-bottom: 1px solid var(--border);
+}
+.editor-fold:hover h3 {
+  color: var(--link);
+}
+.fold-lead {
   display: flex;
   align-items: center;
   gap: 10px;
-  width: 100%;
-  border: none;
-  border-radius: 10px;
-  background: none;
-  padding: 10px 4px;
-  text-align: left;
+  min-width: 0;
 }
-.editor-fold:hover {
-  background: var(--bg);
-}
-.editor-fold-mark {
+.fold-mark {
   flex: none;
-  border-top: 5px solid transparent;
-  border-bottom: 5px solid transparent;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
   border-left: 6px solid var(--faint);
   width: 0;
   height: 0;
   transition: transform 120ms ease;
 }
-.editor-fold-mark.open {
+.fold-mark.open {
   transform: rotate(90deg);
-}
-.editor-fold-title {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-}
-.editor-fold-title span {
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 600;
-}
-.editor-fold-title small {
-  color: var(--faint);
-  font-size: 11px;
-}
-.editor-fold-count {
-  flex: none;
-  color: var(--faint);
-  font-size: 11px;
 }

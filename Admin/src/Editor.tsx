@@ -346,13 +346,20 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
       </section>
 
       <section className="lyrics-review-panel">
-        <button type="button" className="editor-fold" aria-expanded={lyricsOpen} onClick={() => setLyricsOpen((open) => !open)}>
-          <span className={`editor-fold-mark${lyricsOpen ? " open" : ""}`} aria-hidden="true" />
-          <span className="editor-fold-title">
-            <span>가사와 문장 타이밍</span>
-            <small>문장이나 단어를 누르면 해당 위치로 이동합니다.</small>
-          </span>
-          <span className="editor-fold-count">
+        <button
+          type="button"
+          className="editor-section-heading editor-fold"
+          aria-expanded={lyricsOpen}
+          onClick={() => setLyricsOpen((open) => !open)}
+        >
+          <div className="fold-lead">
+            <span className={`fold-mark${lyricsOpen ? " open" : ""}`} aria-hidden="true" />
+            <div>
+              <h3>가사와 문장 타이밍</h3>
+              <p>문장이나 단어를 누르면 해당 위치로 이동합니다.</p>
+            </div>
+          </div>
+          <span>
             {detail.lines.length}문장 · {detail.tokens.length}단어
           </span>
         </button>
