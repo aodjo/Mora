@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "./api";
 import { useToast } from "./Toast";
-import { linesOverWords, onlyTheFloor } from "./confidence.js";
-import { pushNeighbours } from "./edit.js";
+import { floorMs, linesOverWords, onlyTheFloor } from "./confidence.js";
+import { placeWord, pushNeighbours } from "./edit.js";
 import { cursorSpan, isAside, type WordSpan } from "./cursor.js";
 import { Timeline } from "./Timeline.js";
 
@@ -196,6 +196,9 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   );
   const spans = useMemo(() => new Map(detail?.word_spans.map((span) => [span[0], span]) ?? []), [detail]);
   const tokens = useMemo(() => new Map(detail?.tokens.map((token) => [token.index, token]) ?? []), [detail]);
+  // 정렬기가 자리를 못 준 낱말. 타임라인에 그릴 시각이 없어 여태 화면 어디에도 없었다.
+  const unplaced = useMemo(() => (detail?.tokens ?? []).filter((token) => !spans.has(token.index)), [detail, spans]);
+
   // 괄호로만 된 줄은 옆줄 위에 겹쳐 부르는 두 번째 목소리다. 그 시간은 옆줄의 시간과
   // 겹치는 것이 맞지만, 커서는 하나뿐이라 둘 다 가질 수 없다. 커서는 리드를 따라간다.
   const asideLines = useMemo(() => new Set((detail?.lines ?? []).filter((line) => isAside(line.text)).map((line) => line.index)), [detail]);
@@ -243,6 +246,22 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
       const lineOf = (token: number): number | undefined => current.tokens.find((entry) => entry.index === token)?.line;
       return { ...current, word_spans: pushNeighbours(moved, row, lineOf) };
     });
+    setDirty(true);
+    setDraftSaved(false);
+    setMessage("편집 중");
+  }
+  /** 자리 없는 낱말을 지금 재생 위치에 놓는다. 이웃과 겹치면 그만큼 먹힌다. */
+  function placeAtPlayhead(token: number): void {
+    setDetail((current) => {
+      if (current === null) return current;
+      if (current.word_spans.some((span) => span[0] === token)) return current;
+      const text = current.tokens.find((entry) => entry.index === token)?.text ?? "";
+      const lineOf = (index: number): number | undefined => current.tokens.find((entry) => entry.index === index)?.line;
+      const { spans: withWord, row, clamped } = placeWord(current.word_spans, token, currentMs, floorMs(text), lineOf);
+      if (clamped) showToast("앞뒤 낱말 사이로 옮겨 놓았습니다.");
+      return { ...current, word_spans: pushNeighbours(withWord, row, lineOf) };
+    });
+    setChosen(token);
     setDirty(true);
     setDraftSaved(false);
     setMessage("편집 중");
@@ -383,6 +402,8 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
           onChoose={setChosen}
           onSeek={seek}
           onMove={(row, startMs, endMs) => moveWord(row, Math.round(startMs), Math.round(endMs))}
+          unplaced={unplaced}
+          onPlace={placeAtPlayhead}
         />
       </section>
 

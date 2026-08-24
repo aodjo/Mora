@@ -3757,3 +3757,33 @@ textarea:focus-visible {
 .fold-mark.open {
   transform: rotate(90deg);
 }
+
+/* 정렬기가 자리를 못 준 낱말들. 타임라인에 놓일 시각이 없으니 아래에 모아 둔다. */
+.tl-unplaced {
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding: 8px 10px;
+}
+.tl-unplaced-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--faint);
+  font-size: 11px;
+}
+.tl-unplaced-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.tl-unplaced-row button {
+  border: 1px dashed color-mix(in srgb, var(--amber) 55%, var(--border));
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 3px 8px;
+  color: var(--text);
+  font-size: 11px;
+}
+.tl-unplaced-row button.chosen {
+  outline: 2px solid var(--link);
+  outline-offset: 1px;
+}

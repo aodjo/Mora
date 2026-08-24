@@ -50,12 +50,14 @@ interface Props {
   onChoose: (token: number) => void;
   onSeek: (ms: number) => void;
   onMove: (row: number, startMs: number, endMs: number) => void;
+  unplaced: TimelineToken[];
+  onPlace: (token: number) => void;
 }
 
 type Grab = { row: number; edge: "start" | "end" | "body"; grabbedMs: number; from: [number, number] };
 
 export function Timeline(props: Props): ReactElement {
-  const { peaks, durationMs, currentMs, words, tokens, lines, lineSpans, asideLines, rescued, chosen } = props;
+  const { peaks, durationMs, currentMs, words, tokens, lines, lineSpans, asideLines, rescued, chosen, unplaced } = props;
   const viewport = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(0.02);
   const [left, setLeft] = useState(0);
@@ -264,6 +266,26 @@ export function Timeline(props: Props): ReactElement {
 
         <div className="tl-playhead" style={{ left: `${x(currentMs)}px` }} aria-hidden="true" />
       </div>
+
+      {unplaced.length > 0 && (
+        <div className="tl-unplaced">
+          <span className="tl-unplaced-label">아직 자리 없는 낱말 {unplaced.length}개 · 두 번 누르면 재생 위치에 놓입니다</span>
+          <div className="tl-unplaced-row">
+            {unplaced.map((token) => (
+              <button
+                key={token.index}
+                type="button"
+                className={chosen === token.index ? "chosen" : ""}
+                onClick={() => props.onChoose(token.index)}
+                onDoubleClick={() => props.onPlace(token.index)}
+                title={`두 번 눌러 ${Math.round(currentMs)}ms 에 놓기`}
+              >
+                {token.text}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
