@@ -66,6 +66,7 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   const [published, setPublished] = useState(false);
   const audioRefs = useRef(new Map<string, HTMLAudioElement>());
   const playingId = useRef<string | null>(null);
+  const volumeSet = useRef(new Set<string>());
   const lineRefs = useRef(new Map<number, HTMLDivElement>());
   useEffect(() => {
     void api<Detail>(`/candidates/${candidateId}`)
@@ -321,8 +322,14 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
               <span>{trackName(artifact)}</span>
               <audio
                 ref={(element) => {
-                  if (element === null) audioRefs.current.delete(artifact.id);
-                  else audioRefs.current.set(artifact.id, element);
+                  if (element === null) return void audioRefs.current.delete(artifact.id);
+                  audioRefs.current.set(artifact.id, element);
+                  // 처음 한 번만 낮춰 둔다. 이 ref 는 그릴 때마다 다시 불리므로, 매번 맞추면
+                  // 검수하는 사람이 올려 둔 소리를 그릴 때마다 도로 내려 버린다.
+                  if (!volumeSet.current.has(artifact.id)) {
+                    volumeSet.current.add(artifact.id);
+                    element.volume = 0.6;
+                  }
                 }}
                 controls
                 preload="metadata"
