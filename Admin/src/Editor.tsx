@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { api } from "./api";
 import { useToast } from "./Toast";
 import { linesOverWords, onlyTheFloor } from "./confidence.js";
+import { pushNeighbours } from "./edit.js";
 import { cursorSpan, isAside, type WordSpan } from "./cursor.js";
 import { Timeline } from "./Timeline.js";
 
@@ -234,6 +235,18 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
     setDraftSaved(false);
     setMessage("편집 중");
   }
+  /** 낱말을 옮기고, 겹친 이웃은 그만큼 먹힌다. 한 줄에서 두 낱말이 동시에 불릴 수는 없다. */
+  function moveWord(row: number, startMs: number, endMs: number): void {
+    setDetail((current) => {
+      if (current === null) return current;
+      const moved = current.word_spans.map((span, index) => (index === row ? ([span[0], startMs, endMs] as WordSpan) : span));
+      const lineOf = (token: number): number | undefined => current.tokens.find((entry) => entry.index === token)?.line;
+      return { ...current, word_spans: pushNeighbours(moved, row, lineOf) };
+    });
+    setDirty(true);
+    setDraftSaved(false);
+    setMessage("편집 중");
+  }
   function seek(milliseconds: number): void {
     setCurrentMs(milliseconds);
     // 재생 중인 것만 옮긴다. 전부 옮기면 스템 하나하나에 복호화 구간 요청이 나간다.
@@ -369,10 +382,7 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
           chosen={chosen}
           onChoose={setChosen}
           onSeek={seek}
-          onMove={(row, startMs, endMs) => {
-            change(row, 1, Math.round(startMs));
-            change(row, 2, Math.round(endMs));
-          }}
+          onMove={(row, startMs, endMs) => moveWord(row, Math.round(startMs), Math.round(endMs))}
         />
       </section>
 
