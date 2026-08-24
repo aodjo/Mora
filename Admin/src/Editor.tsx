@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "./api";
 import { useToast } from "./Toast";
+import { onlyTheFloor } from "./confidence.js";
 import { cursorSpan, isAside, type WordSpan } from "./cursor.js";
 
 type Span = [number, number];
@@ -102,6 +103,15 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   // 한가운데로 건너뛴다 — 화면에서는 가사가 뒤까지 찼다가 앞으로 되돌아가는 것으로 보인다.
   // 시작한 것 중 가장 마지막 것을 고르면 커서는 시간과 함께만 움직인다.
   const activeSpan = cursorSpan(detail?.word_spans ?? [], currentMs, (index) => asideLines.has(tokens.get(index)?.line ?? -1));
+  // 정렬기가 눌러 놓은 낱말은 바닥값만 받는다 — 잰 것이 아니라 구해 준 것이다. 스쳐 지나가
+  // 눈에 안 띄므로, 어느 것이 그런지 먼저 보이게 한다.
+  const rescued = useMemo(
+    () =>
+      new Set(
+        (detail?.word_spans ?? []).filter((span) => onlyTheFloor(tokens.get(span[0])?.text ?? "", span[1], span[2])).map((span) => span[0]),
+      ),
+    [detail, tokens],
+  );
   const activeToken = activeSpan?.[0] ?? null;
   const activeLine = activeToken === null ? null : (tokens.get(activeToken)?.line ?? null);
   useEffect(() => {
@@ -248,7 +258,8 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
                         <button
                           key={index}
                           disabled={span === undefined}
-                          className={`${activeToken === index ? "active " : ""}${span === undefined ? "unmapped" : ""}`}
+                          className={`${activeToken === index ? "active " : ""}${span === undefined ? "unmapped" : rescued.has(index) ? "rescued" : ""}`}
+                          title={rescued.has(index) ? "정렬기가 재지 못해 최소 길이만 준 낱말" : undefined}
                           style={{ "--speaker-color": speakerColor(token?.speaker_id) } as CSSProperties}
                           onClick={() => span !== undefined && seek(span[1])}
                         >
@@ -287,7 +298,7 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
             {detail.word_spans.map((span, index) => {
               const token = tokens.get(span[0]);
               return (
-                <tr key={index} className={activeToken === span[0] ? "active" : ""}>
+                <tr key={index} className={`${activeToken === span[0] ? "active " : ""}${rescued.has(span[0]) ? "rescued" : ""}`}>
                   <td>{span[0]}</td>
                   <td className="token-text">{token?.text ?? "—"}</td>
                   <td>{token?.speaker_id === null || token?.speaker_id === undefined ? "—" : `화자 ${token.speaker_id + 1}`}</td>

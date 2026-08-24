@@ -2376,6 +2376,20 @@ textarea:focus-visible {
   border-style: dashed;
   color: var(--faint);
 }
+/* 정렬기가 재지 못해 최소 길이만 받은 낱말. 스쳐 지나가 눈에 안 띄므로 먼저 보이게 한다. */
+.lyric-tokens button.rescued {
+  border-color: color-mix(in srgb, var(--amber) 55%, var(--border));
+  background: color-mix(in srgb, var(--amber) 9%, var(--surface));
+}
+.lyric-tokens button.rescued::after {
+  content: "?";
+  color: var(--amber);
+  font-size: 9px;
+  font-weight: 600;
+}
+.editor-table tr.rescued td:nth-child(2) {
+  color: var(--amber);
+}
 .lyric-tokens small {
   color: var(--speaker-color);
   font-size: 9px;
