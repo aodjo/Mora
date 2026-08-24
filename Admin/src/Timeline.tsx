@@ -52,6 +52,7 @@ interface Props {
   onMove: (row: number, startMs: number, endMs: number) => void;
   unplaced: TimelineToken[];
   onPlace: (token: number) => void;
+  onPlaceAt: (ms: number) => void;
 }
 
 type Grab = { row: number; edge: "start" | "end" | "body"; grabbedMs: number; from: [number, number] };
@@ -246,7 +247,13 @@ export function Timeline(props: Props): ReactElement {
           })}
         </div>
 
-        <div className="tl-track tl-words">
+        <div
+          className="tl-track tl-words"
+          onDoubleClick={(event) => {
+            if ((event.target as HTMLElement).closest(".tl-word") !== null) return;
+            props.onPlaceAt(msAt(event.clientX));
+          }}
+        >
           {visible.map(({ span, row }) => {
             const token = tokens.get(span[0]);
             const aside = token !== undefined && asideLines.has(token.line);
@@ -278,7 +285,7 @@ export function Timeline(props: Props): ReactElement {
                 className={chosen === token.index ? "chosen" : ""}
                 onClick={() => props.onChoose(token.index)}
                 onDoubleClick={() => props.onPlace(token.index)}
-                title={`두 번 눌러 ${Math.round(currentMs)}ms 에 놓기`}
+                title="두 번 눌러 앞뒤 낱말 사이 빈틈에 넣기"
               >
                 {token.text}
               </button>

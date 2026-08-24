@@ -251,14 +251,14 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
     setMessage("편집 중");
   }
   /** 자리 없는 낱말을 지금 재생 위치에 놓는다. 이웃과 겹치면 그만큼 먹힌다. */
-  function placeAtPlayhead(token: number): void {
+  function placeAtPlayhead(token: number, atMs: number = currentMs): void {
     setDetail((current) => {
       if (current === null) return current;
       if (current.word_spans.some((span) => span[0] === token)) return current;
       const text = current.tokens.find((entry) => entry.index === token)?.text ?? "";
       const lineOf = (index: number): number | undefined => current.tokens.find((entry) => entry.index === index)?.line;
-      const { spans: withWord, row, clamped } = placeWord(current.word_spans, token, currentMs, floorMs(text), lineOf);
-      if (clamped) showToast("앞뒤 낱말 사이로 옮겨 놓았습니다.");
+      const { spans: withWord, row, filled } = placeWord(current.word_spans, token, atMs, floorMs(text), lineOf);
+      if (!filled) showToast("앞뒤 낱말이 맞닿아 있어 자리를 만들어 넣었습니다.");
       return { ...current, word_spans: pushNeighbours(withWord, row, lineOf) };
     });
     setChosen(token);
@@ -404,6 +404,11 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
           onMove={(row, startMs, endMs) => moveWord(row, Math.round(startMs), Math.round(endMs))}
           unplaced={unplaced}
           onPlace={placeAtPlayhead}
+          onPlaceAt={(ms) => {
+            // 타임라인의 빈 곳을 두 번 누르면, 고른 낱말(없으면 첫 낱말)이 제 빈틈에 들어간다.
+            const next = unplaced.find((token) => token.index === chosen) ?? unplaced[0];
+            if (next !== undefined) placeAtPlayhead(next.index, ms);
+          }}
         />
       </section>
 

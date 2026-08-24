@@ -43,17 +43,38 @@ export function pushNeighbours(spans: WordSpan[], row: number, lineOf: (token: n
 }
 
 /**
- * Give a word that has no time one, at the moment the reviewer says it is sung.
+ * The stretch a word with no time belongs in: between the words of its line that do have one.
+ *
+ * A word is not free to be anywhere. The line is sung in the order it is written, so a word with
+ * no time sits in exactly one place — the hole its neighbours leave. Returns null when the line
+ * has no placed neighbour on either side and there is therefore nothing to reason from.
+ */
+export function gapFor(
+  spans: WordSpan[],
+  token: number,
+  lineOf: (token: number) => number | undefined,
+): { from: number; to: number; row: number } | null {
+  const found = spans.findIndex((span) => span[0] > token);
+  const row = found === -1 ? spans.length : found;
+  const line = lineOf(token);
+  const before = row > 0 && lineOf((spans[row - 1] as WordSpan)[0]) === line ? (spans[row - 1] as WordSpan)[2] : null;
+  const after = row < spans.length && lineOf((spans[row] as WordSpan)[0]) === line ? (spans[row] as WordSpan)[1] : null;
+  if (before === null && after === null) return null;
+  return { from: before ?? Math.max(0, (after as number) - 600), to: after ?? (before as number) + 600, row };
+}
+
+/**
+ * Drop a word with no time into the hole it belongs in, filling it.
  *
  * The pipeline does not always place every word — a line the aligner found nothing in falls back
  * to a guess, and a word can come out of it with no span at all. Those words were invisible: the
  * timeline had nowhere to draw them and the table had no row to type into, so the only thing a
  * reviewer could do was leave them unsaid.
  *
- * It is inserted in token order, because everything downstream reads the list that way — the
- * cursor, the ripple, and the draft check that the same words are still there. The length is the
- * shortest the word could honestly be, doubled: long enough to see and grab, short enough that it
- * is obviously a starting point rather than a measurement.
+ * It takes the whole hole rather than a fixed length, because the hole is what is actually known
+ * about it: the word before ends here, the word after begins there, and it was sung in between.
+ * Inserted in token order, because everything downstream reads the list that way — the cursor,
+ * the ripple, and the draft check that the same words are still there.
  */
 export function placeWord(
   spans: WordSpan[],
@@ -61,22 +82,23 @@ export function placeWord(
   atMs: number,
   floorMs: number,
   lineOf: (token: number) => number | undefined = () => undefined,
-): { spans: WordSpan[]; row: number; clamped: boolean } {
+): { spans: WordSpan[]; row: number; filled: boolean } {
+  const gap = gapFor(spans, token, lineOf);
   const found = spans.findIndex((span) => span[0] > token);
-  const at = found === -1 ? spans.length : found;
-  const line = lineOf(token);
-  // 제 줄 안에서 앞뒤 낱말이 이미 자리를 잡고 있으면, 그 사이가 이 낱말이 있을 수 있는
-  // 전부다. 재생 위치가 그 밖이면 그것은 이 낱말의 순간이 아니다.
-  const before = at > 0 && lineOf((spans[at - 1] as WordSpan)[0]) === line ? (spans[at - 1] as WordSpan)[2] : 0;
-  const after = at < spans.length && lineOf((spans[at] as WordSpan)[0]) === line ? (spans[at] as WordSpan)[1] : Number.POSITIVE_INFINITY;
+  const row = gap?.row ?? (found === -1 ? spans.length : found);
   const width = Math.max(MIN_SPAN_MS, Math.round(floorMs * 2));
-  const wanted = Math.max(0, Math.round(atMs));
-  const room = Math.max(before, Math.min(wanted, after - MIN_SPAN_MS));
-  const start = Number.isFinite(room) ? room : wanted;
-  const placed: WordSpan = [
-    token,
-    start,
-    Math.min(start + width, Number.isFinite(after) ? Math.max(start + MIN_SPAN_MS, after) : start + width),
-  ];
-  return { spans: [...spans.slice(0, at), placed, ...spans.slice(at)], row: at, clamped: start !== wanted };
+  let placed: WordSpan;
+  let filled = false;
+  if (gap !== null && gap.to - gap.from >= MIN_SPAN_MS) {
+    // 빈틈이 아는 전부다. 그 안을 채운다.
+    placed = [token, Math.round(gap.from), Math.round(gap.to)];
+    filled = true;
+  } else if (gap !== null) {
+    // 이웃이 맞닿아 있어 들어갈 자리가 없다. 시작만 맞추고 이웃이 먹히게 둔다.
+    placed = [token, Math.round(gap.from), Math.round(gap.from) + width];
+  } else {
+    const from = Math.max(0, Math.round(atMs));
+    placed = [token, from, from + width];
+  }
+  return { spans: [...spans.slice(0, row), placed, ...spans.slice(row)], row, filled };
 }

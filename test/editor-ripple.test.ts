@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MIN_SPAN_MS, placeWord, pushNeighbours } from "../Admin/src/edit.js";
+import { MIN_SPAN_MS, gapFor, placeWord, pushNeighbours } from "../Admin/src/edit.js";
 import type { WordSpan } from "../Admin/src/cursor.js";
 
 // 한 줄에 네 낱말, 뒤이어 다른 줄에 하나.
@@ -67,75 +67,75 @@ test("음수로 밀려나지 않는다", () => {
   assert.ok((out[0] as WordSpan)[2] >= (out[0] as WordSpan)[1]);
 });
 
-// ── 자리 없는 낱말을 재생 위치에 놓기 ──────────────────────────────────
-test("토큰 순서 사이에 끼워 넣는다", () => {
+// ── 자리 없는 낱말을 제 빈틈에 넣기 ────────────────────────────────────
+test("빈틈을 통째로 채운다", () => {
   const spans: WordSpan[] = [
-    [0, 1000, 1400],
-    [3, 2200, 2600],
+    [0, 100000, 100400],
+    [3, 101000, 101400],
   ];
-  const { spans: out, row, clamped } = placeWord(spans, 1, 1500, 120, () => 0);
+  const { spans: out, row, filled } = placeWord(spans, 1, 0, 120, () => 0);
   assert.equal(row, 1);
-  assert.equal(clamped, false);
+  assert.equal(filled, true);
+  assert.deepEqual(out[1], [1, 100400, 101000], "앞 낱말이 끝난 곳부터 뒷 낱말이 시작하는 곳까지");
   assert.deepEqual(
     out.map((span) => span[0]),
     [0, 1, 3],
   );
-  assert.deepEqual(out[1], [1, 1500, 1740]);
 });
 
-test("앞뒤 낱말 밖으로는 놓이지 않는다", () => {
+test("두 번 누른 자리가 어디든 제 빈틈으로 간다", () => {
   const spans: WordSpan[] = [
     [0, 100000, 100400],
     [3, 101000, 101400],
   ];
-  // 재생 위치가 한참 앞(6초)이어도 그 줄 안에서는 그 자리가 될 수 없다.
-  const { spans: out, clamped } = placeWord(spans, 1, 6000, 300, () => 0);
-  assert.equal(clamped, true);
-  const placed = out[1] as WordSpan;
-  assert.ok(placed[1] >= 100400, String(placed));
-  assert.ok(placed[2] <= 101000, String(placed));
+  const far = placeWord(spans, 1, 6000, 120, () => 0);
+  const near = placeWord(spans, 1, 100700, 120, () => 0);
+  assert.deepEqual(far.spans[1], near.spans[1]);
+});
+
+test("빈틈이 어느 쪽에만 있어도 넣는다", () => {
+  const onlyBefore = placeWord([[0, 100000, 100400]], 1, 0, 120, () => 0);
+  assert.equal(onlyBefore.filled, true);
+  assert.equal((onlyBefore.spans[1] as WordSpan)[1], 100400);
+  const onlyAfter = placeWord([[3, 101000, 101400]], 1, 0, 120, () => 0);
+  assert.equal(onlyAfter.filled, true);
+  assert.equal((onlyAfter.spans[0] as WordSpan)[2], 101000);
+});
+
+test("이웃이 맞닿아 있으면 자리를 만들어 넣고 알린다", () => {
+  const spans: WordSpan[] = [
+    [0, 100000, 100400],
+    [3, 100400, 100800],
+  ];
+  const { spans: out, row, filled } = placeWord(spans, 1, 0, 120, () => 0);
+  assert.equal(filled, false);
+  const settled = pushNeighbours(out, row, () => 0);
   assert.ok(
-    out.every((span, i) => i === 0 || span[1] >= (out[i - 1] as WordSpan)[2]),
-    JSON.stringify(out),
+    settled.every((span, i) => i === 0 || span[1] >= (settled[i - 1] as WordSpan)[2]),
+    JSON.stringify(settled),
+  );
+  assert.ok(settled.every((span) => span[2] - span[1] >= MIN_SPAN_MS));
+});
+
+test("다른 줄 낱말은 빈틈의 벽이 되지 않는다", () => {
+  const spans: WordSpan[] = [
+    [0, 100000, 100400],
+    [3, 101000, 101400],
+  ];
+  assert.equal(
+    gapFor(spans, 1, (token) => (token === 1 ? 1 : 0)),
+    null,
+    "제 줄에 이웃이 없으면 빈틈을 알 수 없다",
   );
 });
 
-test("다른 줄 낱말은 가두는 기준이 되지 않는다", () => {
-  const spans: WordSpan[] = [
-    [0, 100000, 100400],
-    [3, 101000, 101400],
-  ];
-  const { clamped } = placeWord(spans, 1, 6000, 300, (token) => (token === 1 ? 1 : 0));
-  assert.equal(clamped, false, "제 줄에 이웃이 없으면 재생 위치를 그대로 쓴다");
-});
-
-test("맨 뒤 토큰은 끝에 붙는다", () => {
-  const { spans: out, row } = placeWord([[0, 1000, 1400]], 9, 5000, 300, () => 0);
-  assert.equal(row, 1);
-  assert.deepEqual(out[1], [9, 5000, 5600]);
-});
-
-test("음절이 많으면 더 길게 잡아 준다", () => {
-  const one = placeWord([], 0, 0, 120, () => 0).spans[0] as WordSpan;
-  const three = placeWord([], 0, 0, 300, () => 0).spans[0] as WordSpan;
-  assert.ok(three[2] - three[1] > one[2] - one[1]);
+test("빈틈이 없으면 재생 위치를 쓴다", () => {
+  const { spans: out, filled } = placeWord([], 0, 4200, 120, () => 0);
+  assert.equal(filled, false);
+  assert.equal((out[0] as WordSpan)[1], 4200);
 });
 
 test("음수 시각으로는 놓이지 않는다", () => {
   const out = placeWord([], 0, -500, 120, () => 0).spans[0] as WordSpan;
   assert.equal(out[1], 0);
-});
-
-test("놓은 뒤 이웃과 겹치면 먹는다", () => {
-  const spans: WordSpan[] = [
-    [0, 1000, 1400],
-    [2, 1500, 1900],
-  ];
-  const { spans: placed, row } = placeWord(spans, 1, 1300, 300, () => 0);
-  const out = pushNeighbours(placed, row, () => 0);
-  assert.ok(
-    out.every((span, index) => index === 0 || span[1] >= (out[index - 1] as WordSpan)[2]),
-    JSON.stringify(out),
-  );
-  assert.ok(out.every((span) => span[2] - span[1] >= MIN_SPAN_MS));
 });
