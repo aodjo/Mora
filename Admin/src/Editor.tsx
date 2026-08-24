@@ -63,6 +63,8 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   const [resumed, setResumed] = useState<number | null>(null);
   const [chosen, setChosen] = useState<number | null>(null);
   const [lyricsOpen, setLyricsOpen] = useState(true);
+  // 사람이 손댄 낱말. 그 뒤로는 "정렬기가 재지 못했다" 는 표시가 사실이 아니다.
+  const [touched, setTouched] = useState<ReadonlySet<number>>(new Set());
   const [publishing, setPublishing] = useState(false);
   const [published, setPublished] = useState(false);
   const audioRefs = useRef(new Map<string, HTMLAudioElement>());
@@ -211,9 +213,11 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   const rescued = useMemo(
     () =>
       new Set(
-        (detail?.word_spans ?? []).filter((span) => onlyTheFloor(tokens.get(span[0])?.text ?? "", span[1], span[2])).map((span) => span[0]),
+        (detail?.word_spans ?? [])
+          .filter((span) => !touched.has(span[0]) && onlyTheFloor(tokens.get(span[0])?.text ?? "", span[1], span[2]))
+          .map((span) => span[0]),
       ),
-    [detail, tokens],
+    [detail, tokens, touched],
   );
   const activeToken = activeSpan?.[0] ?? null;
   const activeLine = activeToken === null ? null : (tokens.get(activeToken)?.line ?? null);
@@ -223,7 +227,11 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   if (detail === null) return <p className="loading-copy">편집기를 불러오는 중…</p>;
   const jobId = detail.job_id;
 
+  function markTouched(token: number): void {
+    setTouched((current) => (current.has(token) ? current : new Set(current).add(token)));
+  }
   function change(index: number, field: 1 | 2, value: number): void {
+    markTouched(detail?.word_spans[index]?.[0] ?? -1);
     setDetail((current) =>
       current === null
         ? current
@@ -240,6 +248,7 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   }
   /** 낱말을 옮기고, 겹친 이웃은 그만큼 먹힌다. 한 줄에서 두 낱말이 동시에 불릴 수는 없다. */
   function moveWord(row: number, startMs: number, endMs: number): void {
+    markTouched(detail?.word_spans[row]?.[0] ?? -1);
     setDetail((current) => {
       if (current === null) return current;
       const moved = current.word_spans.map((span, index) => (index === row ? ([span[0], startMs, endMs] as WordSpan) : span));
@@ -261,6 +270,7 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
       if (!filled) showToast("앞뒤 낱말이 맞닿아 있어 자리를 만들어 넣었습니다.");
       return { ...current, word_spans: pushNeighbours(withWord, row, lineOf) };
     });
+    markTouched(token);
     setChosen(token);
     setDirty(true);
     setDraftSaved(false);
