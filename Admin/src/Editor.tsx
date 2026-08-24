@@ -3,6 +3,7 @@ import { api } from "./api";
 import { useToast } from "./Toast";
 import { linesOverWords, onlyTheFloor } from "./confidence.js";
 import { cursorSpan, isAside, type WordSpan } from "./cursor.js";
+import { Timeline } from "./Timeline.js";
 
 type Span = [number, number];
 interface ReviewToken {
@@ -323,32 +324,24 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
             </button>
           </div>
         )}
-        <div className="timeline" aria-label="단어 타이밍 개요">
-          {peaks !== null && (
-            <svg className="timeline-wave" viewBox={`0 0 ${peaks.length} 100`} preserveAspectRatio="none" aria-hidden="true">
-              <path d={peaks.map((peak, index) => `M${index} ${50 - peak * 46}V${50 + peak * 46}`).join("")} />
-            </svg>
-          )}
-          <div className="timeline-playhead" style={{ left: `${Math.min(100, (currentMs / duration) * 100)}%` }} aria-hidden="true" />
-          {detail.word_spans.map((span, index) => {
-            const token = tokens.get(span[0]);
-            return (
-              <button
-                key={index}
-                className={`timeline-span${activeToken === span[0] ? " active" : ""}`}
-                style={
-                  {
-                    left: `${(span[1] / duration) * 100}%`,
-                    width: `${Math.max(0.15, ((span[2] - span[1]) / duration) * 100)}%`,
-                    "--speaker-color": speakerColor(token?.speaker_id),
-                  } as CSSProperties
-                }
-                title={`${token?.text ?? `토큰 ${span[0]}`} · ${formatTime(span[1])}–${formatTime(span[2])}`}
-                onClick={() => seek(span[1])}
-              />
-            );
-          })}
-        </div>
+        <Timeline
+          peaks={peaks}
+          durationMs={duration}
+          currentMs={currentMs}
+          words={detail.word_spans}
+          tokens={tokens}
+          lines={detail.lines}
+          lineSpans={linesOverWords(detail.word_spans, detail.lines, detail.line_spans)}
+          asideLines={asideLines}
+          rescued={rescued}
+          chosen={chosen}
+          onChoose={setChosen}
+          onSeek={seek}
+          onMove={(row, startMs, endMs) => {
+            change(row, 1, Math.round(startMs));
+            change(row, 2, Math.round(endMs));
+          }}
+        />
       </section>
 
       <section className="lyrics-review-panel">
