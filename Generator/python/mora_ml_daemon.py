@@ -375,6 +375,60 @@ def comparable(value: str) -> str:
     return re.sub(r"[^\w]+", "", unicodedata.normalize("NFKC", value).lower(), flags=re.UNICODE)
 
 
+# 받아쓰기가 조용한 데를 만나면 자막 데이터에서 배운 상투구로 채운다. 어느 노래의 가사도
+# 아니다. Ruru "살인 아니고 사랑인데요??" 는 노래가 시작하기 전 17초를 이것으로 덮었다.
+INVENTED_PHRASES = (
+    "한국어자막을사용하였습니다",
+    "한국어자막",
+    "자막제공",
+    "자막by",
+    "시청해주셔서감사합니다",
+    "구독과좋아요부탁드립니다",
+    "다음영상에서만나요",
+    "thanksforwatching",
+    "thankyouforwatching",
+    "subtitlesby",
+    "pleasesubscribe",
+    "ご視聴ありがとうございました",
+    "字幕by",
+)
+
+
+def bare(value: str) -> str:
+    """The text with everything that is not a letter or a digit taken out."""
+    return re.sub(r"[\W_]+", "", value.lower(), flags=re.UNICODE)
+
+
+def drop_invented_segments(asr: dict[str, Any], lyric_text: str) -> dict[str, Any]:
+    """
+    Take out the stretches the transcriber filled in rather than heard.
+
+    Whisper learned from subtitle files, so silence and near-silence come back as the things
+    subtitle files say — "이 영상은 한국어 자막을 사용하였습니다", "Thanks for watching". On the
+    measured song that covered 12.6s to 30.0s, the seventeen seconds before the first note, and
+    it did damage twice over: it set where the words were taken to begin, and one of its
+    syllables caught a lyric word and dragged that line in front of the song.
+
+    A phrase only counts as invented when the lyric sheet does not contain it — if a song really
+    does sing "thanks for watching", the sheet will say so and it stays.
+    """
+    segments = asr.get("segments") or []
+    if not segments:
+        return asr
+    sheet = bare(lyric_text)
+    kept = []
+    for segment in segments:
+        written = bare(str(segment.get("text", "")))
+        invented = any(phrase in written and len(phrase) * 2 >= len(written) for phrase in INVENTED_PHRASES)
+        if invented and (not written or written not in sheet):
+            print(f"[asr] dropped invented segment {segment.get('start')}-{segment.get('end')}: {segment.get('text')!r}", file=sys.stderr)
+            continue
+        kept.append(segment)
+    if len(kept) == len(segments):
+        return asr
+    return {**asr, "segments": kept}
+
+
 def asr_words(asr: dict[str, Any]) -> list[dict[str, Any]]:
     """Every word the transcriber heard, in order, with the time it was heard at."""
     words: list[dict[str, Any]] = []
@@ -1331,6 +1385,7 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     notify("separate", "completed", 0.52)
     notify("coarse_asr", "started", 0.55)
     asr, detected = coarse_asr(stems["vocals"], expected_language(job), config["backend"])
+    asr = drop_invented_segments(asr, "\n".join(str(variant.get("text", "")) for variant in job.get("lyrics", [])))
     notify("coarse_asr", "completed", 0.64)
     # 리드 위에 겹쳐 부른 목소리는 받아쓰기에 한 글자도 남지 않는다. 읽을 수는 없어도
     # 들린 자리는 잴 수 있고, 괄호로 적힌 가사는 그 자리에 놓는다.

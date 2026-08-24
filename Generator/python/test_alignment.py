@@ -516,6 +516,32 @@ check("줄은 제 낱말에서 시작한다", stale_lines[0][0] == 30000, str(st
 check("줄은 제 낱말에서 끝난다", stale_lines[0][1] == 32396, str(stale_lines[0]))
 check("줄이 다음 줄을 삼키지 않는다", stale_lines[0][1] <= stale_lines[1][0], str(stale_lines))
 
+# ── 받아쓰기가 조용한 데를 자막 상투구로 채운다: 실측한 Ruru 곡의 앞 17초 ──
+INVENTED_ASR = {"segments": [
+    {"start": 12.6, "end": 30.0, "text": " 이 영상은 한국어 자막을 사용하였습니다.", "words": [
+        {"word": "이", "start": 12.6, "end": 14.0}, {"word": "영상은", "start": 14.0, "end": 14.8},
+        {"word": "한국어", "start": 14.8, "end": 22.6}, {"word": "자막을", "start": 22.6, "end": 26.2},
+        {"word": "사용하였습니다", "start": 26.2, "end": 30.0}]},
+    {"start": 30.0, "end": 31.9, "text": " 아프지 않게 끝내줄게", "words": [
+        {"word": "아프지", "start": 30.0, "end": 30.8}, {"word": "않게", "start": 30.8, "end": 31.2},
+        {"word": "끝내줄게", "start": 31.2, "end": 31.9}]},
+]}
+SHEET = "있잖아 사실 난 말이야\n아프지 않게 끝내줄게\n조금만 참아 다른 년들이"
+cleaned = daemon.drop_invented_segments(INVENTED_ASR, SHEET)
+check("지어낸 구간을 덜어낸다", len(cleaned["segments"]) == 1, f"{len(cleaned['segments'])}구간 남음")
+check("노래한 구간은 남긴다", cleaned["segments"][0]["text"].strip() == "아프지 않게 끝내줄게")
+check("원본은 건드리지 않는다", len(INVENTED_ASR["segments"]) == 2)
+check("덜어낸 뒤 소리는 노래에서 시작한다", abs(daemon.audio_bounds(cleaned, 191_000)[0] - 30.0) < 0.05, f"{daemon.audio_bounds(cleaned, 191_000)[0]}s")
+check("덜어내기 전에는 지어낸 데서 시작했다 (회귀 대비)", abs(daemon.audio_bounds(INVENTED_ASR, 191_000)[0] - 12.6) < 0.05)
+
+# 가사가 정말로 그렇게 노래하면 그대로 둔다.
+really_sung = daemon.drop_invented_segments(INVENTED_ASR, "이 영상은 한국어 자막을 사용하였습니다\n아프지 않게 끝내줄게")
+check("가사에 있으면 지어낸 것이 아니다", len(really_sung["segments"]) == 2, f"{len(really_sung['segments'])}구간")
+
+# 상투구를 한 조각 품었을 뿐인 긴 줄은 지우지 않는다.
+long_line = {"segments": [{"start": 1.0, "end": 3.0, "text": "너에게 자막 제공 같은 말은 하지 않을래 내 마음은 늘 진심이었어", "words": []}]}
+check("긴 줄에 끼어 있는 말은 지우지 않는다", len(daemon.drop_invented_segments(long_line, SHEET)["segments"]) == 1)
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
