@@ -14,6 +14,22 @@ export function textHash(canonical: string): string {
   return createHash("sha256").update(canonical, "utf8").digest("hex").slice(0, 16);
 }
 
+/**
+ * The hash that decides whether two lyric sheets are the same sheet.
+ *
+ * Providers agree on the words and disagree on where the lines break. On the measured song genie
+ * ended the lyric in 48 lines where flo used 61, with not one different word between them — the
+ * same 829 characters, broken differently. Hashing the canonical form line by line made those two
+ * separate sheets, so the song was aligned twice and the reviewer was handed two candidates with
+ * identical scores and nothing to choose between them.
+ *
+ * Line breaks are how a sheet is laid out. The words are what it says, and that is what decides
+ * whether it is the same lyric.
+ */
+export function sheetHash(canonical: string): string {
+  return textHash(canonical.replace(/\s+/gu, " ").trim());
+}
+
 export function fingerprint(tokenization: Tokenization): Fingerprint {
   const lens: number[][] = [];
   const types: TokenType[][] = [];

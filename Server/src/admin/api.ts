@@ -1,5 +1,5 @@
 import { preprocessLyrics } from "../../../packages/preprocess/src/index.js";
-import { textHash } from "../../../packages/core/src/tokenization/fingerprint.js";
+import { sheetHash } from "../../../packages/core/src/tokenization/fingerprint.js";
 import { tokenizeV2 } from "../../../packages/core/src/tokenization/tokenizer-v2.js";
 import { ServiceError } from "../../../packages/core/src/shared/errors.js";
 import type {
@@ -1066,7 +1066,8 @@ async function collectorSubmit(env: WorkerEnv, actor: Actor, value: Record<strin
           layer: variant.layer,
           language: variant.language,
           text: variant.text,
-          text_hash: textHash(tokenization.canonical),
+          // 같은 낱말을 다르게 끊었을 뿐인 가사는 같은 가사다 — 한 줄로 합쳐 한 번만 검수한다.
+          text_hash: sheetHash(tokenization.canonical),
           preprocessor: processed.version,
           confidence: variant.confidence,
           review_required: variant.review_required,
@@ -1175,7 +1176,7 @@ async function updateSourceReview(env: WorkerEnv, actor: Actor, inputId: string,
           layer: variant.layer,
           language: variant.language,
           text: variant.text,
-          text_hash: textHash(tokenization.canonical),
+          text_hash: sheetHash(tokenization.canonical),
           preprocessor: processed.version,
           confidence: variant.confidence,
           review_required: variant.review_required,
