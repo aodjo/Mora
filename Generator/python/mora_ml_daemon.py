@@ -62,6 +62,7 @@ def self_test() -> dict[str, Any]:
         "coarse_asr": "passed" if (backend == "mps" and module_exists("mlx_whisper")) or module_exists("whisperx") else "failed",
         "forced_align": "passed" if module_exists("whisperx") else "failed",
         "split_voices": "passed" if module_exists("audio_separator") else "skipped",
+        "mixed_script": "passed" if module_exists("torchaudio") and module_exists("uroman") else "skipped",
         "diarization": "passed" if module_exists("pyannote.audio") and bool(os.getenv("HF_TOKEN")) else "skipped",
     }
     required = ("yt-dlp", "ffmpeg", "htdemucs_ft", "coarse_asr", "forced_align")
@@ -321,6 +322,33 @@ def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any
     return result, str(result.get("language", language))
 
 
+def written_language(text: str, declared: str) -> str:
+    """
+    The alphabet the lyric is actually written in, whichever one it is filed under.
+
+    The forced aligner is chosen by this, and it is a phoneme model with a fixed alphabet: the
+    Korean one holds Hangul and not one Latin letter. DPR LIVE's "Jasmine" is 84% English and
+    was filed as Korean — the lyric came from a Korean service and the recording did not say —
+    so every English word in it was handed to a model that cannot spell it, and 345 of its 413
+    words were aligned by wildcard. What a sheet is labelled is a guess about the song; what it
+    is written in is a fact about the sheet, and it is the one the aligner needs.
+
+    Only a clear majority overrules the label, and only for a language the aligner has a model
+    for; a truly mixed sheet keeps what it was given, and the minority script is borrowed from
+    the multilingual aligner word by word.
+    """
+    hangul = sum(1 for character in text if "가" <= character <= "힣")
+    latin = sum(1 for character in text if character.isascii() and character.isalpha())
+    total = hangul + latin
+    if total < 20:
+        return declared
+    supported = alignable_languages()
+    for share, code in ((hangul / total, "ko"), (latin / total, "en")):
+        if share >= 0.7 and code != declared and (supported is None or code in supported):
+            return code
+    return declared
+
+
 def alignable_languages() -> set[str] | None:
     """Language codes the forced aligner has a model for, or None when unknown."""
     try:
@@ -396,6 +424,8 @@ INVENTED_PHRASES = (
     "한국어자막을사용하였습니다",
     "한국어자막",
     "자막제공",
+    "배달의민족",
+    "시청자여러분",
     "자막by",
     "시청해주셔서감사합니다",
     "구독과좋아요부탁드립니다",
@@ -414,33 +444,82 @@ def bare(value: str) -> str:
     return re.sub(r"[\W_]+", "", value.lower(), flags=re.UNICODE)
 
 
-def drop_invented_segments(asr: dict[str, Any], lyric_text: str) -> dict[str, Any]:
+def invented_segment(text: str, sheet: str) -> bool:
+    """True when this is the transcriber filling silence with what subtitle files say."""
+    written = bare(text)
+    if not written or written in sheet:
+        return False
+    # 상투구는 후원사 이름 같은 것을 달고 늘어난다: "자막 제공 배달의민족". 절반을 채워야
+    # 한다고 하면 그런 것을 놓친다. 가사지에 없다는 조건이 함부로 지우는 것을 막는다.
+    return any(phrase in written and len(phrase) * 3 >= len(written) for phrase in INVENTED_PHRASES)
+
+
+def listen_again(vocals: Path, begin: float, finish: float, backend: str) -> dict[str, Any] | None:
+    """Transcribe one stretch on its own, letting the transcriber pick the language itself."""
+    try:
+        import soundfile
+
+        samples, rate = soundfile.read(str(vocals), always_2d=True)
+        first = max(0, int((begin - 0.5) * rate))
+        last = min(len(samples), int((finish + 0.5) * rate))
+        if last - first < rate // 2:
+            return None
+        with tempfile.TemporaryDirectory() as scratch:
+            clip = Path(scratch) / "again.wav"
+            soundfile.write(str(clip), samples[first:last], rate)
+            heard, _ = coarse_asr(clip, "und", backend)
+        offset = first / rate
+        for segment in heard.get("segments") or []:
+            segment["start"] = float(segment.get("start", 0)) + offset
+            segment["end"] = float(segment.get("end", 0)) + offset
+            for word in segment.get("words") or []:
+                if "start" in word:
+                    word["start"] = float(word["start"]) + offset
+                if "end" in word:
+                    word["end"] = float(word["end"]) + offset
+        return heard
+    except Exception as error:
+        print(f"[asr] second listen failed error={type(error).__name__}: {error}", file=sys.stderr)
+        return None
+
+
+def redo_invented_segments(asr: dict[str, Any], lyric_text: str, vocals: Path, backend: str) -> dict[str, Any]:
     """
-    Take out the stretches the transcriber filled in rather than heard.
+    Listen again wherever the transcriber wrote what subtitle files say instead of what was sung.
 
-    Whisper learned from subtitle files, so silence and near-silence come back as the things
-    subtitle files say — "이 영상은 한국어 자막을 사용하였습니다", "Thanks for watching". On the
-    measured song that covered 12.6s to 30.0s, the seventeen seconds before the first note, and
-    it did damage twice over: it set where the words were taken to begin, and one of its
-    syllables caught a lyric word and dragged that line in front of the song.
+    Whisper learned from subtitle files, so it answers with their boilerplate — but not only over
+    silence. On DPR LIVE's "Jasmine" it gave 16.7 seconds of loud, plainly sung English chorus,
+    at four fifths of the song's peak level, as the single line "자막 제공 배달의민족", and the
+    eight lyric lines sung there were left without a witness. The cause is the language: the
+    sheet was filed as Korean, so Korean was forced on an English song. Handed that same stretch
+    on its own and allowed to choose, the transcriber returns "You know I can paint the world /
+    Sitting there in black and gold / …" — every line of it.
 
-    A phrase only counts as invented when the lyric sheet does not contain it — if a song really
-    does sing "thanks for watching", the sheet will say so and it stays.
+    So a stretch like that is not deleted, it is asked again. Only if the second answer is more
+    boilerplate is it dropped, because then there is nothing there to hear.
     """
     segments = asr.get("segments") or []
     if not segments:
         return asr
     sheet = bare(lyric_text)
-    kept = []
+    kept: list[dict[str, Any]] = []
+    changed = False
     for segment in segments:
-        written = bare(str(segment.get("text", "")))
-        invented = any(phrase in written and len(phrase) * 2 >= len(written) for phrase in INVENTED_PHRASES)
-        if invented and (not written or written not in sheet):
-            print(f"[asr] dropped invented segment {segment.get('start')}-{segment.get('end')}: {segment.get('text')!r}", file=sys.stderr)
+        if not invented_segment(str(segment.get("text", "")), sheet):
+            kept.append(segment)
             continue
-        kept.append(segment)
-    if len(kept) == len(segments):
+        changed = True
+        begin, finish = float(segment.get("start", 0)), float(segment.get("end", 0))
+        again = listen_again(vocals, begin, finish, backend)
+        recovered = [part for part in ((again or {}).get("segments") or []) if not invented_segment(str(part.get("text", "")), sheet)]
+        if recovered:
+            print(f"[asr] listened again to {begin:.1f}-{finish:.1f}s: {len(recovered)} line(s) recovered", file=sys.stderr)
+            kept.extend(recovered)
+        else:
+            print(f"[asr] dropped invented segment {begin:.1f}-{finish:.1f}s: {str(segment.get('text', '')).strip()!r}", file=sys.stderr)
+    if not changed:
         return asr
+    kept.sort(key=lambda part: float(part.get("start", 0)))
     return {**asr, "segments": kept}
 
 
@@ -1139,6 +1218,128 @@ def extend_held_endings(
             lines[line_index][1] = int(word[2])
 
 
+# ── 여러 글자를 한 사전으로 맞추는 정렬기 ──────────────────────────────────
+# 언어별 정렬 모델은 제 언어의 글자만 안다: 한국어 모델의 사전은 한글 1202자에 라틴 0자,
+# 숫자 0자다. 그래서 한국어 가사에 섞인 "in", "kawaii", "2" 는 찾을 대상이 아니라 와일드
+# 카드로 흘러간다. MMS 는 어떤 글자든 로마자로 옮긴 뒤 맞추므로 그 낱말들을 읽을 수 있다.
+# 대신 언어를 가리지 않는 만큼 제 언어에서는 덜 정밀하다 — 실측한 줄에서 MMS 는 "가방에"
+# 를 180ms 로 눌렀고 한국어 모델은 620ms 를 주었다. 그래서 읽을 수 없는 낱말만 맡긴다.
+MMS_DIGITS = {"0": "yeong", "1": "won", "2": "tu", "3": "sseuri", "4": "po", "5": "paibeu", "6": "siksseu", "7": "sebeun", "8": "eiteu", "9": "nain"}
+mms_cache: dict[str, Any] = {}
+
+
+def mms_ready() -> bool:
+    return module_exists("torchaudio") and module_exists("uroman")
+
+
+def spelled_out(word: str) -> str:
+    """The word in the Latin letters the multilingual aligner reads, or "" when nothing is left."""
+    import uroman
+
+    romanizer = mms_cache.get("uroman")
+    if romanizer is None:
+        romanizer = mms_cache["uroman"] = uroman.Uroman()
+    sounded = romanizer.romanize_string(word).lower()
+    sounded = "".join(MMS_DIGITS.get(character, character) for character in sounded)
+    return re.sub(r"[^a-z']", "", sounded)
+
+
+def mms_voice(vocals: Path) -> tuple[Any, float] | None:
+    """The multilingual model's read of the whole vocal, and seconds per frame. Computed once."""
+    if mms_cache.get("voice_of") == str(vocals):
+        return mms_cache.get("voice")
+    try:
+        import torch
+        import torchaudio
+        from torchaudio.pipelines import MMS_FA as bundle
+
+        with redirect_stdout(sys.stderr):
+            wave, rate = torchaudio.load(str(vocals))
+            wave = torchaudio.functional.resample(wave.mean(dim=0, keepdim=True), rate, bundle.sample_rate)
+            model = mms_cache.get("model")
+            if model is None:
+                model = mms_cache["model"] = bundle.get_model()
+                mms_cache["tokenizer"] = bundle.get_tokenizer()
+                mms_cache["aligner"] = bundle.get_aligner()
+            with torch.inference_mode():
+                emission, _ = model(wave)
+        voice = (emission, wave.size(1) / emission.size(1) / bundle.sample_rate)
+    except Exception as error:
+        print(f"[mms] unavailable error={type(error).__name__}: {error}", file=sys.stderr)
+        voice = None
+    mms_cache["voice_of"] = str(vocals)
+    mms_cache["voice"] = voice
+    return voice
+
+
+def mms_line_spans(voice: tuple[Any, float], window: list[int], written: list[str]) -> dict[int, tuple[float, float]]:
+    """Where the multilingual aligner puts each word of this line, in milliseconds."""
+    emission, ratio = voice
+    spelled = [spelled_out(word) for word in written]
+    usable = [position for position, sound in enumerate(spelled) if sound]
+    low = max(0, int(window[0] / 1000 / ratio))
+    high = min(int(emission.size(1)), int(window[1] / 1000 / ratio) + 1)
+    if not usable or high - low < len(usable) + 2:
+        return {}
+    try:
+        import torch
+
+        with torch.inference_mode():
+            spans = mms_cache["aligner"](emission[0, low:high], mms_cache["tokenizer"]([spelled[p] for p in usable]))
+    except Exception as error:
+        print(f"[mms] line skipped error={type(error).__name__}: {error}", file=sys.stderr)
+        return {}
+    placed: dict[int, tuple[float, float]] = {}
+    for position, span in zip(usable, spans):
+        placed[position] = ((low + span[0].start) * ratio * 1000, (low + span[-1].end) * ratio * 1000)
+    return placed
+
+
+def lend_spans(candidates: list[dict[str, Any]], borrowed: dict[int, tuple[float, float]], positions: list[int]) -> int:
+    """
+    Give the named words the multilingual aligner's answer, without disturbing the rest.
+
+    The words around them were read by a model that has their letters, so those boundaries are
+    measurements and are not crossed. Words the model could not read are handled together when
+    they sit side by side: clamping each against its neighbour would mean clamping against the
+    wildcard time this is meant to replace, and on a measured line that threw away the borrow
+    for "in" while keeping the one for "the", leaving the pair further apart than either model
+    said. Nothing is reordered and no readable neighbour is shortened.
+    """
+    taken = 0
+    for first, last in runs_of(positions):
+        floor = float(candidates[first - 1]["end"]) if first > 0 else float("-inf")
+        ceiling = float(candidates[last + 1]["start"]) if last + 1 < len(candidates) else float("inf")
+        cursor = floor
+        for offset, position in enumerate(range(first, last + 1)):
+            span = borrowed.get(position)
+            remaining = last - position
+            if span is None:
+                cursor = max(cursor, float(candidates[position]["end"]))
+                continue
+            room = ceiling - MIN_WORD_MS / 1000 * remaining
+            start = max(span[0] / 1000, cursor)
+            end = min(span[1] / 1000, room)
+            if end - start < MIN_WORD_MS / 1000:
+                cursor = max(cursor, float(candidates[position]["end"]))
+                continue
+            candidates[position] = {**candidates[position], "start": start, "end": end}
+            cursor = end
+            taken += 1
+    return taken
+
+
+def runs_of(positions: list[int]) -> list[tuple[int, int]]:
+    """Consecutive positions grouped together: [1,2,5] becomes [(1,2),(5,5)]."""
+    grouped: list[tuple[int, int]] = []
+    for position in sorted(set(positions)):
+        if grouped and position == grouped[-1][1] + 1:
+            grouped[-1] = (grouped[-1][0], position)
+        else:
+            grouped.append((position, position))
+    return grouped
+
+
 def align_line(
     line: str, window_start: float, window_end: float, whisperx: Any, model: Any, metadata: Any, audio: Any, device: str
 ) -> list[dict[str, Any]]:
@@ -1218,7 +1419,10 @@ def align_variant(
     anchored_by_asr = anchored is not None
     try:
         import whisperx
-        language = str(variant.get("language", "und")).split("-")[0]
+        declared = str(variant.get("language", "und")).split("-")[0]
+        language = written_language(str(variant["text"]), declared)
+        if language != declared:
+            print(f"[align] lyric is filed as {declared} but written in {language}; using the {language} aligner", file=sys.stderr)
         device = "cuda" if backend == "cuda" else "cpu" if backend == "mps" else backend
         with redirect_stdout(sys.stderr):
             model, metadata = whisperx.load_align_model(language_code=language, device=device)
@@ -1227,7 +1431,25 @@ def align_variant(
                 align_line(line, line_windows[index][0] / 1000, line_windows[index][1] / 1000, whisperx, model, metadata, audio, device)
                 for index, line in enumerate(text_lines)
             ]
+        # 이 모델이 글자로 가지고 있지 않은 낱말은 어느 줄에 있는가.
+        alphabet = {str(character).lower() for character in (metadata.get("dictionary") or {})}
+        illegible: dict[int, list[int]] = {}
+        for line_index, line in enumerate(text_lines):
+            spots = [
+                position
+                for position, word in enumerate(line.split())
+                if comparable(word) and not any(character in alphabet for character in comparable(word))
+            ]
+            if spots:
+                illegible[line_index] = spots
+        borrowed_lines: dict[int, dict[int, tuple[float, float]]] = {}
+        if illegible and mms_ready():
+            voice = mms_voice(vocals)
+            if voice is not None:
+                for line_index in illegible:
+                    borrowed_lines[line_index] = mms_line_spans(voice, line_windows[line_index], text_lines[line_index].split())
         result_words: list[list[int | float]] = []
+        borrowed_words = 0
         aligned_token_weight = 0.0
         token_index = 0
         # Which token ends each line, so a held note can be given the length it is held for.
@@ -1237,6 +1459,8 @@ def align_variant(
             # aligner could not place, which are given a spot between their neighbours.
             heard_in_line = aligned_segments[line_index] if line_index < len(aligned_segments) else []
             candidates = fill_unaligned(heard_in_line, line_windows[line_index][0] / 1000, line_windows[line_index][1] / 1000)
+            if line_index in borrowed_lines and len(candidates) == count:
+                borrowed_words += lend_spans(candidates, borrowed_lines[line_index], illegible[line_index])
             if candidates:
                 projected = interpolate_boundaries(candidates, count)
                 for token_offset, word_start, word_end, score in projected:
@@ -1262,7 +1486,9 @@ def align_variant(
         place_backing_runs(result_words, counts, text_lines, weights, second_voice or [])
         close_lines_over_words(result_words, line_windows, counts)
         coverage = aligned_token_weight / max(1, sum(counts))
-        quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, language, detected)
+        quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, declared, detected)
+        if borrowed_words:
+            print(f"[mms] borrowed {borrowed_words} word(s) the {language} aligner has no letters for", file=sys.stderr)
         return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}
     except Exception as error:
         print(f"[forced_align] fallback error={type(error).__name__}", file=sys.stderr)
@@ -1400,7 +1626,7 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     notify("separate", "completed", 0.52)
     notify("coarse_asr", "started", 0.55)
     asr, detected = coarse_asr(stems["vocals"], expected_language(job), config["backend"])
-    asr = drop_invented_segments(asr, "\n".join(str(variant.get("text", "")) for variant in job.get("lyrics", [])))
+    asr = redo_invented_segments(asr, "\n".join(str(variant.get("text", "")) for variant in job.get("lyrics", [])), stems["vocals"], config["backend"])
     notify("coarse_asr", "completed", 0.64)
     # 리드 위에 겹쳐 부른 목소리는 받아쓰기에 한 글자도 남지 않는다. 읽을 수는 없어도
     # 들린 자리는 잴 수 있고, 괄호로 적힌 가사는 그 자리에 놓는다.

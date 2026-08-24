@@ -527,7 +527,7 @@ INVENTED_ASR = {"segments": [
         {"word": "끝내줄게", "start": 31.2, "end": 31.9}]},
 ]}
 SHEET = "있잖아 사실 난 말이야\n아프지 않게 끝내줄게\n조금만 참아 다른 년들이"
-cleaned = daemon.drop_invented_segments(INVENTED_ASR, SHEET)
+cleaned = daemon.redo_invented_segments(INVENTED_ASR, SHEET, Path("없음.wav"), "cpu")
 check("지어낸 구간을 덜어낸다", len(cleaned["segments"]) == 1, f"{len(cleaned['segments'])}구간 남음")
 check("노래한 구간은 남긴다", cleaned["segments"][0]["text"].strip() == "아프지 않게 끝내줄게")
 check("원본은 건드리지 않는다", len(INVENTED_ASR["segments"]) == 2)
@@ -535,12 +535,41 @@ check("덜어낸 뒤 소리는 노래에서 시작한다", abs(daemon.audio_boun
 check("덜어내기 전에는 지어낸 데서 시작했다 (회귀 대비)", abs(daemon.audio_bounds(INVENTED_ASR, 191_000)[0] - 12.6) < 0.05)
 
 # 가사가 정말로 그렇게 노래하면 그대로 둔다.
-really_sung = daemon.drop_invented_segments(INVENTED_ASR, "이 영상은 한국어 자막을 사용하였습니다\n아프지 않게 끝내줄게")
+really_sung = daemon.redo_invented_segments(INVENTED_ASR, "이 영상은 한국어 자막을 사용하였습니다\n아프지 않게 끝내줄게", Path("없음.wav"), "cpu")
 check("가사에 있으면 지어낸 것이 아니다", len(really_sung["segments"]) == 2, f"{len(really_sung['segments'])}구간")
 
 # 상투구를 한 조각 품었을 뿐인 긴 줄은 지우지 않는다.
 long_line = {"segments": [{"start": 1.0, "end": 3.0, "text": "너에게 자막 제공 같은 말은 하지 않을래 내 마음은 늘 진심이었어", "words": []}]}
-check("긴 줄에 끼어 있는 말은 지우지 않는다", len(daemon.drop_invented_segments(long_line, SHEET)["segments"]) == 1)
+check("긴 줄에 끼어 있는 말은 지우지 않는다", len(daemon.redo_invented_segments(long_line, SHEET, Path("없음.wav"), "cpu")["segments"]) == 1)
+check("후원사 이름이 붙어 늘어난 상투구도 알아본다", daemon.invented_segment(" 자막 제공 배달의민족", daemon.bare(SHEET)))
+check("가사에 있는 말은 상투구로 보지 않는다", not daemon.invented_segment(" 자막 제공 배달의민족", daemon.bare("자막 제공 배달의민족")))
+
+# ── 정렬 모델이 글자로 가지고 있지 않은 낱말 ──────────────────────────────
+# 한국어 정렬 모델 사전은 한글 1202자에 라틴 0자, 숫자 0자다. 나란히 붙은 두 낱말을
+# 각자 이웃에 맞춰 자르면, 바꾸려던 바로 그 와일드카드 시각에 맞춰 자르는 꼴이 된다.
+check("이어진 자리를 묶는다", daemon.runs_of([1, 2, 5]) == [(1, 2), (5, 5)])
+check("흩어진 자리는 따로", daemon.runs_of([3, 1]) == [(1, 1), (3, 3)])
+check("빈 목록은 빈 결과", daemon.runs_of([]) == [])
+
+# 실측 모양: whisperx 가 "in the" 를 80ms 두 조각으로 눌렀고, MMS 는 제자리를 안다.
+crowded = [
+    {"word": "너와", "start": 20.00, "end": 20.50},
+    {"word": "in", "start": 20.50, "end": 20.58},
+    {"word": "the", "start": 20.58, "end": 20.66},
+    {"word": "밤", "start": 21.40, "end": 21.90},
+]
+moved = daemon.lend_spans(crowded, {1: (20800.0, 21050.0), 2: (21050.0, 21350.0)}, [1, 2])
+check("나란히 붙은 두 낱말을 모두 옮긴다", moved == 2, f"{moved}개")
+check("in 이 들린 자리로 간다", abs(crowded[1]["start"] - 20.80) < 1e-6, str(crowded[1]))
+check("the 가 in 뒤에 온다", crowded[2]["start"] >= crowded[1]["end"] - 1e-9, str(crowded[2]))
+check("읽히는 이웃은 그대로다", crowded[0]["end"] == 20.50 and crowded[3]["start"] == 21.40, str([crowded[0], crowded[3]]))
+check("순서가 지켜진다", all(crowded[i]["end"] <= crowded[i + 1]["start"] + 1e-9 for i in range(3)), str(crowded))
+
+# 읽히는 이웃의 자리를 넘어서까지 가져가지 않는다.
+tight = [{"word": "너와", "start": 20.0, "end": 20.5}, {"word": "in", "start": 20.5, "end": 20.6}, {"word": "밤", "start": 20.7, "end": 21.2}]
+daemon.lend_spans(tight, {1: (19000.0, 25000.0)}, [1])
+check("이웃 밖으로 나가지 않는다", tight[1]["start"] >= 20.5 - 1e-9 and tight[1]["end"] <= 20.7 + 1e-9, str(tight[1]))
+check("옮겨도 이웃은 안 줄어든다", tight[0]["end"] == 20.5 and tight[2]["start"] == 20.7, str([tight[0], tight[2]]))
 
 print()
 if failures:
