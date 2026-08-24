@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "./api";
 import { useToast } from "./Toast";
+import { cursorSpan, isAside, type WordSpan } from "./cursor.js";
 
 type Span = [number, number];
-type WordSpan = [number, number, number];
 interface ReviewToken {
   index: number;
   text: string;
@@ -46,6 +46,7 @@ const trackNames: Record<string, string> = {
 };
 const speakerColors = ["#0070f3", "#7928ca", "#eb367f", "#ab570a", "#0c8c72", "#c50000"];
 
+/** A line that is nothing but a bracketed aside — the second voice, sung over its neighbour. */
 export function Editor({ candidateId, onPublished }: { candidateId: string; onPublished?: () => void }) {
   const { showToast } = useToast();
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -94,7 +95,13 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   );
   const spans = useMemo(() => new Map(detail?.word_spans.map((span) => [span[0], span]) ?? []), [detail]);
   const tokens = useMemo(() => new Map(detail?.tokens.map((token) => [token.index, token]) ?? []), [detail]);
-  const activeSpan = detail?.word_spans.find((span) => currentMs >= span[1] && currentMs < span[2]);
+  // 괄호로만 된 줄은 옆줄 위에 겹쳐 부르는 두 번째 목소리다. 그 시간은 옆줄의 시간과
+  // 겹치는 것이 맞지만, 커서는 하나뿐이라 둘 다 가질 수 없다. 커서는 리드를 따라간다.
+  const asideLines = useMemo(() => new Set((detail?.lines ?? []).filter((line) => isAside(line.text)).map((line) => line.index)), [detail]);
+  // 겹친 구간에서 토큰 순서상 첫 번째를 고르면, 앞줄이 커서를 붙들고 있다가 다음 줄
+  // 한가운데로 건너뛴다 — 화면에서는 가사가 뒤까지 찼다가 앞으로 되돌아가는 것으로 보인다.
+  // 시작한 것 중 가장 마지막 것을 고르면 커서는 시간과 함께만 움직인다.
+  const activeSpan = cursorSpan(detail?.word_spans ?? [], currentMs, (index) => asideLines.has(tokens.get(index)?.line ?? -1));
   const activeToken = activeSpan?.[0] ?? null;
   const activeLine = activeToken === null ? null : (tokens.get(activeToken)?.line ?? null);
   useEffect(() => {
