@@ -1,20 +1,23 @@
 /**
- * Which timings are a measurement and which are the floor the pipeline fell back to.
+ * Which timings the pipeline measured and which it filled in.
  *
- * When the forced aligner collapses a stretch of words, the pipeline gives each of them the
- * shortest time a human could have sung it and no more — a hundred milliseconds a syllable.
- * A word left sitting exactly on that floor was not measured; it was rescued. On the measured
- * songs that is 2% of words in one and 8% in another, and they are almost all one syllable:
- * 날, 넌, 내, 너. They flash past in seven frames, which is what "간헐적으로 놓친다" looks like.
+ * The aligner scores every word it places. A word it could not find at all is given a spot
+ * between its neighbours and a score of 0.3 or below — that is the pipeline saying, in its own
+ * words, "I put this here, I did not hear it there".
  *
- * The score the aligner reports does not find them — 날 came back at 106ms with a score of
- * 0.51, which reads as measured. The floor does find them, and it can be worked out here from
- * the word itself, so nothing has to be stored.
+ * This used to be guessed from length instead: a word sitting on the shortest time a human could
+ * sing it was called a rescue. That marked words that were simply short. "the" is one syllable
+ * and often really is 120ms, so correct timings came back flagged, which is worse than not
+ * flagging at all — it teaches the reviewer to ignore the mark.
  */
-export const MIN_WORD_MS = 120;
-export const MIN_SYLLABLE_MS = 100;
+export const GUESSED_AT_OR_BELOW = 0.35;
 
-/** Roughly how many syllables a word has; used only to work out how long it ought to run. */
+/** True when the pipeline placed this word rather than measuring it. */
+export function wasGuessed(score: number | undefined): boolean {
+  return score !== undefined && score > 0 && score <= GUESSED_AT_OR_BELOW;
+}
+
+/** 대강의 음절 수. 자리 없는 낱말을 넣을 때 얼마나 길게 잡을지 정하는 데만 쓴다. */
 export function syllables(word: string): number {
   let count = 0;
   let inVowelRun = false;
@@ -37,14 +40,9 @@ export function syllables(word: string): number {
   return Math.max(1, count);
 }
 
-/** The shortest this word could honestly have taken. */
+/** 이 낱말이 정직하게 가질 수 있는 가장 짧은 시간 — 파이프라인과 같은 값을 낸다. */
 export function floorMs(word: string): number {
-  return Math.max(MIN_WORD_MS, MIN_SYLLABLE_MS * syllables(word));
-}
-
-/** True when the word was given the floor rather than a time taken from the audio. */
-export function onlyTheFloor(word: string, startMs: number, endMs: number): boolean {
-  return endMs - startMs <= floorMs(word) + 1;
+  return Math.max(120, 100 * syllables(word));
 }
 
 /**

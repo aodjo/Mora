@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { floorMs, onlyTheFloor, syllables } from "../Admin/src/confidence.js";
+import { floorMs, syllables, wasGuessed } from "../Admin/src/confidence.js";
 
 test("음절 수는 파이프라인과 같게 센다", () => {
   assert.equal(syllables("날"), 1);
@@ -18,17 +18,21 @@ test("바닥값도 파이프라인과 같다", () => {
   assert.equal(floorMs("홍대"), 200);
 });
 
-// 실측: uruma "하치와레girl" 후보에서 바닥에 붙어 있던 낱말들. 점수는 0.47~0.61 로
-// 잰 것처럼 보이지만 길이는 바닥이다 — 점수로는 못 찾고 바닥으로는 찾는다.
-test("짓눌린 한 글자 낱말을 찾아낸다", () => {
-  assert.equal(onlyTheFloor("날", 0, 106), true);
-  assert.equal(onlyTheFloor("넌", 0, 109), true);
-  assert.equal(onlyTheFloor("비", 0, 120), true);
-  assert.equal(onlyTheFloor("홍대", 0, 201), true);
+// 파이프라인이 스스로 말한 것만 믿는다. 자리를 못 찾아 이웃 사이에 끼워 넣은 낱말에는
+// 0.3 이하가 붙는다. 길이로 짐작하던 옛 방식은 "the" 처럼 원래 짧은 낱말을 의심했다.
+test("파이프라인이 끼워 넣었다고 한 낱말만 표시한다", () => {
+  assert.equal(wasGuessed(0.3), true);
+  assert.equal(wasGuessed(0.2), true);
+  assert.equal(wasGuessed(0.35), true);
 });
 
-test("제대로 잰 낱말은 표시하지 않는다", () => {
-  assert.equal(onlyTheFloor("사랑해줄래", 0, 792), false);
-  assert.equal(onlyTheFloor("날", 0, 240), false);
-  assert.equal(onlyTheFloor("도망쳐", 0, 560), false);
+test("재어진 낱말은 표시하지 않는다", () => {
+  assert.equal(wasGuessed(0.47), false, "짧아도 잰 것이면 그대로 둔다 — 실측한 '넌' 은 109ms 에 0.47 이었다");
+  assert.equal(wasGuessed(0.62), false);
+  assert.equal(wasGuessed(0.9), false);
+});
+
+test("점수가 없거나 0이면 표시하지 않는다", () => {
+  assert.equal(wasGuessed(undefined), false);
+  assert.equal(wasGuessed(0), false, "점수를 담기 전에 만들어진 옛 후보를 의심하지 않는다");
 });

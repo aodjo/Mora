@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "./api";
 import { useToast } from "./Toast";
-import { floorMs, linesOverWords, onlyTheFloor } from "./confidence.js";
+import { floorMs, linesOverWords, wasGuessed } from "./confidence.js";
 import { placeWord, pushNeighbours } from "./edit.js";
 import { cursorSpan, isAside, type WordSpan } from "./cursor.js";
 import { Timeline } from "./Timeline.js";
@@ -36,6 +36,7 @@ interface Detail {
   lines: ReviewLine[];
   line_spans: Span[];
   word_spans: WordSpan[];
+  word_scores: Array<[number, number]>;
   artifacts: Artifact[];
   draft: { word_spans: WordSpan[]; saved_at: number } | null;
 }
@@ -213,11 +214,9 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
   const rescued = useMemo(
     () =>
       new Set(
-        (detail?.word_spans ?? [])
-          .filter((span) => !touched.has(span[0]) && onlyTheFloor(tokens.get(span[0])?.text ?? "", span[1], span[2]))
-          .map((span) => span[0]),
+        (detail?.word_scores ?? []).filter(([token, score]) => !touched.has(token) && wasGuessed(score)).map(([token]) => token),
       ),
-    [detail, tokens, touched],
+    [detail, touched],
   );
   const activeToken = activeSpan?.[0] ?? null;
   const activeLine = activeToken === null ? null : (tokens.get(activeToken)?.line ?? null);

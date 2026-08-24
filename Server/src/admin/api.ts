@@ -1516,7 +1516,7 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
     const score = qualityScore(candidate.quality);
     scores.push({ id, score, language: candidate.quality.language_match ?? 0 });
     await env.ADMIN_DB.prepare(
-      `INSERT INTO alignment_candidates (id,job_id,input_revision_id,variant_id,status,tokenizer,text_hash,fp_lens,fp_types,line_spans,word_spans,speaker_turns,word_speakers,line_speakers,quality,quality_score,pipeline_version,backend,hardware,created_by,created_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)`,
+      `INSERT INTO alignment_candidates (id,job_id,input_revision_id,variant_id,status,tokenizer,text_hash,fp_lens,fp_types,line_spans,word_spans,word_scores,speaker_turns,word_speakers,line_speakers,quality,quality_score,pipeline_version,backend,hardware,created_by,created_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)`,
     )
       .bind(
         id,
@@ -1529,6 +1529,9 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
         encode(candidate.fingerprint.types),
         encode(candidate.line_spans),
         encode(candidate.word_spans.map(([index, start, end]) => [index, start, end])),
+        // 네 번째 값은 정렬기가 낸 확신이다. 재생기는 세 칸만 읽으므로 따로 담는다 —
+        // 어느 낱말이 재어진 것이고 어느 낱말이 끼워 넣어진 것인지는 검수에 필요하다.
+        encode(candidate.word_spans.map(([index, , , score]) => [index, Number(score ?? 0)])),
         encode(candidate.speaker_turns),
         encode(candidate.word_speakers),
         encode(candidate.line_speakers),
@@ -1686,6 +1689,7 @@ async function candidateDetail(env: WorkerEnv, actor: Actor, candidateId: string
     ...review,
     line_spans: decode(candidate.line_spans as ArrayBuffer),
     word_spans: decode(candidate.word_spans as ArrayBuffer),
+    word_scores: decode(candidate.word_scores as ArrayBuffer),
     speaker_turns: decode(candidate.speaker_turns as ArrayBuffer),
     word_speakers: wordSpeakers,
     line_speakers: decode(candidate.line_speakers as ArrayBuffer),
@@ -1803,7 +1807,7 @@ async function submitDraft(env: WorkerEnv, actor: Actor, candidateId: string): P
   const id = crypto.randomUUID();
   await env.ADMIN_DB.batch([
     env.ADMIN_DB.prepare(
-      `INSERT INTO alignment_candidates (id,job_id,input_revision_id,variant_id,parent_id,status,tokenizer,text_hash,fp_lens,fp_types,line_spans,word_spans,speaker_turns,word_speakers,line_speakers,quality,quality_score,pipeline_version,backend,hardware,created_by,created_at) VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)`,
+      `INSERT INTO alignment_candidates (id,job_id,input_revision_id,variant_id,parent_id,status,tokenizer,text_hash,fp_lens,fp_types,line_spans,word_spans,word_scores,speaker_turns,word_speakers,line_speakers,quality,quality_score,pipeline_version,backend,hardware,created_by,created_at) VALUES (?1,?2,?3,?4,?5,'pending',?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)`,
     ).bind(
       id,
       source.job_id,
@@ -1816,6 +1820,7 @@ async function submitDraft(env: WorkerEnv, actor: Actor, candidateId: string): P
       source.fp_types,
       encode(data.line_spans),
       encode(data.word_spans),
+      source.word_scores,
       source.speaker_turns,
       source.word_speakers,
       source.line_speakers,
