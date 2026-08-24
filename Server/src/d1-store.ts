@@ -61,6 +61,15 @@ function fromRow(row: AlignmentRow): StoredAlignment {
 export class D1AlignmentStore implements AlignmentRepository {
   constructor(private readonly database: D1Database) {}
 
+  /**
+   * The alignments for a recording, best first.
+   *
+   * A song can carry several — providers disagree about the words, and each disagreement becomes
+   * its own alignment. The lookup by artist and title already answered with the best of them; the
+   * lookups by ISRC and by MBID answered with the most recently written, so the same song gave a
+   * different answer depending on how it was asked for. Whoever is asking wants the best one, and
+   * which identifier they happened to have says nothing about that.
+   */
   async findAlignments(identifier: RecordingIdentifier): Promise<StoredAlignment[]> {
     let statement: D1PreparedStatement;
     if (identifier.isrc !== undefined) {
@@ -69,7 +78,7 @@ export class D1AlignmentStore implements AlignmentRepository {
           `
           SELECT a.*, r.duration_ms FROM public_alignment a
           JOIN public_recording r ON r.id = a.recording_id
-          WHERE r.isrc = ?1 AND a.active = 1 ORDER BY a.created_at DESC
+          WHERE r.isrc = ?1 AND a.active = 1 ORDER BY a.quality_score DESC, a.created_at DESC
         `,
         )
         .bind(identifier.isrc);
@@ -79,7 +88,7 @@ export class D1AlignmentStore implements AlignmentRepository {
           `
           SELECT a.*, r.duration_ms FROM public_alignment a
           JOIN public_recording r ON r.id = a.recording_id
-          WHERE r.mbid = ?1 AND a.active = 1 ORDER BY a.created_at DESC
+          WHERE r.mbid = ?1 AND a.active = 1 ORDER BY a.quality_score DESC, a.created_at DESC
         `,
         )
         .bind(identifier.mbid);
