@@ -84,13 +84,17 @@ def notify(stage: str, state: str, progress: float, metrics: dict[str, float] | 
 
 
 def run_command(args: list[str], code: str) -> None:
-    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # 이 데몬의 stdin 은 Node 와 주고받는 JSON-RPC 파이프다. 물려 주면 ffmpeg 가 거기서
+    # 대화형 명령을 읽으려 들어 우리가 읽어야 할 요청을 먹는다 — 실제로 재현하면 "Enter
+    # command:" 를 찍고 8초짜리 파일에 27초를 매달려 있었다. 호출부는 모두 파일 경로를
+    # 넘기고 pipe: 나 - 로 표준입력에서 읽는 곳은 없으니, 아무것도 주지 않는 편이 옳다.
+    result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
         raise RuntimeError(code)
 
 
 def probe(path: Path) -> dict[str, Any]:
-    result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
         raise RuntimeError("FFPROBE_FAILED")
     return json.loads(result.stdout)
@@ -101,7 +105,7 @@ def downloaded(directory: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def download(job: dict[str, Any], directory: Path, cookie_file: str | None) -> Path:
+def download(job: dict[str, Any], directory: Path, cookie_file: str | None, proxy: str | None = None) -> Path:
     """
     The audio, from the first source that gives it up.
 
@@ -109,6 +113,10 @@ def download(job: dict[str, Any], directory: Path, cookie_file: str | None) -> P
     looks for deno by default, and without a runtime it falls back to a client whose URLs come
     back 403 Forbidden. Node is always here — the worker that calls this daemon is a Node
     program — so it is offered as a runtime rather than left unfound.
+
+    프록시는 환경변수가 아니라 여기에서만 건다. HTTPS_PROXY 로 걸면 같은 프로세스의 파이썬이
+    내려받는 것 — 언어마다 다른 정렬 모델 수 GB — 까지 전부 그리로 나간다. 데이터센터 IP 를
+    가리려고 필요한 것은 유튜브로 가는 길 하나뿐이고, 그 길은 곡당 몇 MB 다. 자릿수가 다르다.
     """
     urls = [job["source"]["url"], *job["source"].get("alternatives", [])]
     refused: list[str] = []
@@ -117,8 +125,10 @@ def download(job: dict[str, Any], directory: Path, cookie_file: str | None) -> P
         args = ["yt-dlp", "--no-playlist", "--no-write-info-json", "--js-runtimes", "node", "-f", "bestaudio/best", "-o", str(output)]
         if cookie_file:
             args += ["--cookies", cookie_file]
+        if proxy:
+            args += ["--proxy", proxy]
         args.append(url)
-        result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if result.returncode == 0:
             existing = downloaded(directory)
             if existing is not None:
@@ -325,7 +335,48 @@ def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any
         )
         audio = whisperx.load_audio(str(vocals))
         result = model.transcribe(audio, batch_size=8)
-    return result, str(result.get("language", language))
+        spoken = str(result.get("language", language))
+        result = with_word_times(result, audio, spoken, device)
+    return result, spoken
+
+
+align_cache: dict[str, Any] = {}
+
+
+def with_word_times(asr: dict[str, Any], audio: Any, language: str, device: str) -> dict[str, Any]:
+    """
+    받아쓴 말마다 그 말이 들린 시각. 앵커는 이것 없이는 하나도 만들어지지 않는다.
+
+    whisperx 의 transcribe 는 문장만 돌려준다 — 세그먼트에 words 키가 아예 없다. 그런데
+    앵커의 유일한 입력인 asr_words 는 그 words 를 읽으므로, 붙이지 않으면 빈 목록을 받고,
+    match_sequences 는 {} 를, anchored_windows 는 None 을 돌려준다. 그러면 정렬기는 보컬
+    구간을 단어 수로 나눈 창에 갇힌다 — 재어진 것이 아니라 짐작한 타이밍이다.
+
+    맥은 mlx_whisper 에 word_timestamps=True 를 넘겨 이미 받고 있었다. 그래서 이 결함은
+    한쪽에서만 보였다: 실측된 후보 9 건은 전부 mps 에서, 비례추정으로 떨어진 40 건은 전부
+    cuda 에서 나왔다. 혁오 「위잉위잉」에서 문턱은 16~19 인데 앵커가 0 이었고, 여기를 붙이자
+    174~196 이 되었다.
+
+    맞춰 줄 모델이 없는 언어가 있다. coarse_asr 은 run_job 이 예외 없이 부르는 자리이므로,
+    그때 터지면 곡 전체가 죽는다. 붙이지 못하면 붙이지 못한 채로 돌려준다 — 타이밍은 오늘과
+    같아지지만 곡은 끝까지 간다.
+    """
+    segments = asr.get("segments") or []
+    if not segments or any(segment.get("words") for segment in segments):
+        return asr
+    import whisperx
+
+    code = language.split("-")[0]
+    try:
+        key = f"{code}:{device}"
+        if key not in align_cache:
+            align_cache[key] = whisperx.load_align_model(language_code=code, device=device)
+        model, metadata = align_cache[key]
+        aligned = whisperx.align(segments, model, metadata, audio, device, return_char_alignments=False)
+    except Exception as error:
+        print(f"[coarse_asr] {code} 는 단어 시각을 붙이지 못했다 — {type(error).__name__}: {error}", file=sys.stderr)
+        return asr
+    return {**asr, "segments": aligned.get("segments") or segments}
 
 
 def written_language(text: str, declared: str) -> str:
@@ -383,8 +434,9 @@ def audio_bounds(asr: dict[str, Any], duration_ms: int, lyric_words: list[str] |
     Not simply where sound begins: a track can open with talking that is not in the lyric
     sheet, and starting there draws the first line across it. When we know what the lyrics say,
     the region starts at the first thing heard that the sheet also contains — spoken intros
-    rarely repeat the words of the song. With nothing to compare against, the first sound is
-    still the best guess available.
+    rarely repeat the words of the song. A match so late that the lyric could not fit after it
+    is a coincidence rather than the downbeat, and is not believed. With nothing to compare
+    against, or nothing worth believing, the first sound is still the best guess available.
     """
     segments = asr.get("segments") or []
     if not segments:
@@ -393,9 +445,18 @@ def audio_bounds(asr: dict[str, Any], duration_ms: int, lyric_words: list[str] |
     last = min(duration_ms / 1000.0, float(segments[-1].get("end", duration_ms / 1000.0)))
     if not lyric_words:
         return first, last
+    # 음차가 어긋난 곡에서는 흔한 낱말 하나가 곡 끝에서 우연히 맞는다. min(..., last) 가 그
+    # 답을 구간 안으로 다듬어 주는 탓에 아래에서는 멀쩡한 값과 구별되지 않는다 — 재현하면
+    # 18낱말짜리 가사 전체가 170.6초부터 1.8초 안에 눌렸고, duration_match 는 끝만 보므로
+    # 0.958 로 통과했다. 가사를 담을 자리가 남지 않는 시작점은 시작점이 아니다. 뒤로 갈수록
+    # 자리는 줄기만 하니 여기서 멈추고 첫 소리로 돌아간다.
+    track = duration_ms / 1000.0
+    room = max(len(lyric_words) * 0.25, track * 0.2)
     wanted = set(lyric_words)
     for word in asr_words(asr):
         if word["text"] in wanted:
+            if track - float(word["start"]) < room:
+                break
             return max(first, min(float(word["start"]), last)), last
     return first, last
 
@@ -699,6 +760,11 @@ def is_backing_line(line: str) -> bool:
     return len(mask) > 0 and all(mask)
 
 
+# 앵커 바깥으로 되짚거나 나아갈 때 한 낱말에 주는 시간. 밖에는 증언이 없으니 노래가 대체로
+# 이만큼씩 흘러간다는 어림일 뿐이다. 머리와 꼬리가 같은 값을 써야 양끝이 같은 밀도로 벌어진다.
+WORD_PACE = 0.35
+
+
 def anchored_windows(
     counts: list[int],
     words: list[str],
@@ -706,6 +772,7 @@ def anchored_windows(
     start: float,
     end: float,
     floor: float | None = None,
+    ceiling: float | None = None,
     backing: list[bool] | None = None,
 ) -> list[list[int]] | None:
     """
@@ -717,6 +784,15 @@ def anchored_windows(
     and the aligner cannot escape the window it was given. Returns None when too little of the
     lyric was recognised to place anything, leaving the proportional guess as the fallback.
     """
+    # counts 는 토크나이저가 센 토큰이고 words 는 공백으로 자른 낱말이다. 아래에서 cursor 는
+    # counts 로 걸으면서 positions 를 words 로 읽으므로, 둘의 합이 다르면 서로 다른 자로 잰
+    # 자리를 짚는다. 일본어에는 띄어쓰기가 없어 한 줄이 통째로 한 낱말이 되므로 늘 어긋난다 —
+    # 실측하면 첫 줄이 곡 전체를 삼키고 나머지 줄이 모두 곡 끝의 300ms 창으로 뭉친다. 지금껏
+    # 드러나지 않은 것은 일본어가 앵커 문턱을 넘지 못해 여기까지 오지 못했기 때문이다.
+    # 짐작으로 돌아가는 것이 틀린 자리를 확신하는 것보다 낫다.
+    if sum(counts) != len(words):
+        print(f"[align] 토큰 {sum(counts)}개와 낱말 {len(words)}개가 어긋난다 — 창을 짓지 않는다", file=sys.stderr)
+        return None
     # 백보컬 단어는 자리를 차지하지 않는다 — 옆에서 함께 부르지, 뒤이어 부르지 않는다. 시간을
     # 나눌 때 아예 빼고 센다. 빼지 않으면 그 단어들 몫으로 벌어진 간격이 이웃의 시간이 되고,
     # 다음 줄까지 밀린다. 줄 전체가 백보컬이면 셀 것이 남지 않으므로 옆줄의 창을 그대로 쓴다.
@@ -727,7 +803,7 @@ def anchored_windows(
         for count in counts:
             voiced_counts.append(sum(1 for offset in range(count) if cursor + offset >= len(backing) or not backing[cursor + offset]))
             cursor += count
-        placed = anchored_windows(voiced_counts, voiced, heard, start, end, floor)
+        placed = anchored_windows(voiced_counts, voiced, heard, start, end, floor, ceiling)
         if placed is None:
             return None
         # 부를 목소리가 없는 줄은 뒤따르는 진짜 줄과 같은 시간을 쓴다. 마지막이라면 앞줄과.
@@ -757,11 +833,17 @@ def anchored_windows(
             span = anchors[high]["start"] - anchors[low]["end"]
             positions.append(anchors[low]["end"] + span * (index - low) / (high - low))
         elif before:
-            positions.append(anchors[before[-1]]["end"])
+            # 마지막 앵커 뒤의 줄들 — 머리를 뒤집은 것이다. 남은 낱말을 모두 마지막 앵커의 끝에
+            # 몰아넣던 때에는 아래 300ms 하한과 맞물려 그 뒤의 줄이 전부 똑같은 창 하나로 겹쳤다.
+            # 천장을 end 로 두면 소용이 없다: 받아쓰기가 아웃트로에서 멈추면 end 도 함께 앞당겨져
+            # 마지막 앵커에 붙으므로, 꼬리를 만든 바로 그 절단이 천장까지 끌어당긴다.
+            roof = (end if ceiling is None else ceiling) - 0.3
+            reach = anchors[before[-1]]["end"] + (index - before[-1]) * WORD_PACE
+            positions.append(min(roof, reach))
         elif after:
-            # 첫 앵커보다 앞선 줄들. 한 단어당 0.35초씩 되짚어 가되, 소리가 시작하기 전으로는
-            # 가지 않는다 — 바닥이 "가사가 처음 들린 곳"이면 이 줄들이 그 지점에 뭉개진다.
-            reach = anchors[after[0]]["start"] - (after[0] - index) * 0.35
+            # 첫 앵커보다 앞선 줄들. 한 낱말당 WORD_PACE 만큼 되짚어 가되, 소리가 시작하기
+            # 전으로는 가지 않는다 — 바닥이 "가사가 처음 들린 곳"이면 이 줄들이 그 지점에 뭉개진다.
+            reach = anchors[after[0]]["start"] - (after[0] - index) * WORD_PACE
             positions.append(max(start if floor is None else floor, reach))
         else:
             return None
@@ -783,9 +865,14 @@ def anchored_windows(
         # 하한은 되짚어 갈 수 있는 바닥이다. 시작점(가사가 처음 들린 곳)을 하한으로 쓰면
         # 그 앞에 놓인 줄이 시작보다 끝이 이른 창을 갖게 된다.
         opened = max(start if floor is None else floor, line_start)
+        # 앵커가 남아 있는 줄은 지금까지처럼 end 로 자른다. 마지막 앵커보다 뒤에서 시작하는
+        # 줄만 ceiling 으로 자른다 — end 는 받아쓰기가 멈춘 자리라, 꼬리를 만든 바로 그 절단이
+        # 천장까지 함께 끌어당겨 내다본 줄을 도로 300ms 로 누른다. 증언이 남은 줄까지 넓히면
+        # 마지막 앵커를 담은 줄이 아웃트로 위로 몇 초씩 늘어난다 — 실측 1650ms → 4450ms.
+        bound = (end if ceiling is None else ceiling) if first > known[-1] else end
         # 구간의 끝으로 자르되 시작보다 이르게 두지 않는다 — 마지막 줄이 끝을 넘겨 시작하면
         # 시작이 끝보다 늦은 창이 나오고, 그런 창 안에서는 정렬기가 아무것도 할 수 없다.
-        closed = max(min(end, max(line_end, opened + 0.3)), opened + 0.3)
+        closed = max(min(bound, max(line_end, opened + 0.3)), opened + 0.3)
         windows.append([round(opened * 1000), round(closed * 1000)])
         cursor += count
     return windows
@@ -1393,6 +1480,11 @@ def align_variant(
         start,
         end,
         floor=audio_bounds(asr, duration_ms)[0],
+        # 천장은 파일의 길이지 소리가 멎는 자리가 아니다. 받아쓰기가 멈춘 end 를 쓰면 꼬리를
+        # 만든 절단이 천장까지 끌어당기므로 그것보다는 낫지만, 뒤에 박수나 아웃트로가 붙은
+        # 음원에서는 마지막 줄들이 부르지 않은 구간 위에 놓일 수 있다. 소리가 실제로 멎는
+        # 자리를 포락선에서 구하는 편이 옳고, 그것은 아직 재어 보지 않았다.
+        ceiling=duration_ms / 1000.0,
         backing=[flag for line in text_lines for word, flag in zip(line.split(), bracket_mask(line)) if comparable(word)],
     )
     # When was each line's first word heard — the counter-witness against leading noise.
@@ -1421,7 +1513,11 @@ def align_variant(
                 spoken += 1
         word_offset += line_word_count
         token_offset += count
-    line_windows = anchored or [span[:] for span in proportional_windows]
+    # 아래 try 는 이 목록을 줄마다 덮어쓴다. anchored 를 그대로 받으면 그것이 파괴되고,
+    # 중간에 예외가 나면 except 는 반쯤 갱신된 창과 전혀 다른 좌표계의 fallback_words 를
+    # 함께 내보낸다 — 줄과 낱말이 몇 초씩 어긋난 채로. 앵커가 늘 None 이던 동안에는 이
+    # 가지가 언제나 새 사본이라 드러나지 않았다.
+    line_windows = [span[:] for span in (anchored or proportional_windows)]
     anchored_by_asr = anchored is not None
     try:
         import whisperx
@@ -1616,7 +1712,7 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
         directory = Path(tempfile.mkdtemp(prefix=f"mora-{job['job_id']}-", dir=params.get("work_root")))
     notify("probe", "started", 0.01)
     notify("download", "started", 0.03)
-    source = downloaded(directory) or download(job, directory, params.get("cookie_file"))
+    source = downloaded(directory) or download(job, directory, params.get("cookie_file"), params.get("proxy"))
     notify("download", "completed", 0.1)
     metadata = probe(source)
     duration_ms = round(float(metadata.get("format", {}).get("duration", 0)) * 1000)

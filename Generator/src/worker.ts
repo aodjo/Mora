@@ -112,6 +112,7 @@ export class GeneratorWorker {
       const result = await this.options.daemon.run({
         job: prepared,
         cookie_file: process.env.YTDLP_COOKIE_FILE ?? null,
+        proxy: process.env.YTDLP_PROXY ?? null,
         work_dir: workDir,
       });
       const artifactIds: string[] = [];

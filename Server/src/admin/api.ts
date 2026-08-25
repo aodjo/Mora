@@ -1492,8 +1492,16 @@ async function stageEvent(env: WorkerEnv, actor: Actor, value: Record<string, un
  * is here because a line that lasts under a third of a second is the aligner failing to find
  * its words, and nothing else in the set noticed that.
  */
+// 창을 앵커로 잡지 못한 정렬은 보컬 구간을 단어 수로 나눈 자리에 갇힌다. 그 타이밍은 재어진
+// 것이 아니라 짐작한 것인데, 아래 다섯 중 넷은 그 짐작이 구조적으로 만족시킨다 — 비례분할은
+// 정의상 단조증가하고, 짧은 줄을 만들지 않으며, 마지막 줄이 곡 끝에 닿는다. 그래서 짐작이
+// 실측보다 높은 점수를 받는 일까지 벌어졌다. 발행된 42건에서 앵커를 놓친 33건이 0.904~0.998
+// 을 받아 전부 자동 발행됐고, 앵커를 잡은 9건은 0.958~0.995 였다.
+//
+// asr_anchored 를 같은 무게로 세면 그 33건은 0.753~0.831 로, 9건은 0.965~0.996 으로 갈린다.
+// 두 무리가 겹치지 않으므로 문턱은 그대로 두어도 된다.
 function qualityScore(quality: Record<string, number>): number {
-  const keys = ["token_coverage", "monotonicity", "duration_match", "language_match", "line_plausibility"];
+  const keys = ["token_coverage", "monotonicity", "duration_match", "language_match", "line_plausibility", "asr_anchored"];
   return keys.reduce((sum, key) => sum + Math.max(0, Math.min(1, quality[key] ?? 0)), 0) / keys.length;
 }
 
@@ -1591,8 +1599,14 @@ async function promote(env: WorkerEnv, actor: Actor, candidateId: string): Promi
     String(row.title).normalize("NFKC").toLowerCase(),
     row.duration_ms,
   );
+  // 사람이 고친 후보만 'manual' 이다. 고치면 원본을 parent_id 로 가리키는 자식이 생기고,
+  // backend 와 hardware 와 pipeline_version 은 원본에서 그대로 복사되므로 그것들로는 사람이
+  // 손댔는지 알 수 없다 — parent_id 하나만이 그것을 안다. 여기에 'manual' 을 박아 두었더니
+  // 파이프라인이 낸 것과 사람이 낸 것이 공개 데이터에서 같은 이름을 달았고, 어느 타이밍이
+  // 누구의 것인지 되짚을 방법이 남지 않았다.
+  const alignmentSource = row.parent_id === null || row.parent_id === undefined ? "forced-align" : "manual";
   const alignmentWrite = env.PUBLIC_DB.prepare(
-    `INSERT INTO public_alignment (revision_id,recording_id,text_hash,tokenizer,fp_lens,fp_types,line_spans,word_spans,speaker_turns,word_speakers,line_speakers,quality_score,source,active,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'manual',1,?13) ON CONFLICT(recording_id,text_hash,tokenizer) DO UPDATE SET revision_id=excluded.revision_id,fp_lens=excluded.fp_lens,fp_types=excluded.fp_types,line_spans=excluded.line_spans,word_spans=excluded.word_spans,speaker_turns=excluded.speaker_turns,word_speakers=excluded.word_speakers,line_speakers=excluded.line_speakers,quality_score=excluded.quality_score,active=1,created_at=excluded.created_at`,
+    `INSERT INTO public_alignment (revision_id,recording_id,text_hash,tokenizer,fp_lens,fp_types,line_spans,word_spans,speaker_turns,word_speakers,line_speakers,quality_score,source,active,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,1,?14) ON CONFLICT(recording_id,text_hash,tokenizer) DO UPDATE SET revision_id=excluded.revision_id,fp_lens=excluded.fp_lens,fp_types=excluded.fp_types,line_spans=excluded.line_spans,word_spans=excluded.word_spans,speaker_turns=excluded.speaker_turns,word_speakers=excluded.word_speakers,line_speakers=excluded.line_speakers,quality_score=excluded.quality_score,source=excluded.source,active=1,created_at=excluded.created_at`,
   ).bind(
     candidateId,
     row.recording_id,
@@ -1606,6 +1620,7 @@ async function promote(env: WorkerEnv, actor: Actor, candidateId: string): Promi
     row.word_speakers,
     row.line_speakers,
     row.quality_score,
+    alignmentSource,
     Date.now(),
   );
   const results = await env.PUBLIC_DB.batch([publicWrite, alignmentWrite]);

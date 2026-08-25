@@ -4,16 +4,22 @@ version = "0.1.0"
 requires-python = ">=3.11,<3.15"
 dependencies = [
   # 리드 위에 겹쳐 부른 목소리를 갈라내, 괄호로 적힌 가사가 언제 불렸는지 재는 데 쓴다.
-  "audio-separator>=0.44",
-  "demucs>=4.0.1",
-  "numpy>=2.0",
-  "pyannote.audio>=4.0",
-  "soundfile>=0.13",
-  "torch>=2.7",
+  "audio-separator>=0.44,<1",
+  "demucs>=4.0.1,<5",
+  "numpy>=2.0,<3",
+  "pyannote.audio>=4.0,<5",
+  "soundfile>=0.13,<1",
+  # whisperx 는 torch 를 ~=2.8.0 으로 묶는다. 여기에 상한이 없으면 해석기는 가장 새 torch 를
+  # 먼저 집고, 그것과 맞는 낡은 whisperx 로 되돌아간다. 실제로 Mac 은 3.8.6, 리눅스는 3.4.2 가
+  # 깔렸다. 3.4.2 는 VAD 체크포인트를 여는 데 필요한 omegaconf 를 의존성으로 적지 않으므로
+  # coarse_asr 의 load_model 이 언피클 도중 죽는다 — 그 단계에는 예외를 받아 줄 자리가 없다.
+  # 다만 죽는 것보다 먼저인 문제는, 기기마다 다른 정렬기가 다른 답을 내놓는다는 것이다.
+  "torch>=2.8,<2.9",
   # 여러 글자를 한 사전으로 맞추는 정렬기가 글자를 로마자로 옮길 때 쓴다.
-  "uroman>=1.3",
-  "whisperx>=3.4",
+  "uroman>=1.3,<2",
+  "whisperx>=3.8.6,<4",
   # 유튜브는 미디어 주소에 JS 로 푸는 서명을 건다. 낡은 yt-dlp 는 403 만 받아 온다.
+  # 그래서 이 둘에만은 상한을 두지 않는다 — 서명이 바뀌면 최신 말고는 답이 없다.
   "yt-dlp>=2026.8",
   "yt-dlp-ejs>=0.3"
 ]
@@ -21,5 +27,11 @@ dependencies = [
 [project.optional-dependencies]
 # audio-separator 는 어떤 모델을 쓰든 onnxruntime 을 모듈 단계에서 불러온다. 우리가 쓰는
 # roformer 는 순수 torch 라 실행에는 쓰이지 않지만, 없으면 import 부터 실패한다.
-apple = ["mlx-whisper>=0.4", "onnxruntime>=1.17"]
-cuda = ["onnxruntime-gpu>=1.17"]
+apple = ["mlx-whisper>=0.4,<1", "onnxruntime>=1.17,<2"]
+cuda = ["onnxruntime-gpu>=1.17,<2"]
+
+# test_alignment.py 는 npm run test:align 이 경로로 직접 실행하는 스크립트다. 배포 대상은
+# 데몬 하나뿐인데, 이것을 적어두지 않으면 flat-layout 자동 탐색이 최상위 모듈 두 개를 보고
+# 어느 쪽인지 물어보다 빌드를 멈춘다. Mac 의 .venv 는 이 파일이 생기기 전에 설치돼 살아있다.
+[tool.setuptools]
+py-modules = ["mora_ml_daemon"]
