@@ -26,7 +26,11 @@ test("a romanized artist credit matches the seed's roman name", async () => {
   // 시드는 "BTS", LyricFind 표기는 방탄소년단 — nameRomanized가 잇는다.
   const { client } = catalogue([SWIM]);
   const found = await client.identify({ artist: "BTS", title: "SWIM", popularity: 1, freshness: 0, market: "KR" });
-  assert.deepEqual(found, { isrc: "USA2P2600463", durationMs: 159_000 });
+  // 카탈로그가 아는 것은 식별자만이 아니다. 원어 이름과 노래 유무도 함께 온다.
+  assert.equal(found?.isrc, "USA2P2600463");
+  assert.equal(found?.durationMs, 159_000);
+  assert.equal(found?.nativeArtist, "방탄소년단");
+  assert.equal(found?.instrumental, false);
 });
 
 test("a similar but different song is not an answer", async () => {
@@ -41,7 +45,8 @@ test("a matching row with nothing to give is passed over", async () => {
   // 같은 곡이 두 줄일 때(길이 없는 중복 항목이 흔하다) 정보가 있는 줄을 쓴다.
   const { client } = catalogue([{ ...SWIM, duration: undefined, isrcs: [] }, SWIM]);
   const found = await client.identify({ artist: "방탄소년단", title: "SWIM", popularity: 1, freshness: 0, market: "KR" });
-  assert.deepEqual(found, { isrc: "USA2P2600463", durationMs: 159_000 });
+  assert.equal(found?.isrc, "USA2P2600463");
+  assert.equal(found?.durationMs, 159_000);
 });
 
 test("the query carries both artist and title", async () => {
@@ -64,7 +69,8 @@ const TOXIC = {
 test("a name the catalogue decorated still answers to the name the chart used", async () => {
   const { client } = catalogue([TOXIC]);
   const found = await client.identify({ artist: "로제", title: "toxic till the end", popularity: 1, freshness: 0, market: "KR" });
-  assert.deepEqual(found, { isrc: "USAT22409182", durationMs: 156_000 });
+  assert.equal(found?.isrc, "USAT22409182");
+  assert.equal(found?.durationMs, 156_000);
 });
 
 test("the alias inside the brackets answers too", async () => {
@@ -84,7 +90,10 @@ const GOOD_DAY = {
 test("a title with its translation appended is still that song", async () => {
   const { client } = catalogue([GOOD_DAY]);
   const found = await client.identify({ artist: "아이유", title: "좋은 날", popularity: 1, freshness: 0, market: "KR" });
-  assert.deepEqual(found, { isrc: "KRA381001057", durationMs: 234_000 });
+  assert.equal(found?.isrc, "KRA381001057");
+  assert.equal(found?.durationMs, 234_000);
+  // 번역이 붙은 제목에서 원래 제목을 떼어낸다 — 가사를 걸어 둔 쪽은 이 이름이다.
+  assert.equal(found?.nativeTitle, "좋은 날");
 });
 
 test("a longer title that merely starts the same way is not that song", async () => {

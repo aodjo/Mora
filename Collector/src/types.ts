@@ -1,5 +1,7 @@
 import type { LyricsProvider } from "../../packages/contracts/src/index.js";
 
+import type { CatalogueEntry } from "./lyricfind.js";
+
 export interface RecordingSeed {
   artist: string;
   title: string;
@@ -16,6 +18,14 @@ export interface RecordingSeed {
   release_mbid?: string | undefined;
   isrc?: string | undefined;
   language?: string | undefined;
+  /**
+   * 노래가 없는 트랙이라고 카탈로그가 밝힌 것.
+   *
+   * 제목만으로는 놓친다 — 10CM 의 「너에게 닿기를 (Inst.)」은 줄임말 하나로 걸러졌지만,
+   * 아무 표시 없이 올라온 반주도 있다. 카탈로그가 아는 것을 굳이 글자에서 다시 알아낼
+   * 이유가 없다.
+   */
+  instrumental?: boolean | undefined;
   popularity: number;
   freshness: number;
   market: "KR" | "US" | "JP";
@@ -47,7 +57,7 @@ export interface CollectorConfig {
   /** Chart lookup per market — replaceable in tests so they need not serve chart HTML. */
   chartSource?: (market: RecordingSeed["market"]) => Promise<RecordingSeed[]>;
   /** The catalogue: ISRC and track length, keyless. */
-  lyricfind?: { identify: (seed: RecordingSeed) => Promise<{ isrc?: string; durationMs?: number; album?: string } | undefined> };
+  lyricfind?: { identify: (seed: RecordingSeed) => Promise<CatalogueEntry | undefined> };
   onProgress?: (progress: CollectorProgress) => void;
 }
 

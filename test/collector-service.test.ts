@@ -142,6 +142,37 @@ test("a song collected during the run is not collected twice", () => {
   assert.equal(index.hasIsrc({ ...seed, artist: "방탄소년단", title: "Swim", isrc: "USA2P2600449" }), true);
 });
 
+/** 수집 한 바퀴에 필요한 최소한의 바깥 세계. 검사할 것만 덮어쓰면 된다. */
+function harness(): Omit<ConstructorParameters<typeof CollectorService>[0], "lyricfind"> {
+  return {
+    adminUrl: "https://admin.test",
+    adminToken: "t",
+    userAgent: "test",
+    dailyBudget: 5,
+    markets: ["KR"],
+    fetch: (async (input: string | URL | Request) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/collector/collected")) return Response.json({ recordings: [], skipped: [] });
+      if (url.includes("/collector/recordings")) return Response.json({ job_id: "job-1", deduplicated: false });
+      return Response.json({ accepted: true });
+    }) as typeof fetch,
+    youtubeSearch: async (found) => [
+      {
+        url: "https://music.youtube.com/watch?v=abcdefghijk",
+        video_id: "abcdefghijk",
+        title: found.title,
+        artist: found.artist,
+        duration_ms: found.catalogue_duration_ms ?? 159_007,
+        official: false,
+        source_type: "unofficial" as const,
+        score: 0.95,
+        ...(found.catalogue_duration_ms === undefined ? {} : { catalogue_drift_ms: 0 }),
+      },
+    ],
+    lyricsProvider: { search: async () => [{ provider: "test", text: "가사 한 줄", fetched_at: Date.now() }] },
+  };
+}
+
 test("LyricFind supplies the ISRC and catalogue length", async () => {
   const submitted: Array<Record<string, unknown>> = [];
   const searchSeeds: RecordingSeed[] = [];
@@ -190,6 +221,47 @@ test("LyricFind supplies the ISRC and catalogue length", async () => {
   const sources = submitted[0]?.sources as Array<{ selected?: boolean; catalogue_drift_ms?: number }>;
   assert.equal(sources[0]?.selected, true);
   assert.equal(sources[0]?.catalogue_drift_ms, 7);
+});
+
+test("the catalogue's own name for a song replaces the chart's translation of it", async () => {
+  // Apple 은 이무진의 「청춘만화」를 "Lee Mujin / Coming Of Age Story" 로 준다. 가사를 들고
+  // 있는 다섯 서비스는 그 곡을 「청춘만화」로만 걸어 두었으므로 번역된 제목으로는 한 곳도
+  // 찾지 못하고, 실측한 99 건의 수집 실패 가운데 열다섯이 그 모양이었다.
+  const asked: Array<{ artist: string; title: string }> = [];
+  const service = new CollectorService({
+    ...harness(),
+    lyricsProvider: {
+      search: async (input) => {
+        asked.push({ artist: input.artist ?? "", title: input.title ?? "" });
+        return [{ provider: "test", text: "가사 한 줄", fetched_at: Date.now() }];
+      },
+    },
+    lyricfind: {
+      identify: async () => ({
+        isrc: "KRA382405872",
+        durationMs: 275_000,
+        title: "청춘만화 Coming Of Age Story",
+        nativeTitle: "청춘만화",
+        nativeArtist: "이무진",
+        language: "ko",
+        instrumental: false,
+      }),
+    },
+  });
+  await service.collect([{ artist: "Lee Mujin", title: "Coming Of Age Story", popularity: 1, freshness: 0, market: "KR" }]);
+  assert.deepEqual(asked[0], { artist: "이무진", title: "청춘만화" });
+});
+
+test("a track the catalogue calls instrumental is dropped even when its title is silent", async () => {
+  // 제목 필터는 "(Inst.)" 같은 표시가 있을 때만 듣는다. 아무 표시 없이 올라온 반주는 카탈로그가
+  // 아는 것을 물어봐야 알 수 있고, 물어보는 것은 곡을 식별한 뒤다.
+  const service = new CollectorService({
+    ...harness(),
+    lyricfind: { identify: async () => ({ isrc: "KRA000000001", durationMs: 159_000, instrumental: true }) },
+  });
+  const report = await service.collect([{ artist: "10CM", title: "너에게 닿기를", popularity: 1, freshness: 0, market: "KR" }]);
+  assert.equal(report.submitted, 0);
+  assert.equal(report.skipped, 1);
 });
 
 test("a missing ISRC is no longer a reason to stop", async () => {

@@ -20,7 +20,9 @@ export interface CollectionReport {
 const INSTRUMENTAL = /\b(?:instrumental|inst\.?|off\s*vocal|karaoke)\b|[([]\s*(?:inst|mr)\s*[)\]]|반주/iu;
 
 export function hasNoLyricsToAlign(seed: RecordingSeed): boolean {
-  return INSTRUMENTAL.test(seed.title);
+  // 카탈로그가 밝힌 것이 먼저다. 제목은 그것을 못 볼 때 남는 단서일 뿐이고, 아무 표시 없이
+  // 올라오는 반주는 제목만으로 걸러지지 않는다.
+  return seed.instrumental === true || INSTRUMENTAL.test(seed.title);
 }
 
 /** The key the run already uses to fold duplicate chart entries together. */
@@ -97,7 +99,10 @@ export class CollectorService {
     let enriched = seed;
     for (const catalogue of [this.config.lyricfind]) {
       if (catalogue === undefined) continue;
-      if (enriched.isrc !== undefined && enriched.duration_ms !== undefined) break;
+      // 예전에는 MusicBrainz 가 ISRC 와 길이를 둘 다 비워 두었을 때만 물었다. MusicBrainz 는
+      // 길이를 거의 언제나 채우므로 사실상 한 번도 묻지 않은 셈이고, 그래서 자동 선택이
+      // 기대던 catalogue_duration_ms 가 늘 비어 있었다. 게이트가 필요한 것은 아무 길이가
+      // 아니라 우리가 공개하는 마스터의 길이이므로, 이제는 언제나 묻는다 — 곡당 요청 하나다.
       const found = await catalogue.identify(enriched).catch(() => undefined);
       if (found === undefined) continue;
       // Different ISRCs mean different releases, so the catalogue's length describes another
@@ -111,7 +116,15 @@ export class CollectorService {
           ? {}
           : { duration_ms: length, catalogue_duration_ms: length }),
         ...(enriched.album === undefined && found.album !== undefined ? { album: found.album } : {}),
+        // 차트가 옮겨 적은 이름 대신 카탈로그가 걸어 둔 이름으로. 가사를 들고 있는 서비스는
+        // 「청춘만화」로 걸었지 "Coming Of Age Story" 로 걸지 않았다.
+        ...(sameRelease && found.nativeTitle !== undefined ? { title: found.nativeTitle } : {}),
+        ...(sameRelease && found.nativeArtist !== undefined ? { artist: found.nativeArtist } : {}),
+        // 언어는 재어서 아는 편이 낫다. 가사의 글자를 세어 짐작하면 머리글의 한글 넉 자로
+        // 영어 랩이 한국어가 된다.
+        ...(enriched.language === undefined && found.language !== undefined ? { language: found.language } : {}),
       };
+      if (found.instrumental === true) return { ...enriched, instrumental: true };
     }
     return enriched;
   }
@@ -265,6 +278,16 @@ export class CollectorService {
       try {
         const identified = await this.#enrich(await this.#musicbrainz.identify(seed).catch(() => seed));
         if (identified.isrc) report.identified++;
+        // 카탈로그를 물어본 뒤에야 노래가 없는 트랙인 줄 아는 경우가 있다 — 제목에 아무
+        // 표시가 없는 반주가 그렇다. 여기서 다시 본다.
+        if (hasNoLyricsToAlign(identified)) {
+          report.skipped++;
+          collected.remember(identified);
+          collected.remember(seed);
+          await this.#remember(seed, "instrumental");
+          this.config.onProgress?.({ stage: "skipped", current: index + 1, total: queue.length, song, reason: "instrumental" });
+          continue;
+        }
         // The charts name the same recording several ways — "IU" and "아이유", a single and its
         // album cut. Identification is what settles that, so the second look happens here, still
         // ahead of the YouTube search and the lyrics providers.
