@@ -53,6 +53,11 @@ export class CollectedIndex {
     return this.#keys.size;
   }
 
+  /** 이미 가진 곡들의 ISRC. 차트가 마르면 이것이 앨범으로 가는 문이 된다. */
+  get isrcs(): string[] {
+    return [...this.#isrcs];
+  }
+
   /** Before anything is spent: the chart gave us a name we have already collected under. */
   hasName(seed: RecordingSeed): boolean {
     return this.#keys.has(songKey(seed.artist, seed.title));
@@ -160,7 +165,55 @@ export class CollectorService {
     }
     const fresh = [...unique.values()].filter((seed) => !collected.hasName(seed));
     this.config.onProgress?.({ stage: "discovered", total: unique.size, alreadyCollected: unique.size - fresh.length });
-    return fresh.sort((a, b) => b.popularity * 0.65 + b.freshness * 0.35 - (a.popularity * 0.65 + a.freshness * 0.35)).slice(0, want);
+    const picked = fresh
+      .sort((a, b) => b.popularity * 0.65 + b.freshness * 0.35 - (a.popularity * 0.65 + a.freshness * 0.35))
+      .slice(0, want);
+    // 차트는 며칠이면 마른다. 상위권이 고정되어 있어 같은 목록을 다시 훑을 뿐이고, 실측하면
+    // 4,600 번을 "이미 수집함"으로 건너뛰면서 새 곡은 하나도 나오지 않았다.
+    //
+    // 앨범 확장이 이 자리를 위해 있는 기능인데, 그것은 새로 수집되는 곡에 얹혀 있었다 —
+    // 이미 가진 곡은 identify 전에 걸러지므로 release_mbid 를 얻을 기회조차 없고, 새 곡이
+    // 없으면 확장도 없다. 닭과 달걀이다. 그래서 카탈로그에서 직접 걷는다.
+    if (picked.length < want) picked.push(...(await this.#fromAlbums(collected, want - picked.length)));
+    return picked;
+  }
+
+  /**
+   * 이미 가진 곡들이 실린 앨범의 나머지 트랙.
+   *
+   * ISRC 로 릴리스를 찾고 그 릴리스의 트랙을 받아 온다. 차트는 앨범의 히트곡 하나만 이름
+   * 붙이므로, 그 나머지는 이 길이 아니면 오지 않는다.
+   */
+  async #fromAlbums(collected: CollectedIndex, want: number): Promise<RecordingSeed[]> {
+    if (want <= 0) return [];
+    const found: RecordingSeed[] = [];
+    const seen = new Set<string>();
+    // 최근에 들어온 것부터 — 새로 수집된 곡의 앨범이 아직 안 걸린 것일 가능성이 높다.
+    for (const isrc of collected.isrcs.reverse()) {
+      if (found.length >= want) break;
+      const recording = await this.#musicbrainz.identify({ artist: "", title: "", isrc, popularity: 0, freshness: 0, market: "KR" })
+        .catch(() => undefined);
+      const release = recording?.release_mbid;
+      if (release === undefined || seen.has(release)) continue;
+      seen.add(release);
+      for (const track of await this.#musicbrainz.albumTracks(release).catch(() => [])) {
+        if (found.length >= want) break;
+        const sibling: RecordingSeed = {
+          artist: track.artist,
+          title: track.title,
+          ...(track.mbid === undefined ? {} : { mbid: track.mbid }),
+          // 차트에 오른 곡보다 반 걸음 아래. 차트가 다시 움직이면 그쪽이 먼저 간다.
+          popularity: 0.4,
+          freshness: 0,
+          market: "KR",
+        };
+        if (collected.hasName(sibling)) continue;
+        if (found.some((item) => songKey(item.artist, item.title) === songKey(sibling.artist, sibling.title))) continue;
+        found.push(sibling);
+      }
+    }
+    if (found.length > 0) this.config.onProgress?.({ stage: "expanded", album: `앨범 ${seen.size}장`, added: found.length, total: found.length });
+    return found;
   }
 
   /** Remembered so the next run does not pay to reach the same answer. */
