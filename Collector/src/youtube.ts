@@ -104,14 +104,35 @@ function tokens(value: string): string[] {
  * artist's own, or the "<artist> - Topic" channel the label feeds automatically.
  */
 export function isArtistChannel(channel: string, artist: string): boolean {
-  const wanted = tokens(artist);
   const owner = tokens(channel);
-  if (wanted.length === 0 || owner.length === 0) return false;
-  // The artist has to be named either way. What "official" buys is room for the rest of the
-  // name, because IU's channel is "이지금 [IU Official]" — a reuploader calling itself
-  // JXS_BP Official still fails, having never named the artist at all.
-  if (!wanted.every((word) => owner.includes(word))) return false;
-  return owner.includes("official") || owner.every((word) => wanted.includes(word) || CHANNEL_NOISE.has(word));
+  if (owner.length === 0) return false;
+  // 이름을 두 문자로 함께 적는 일이 흔하다 — 카탈로그는 "혁오 (HYUKOH)" 라 적고 채널은
+  // "HYUKOH" 하나만 쓴다. 모든 낱말이 채널에 있기를 요구하면 그 채널은 제 아티스트의
+  // 것이 아니라고 판정되고, 위잉위잉의 공식 오디오가 비공식으로 밀려났다. 그러니 이름은
+  // 부르는 방식마다 따로 세고, 그중 하나가 온전히 불리면 그 채널은 그 아티스트의 것이다.
+  const spellings = nameSpellings(artist);
+  if (spellings.length === 0) return false;
+  const named = spellings.filter((spelling) => spelling.every((word) => owner.includes(word)));
+  if (named.length === 0) return false;
+  // What "official" buys is room for the rest of the name, because IU's channel is
+  // "이지금 [IU Official]" — a reuploader calling itself JXS_BP Official still fails,
+  // having never named the artist at all.
+  const anyWord = new Set(spellings.flat());
+  return owner.includes("official") || owner.every((word) => anyWord.has(word) || CHANNEL_NOISE.has(word));
+}
+
+/**
+ * 한 이름을 부르는 방식들.
+ *
+ * "혁오 (HYUKOH)" 는 혁오이기도 하고 HYUKOH 이기도 하다. 괄호 안팎을 따로 세고 전체도 함께
+ * 두어, 어느 쪽으로 불렸든 알아보되 서로 다른 이름이 섞이지는 않게 한다.
+ */
+function nameSpellings(artist: string): string[][] {
+  const whole = tokens(artist);
+  if (whole.length === 0) return [];
+  const inside = [...artist.matchAll(/[（([［]([^）)\]］]+)[）)\]］]/gu)].map((match) => tokens(match[1] ?? ""));
+  const outside = tokens(artist.replace(/[（([［][^）)\]］]*[）)\]］]/gu, " "));
+  return [whole, outside, ...inside].filter((parts) => parts.length > 0);
 }
 
 /**
@@ -210,10 +231,11 @@ function candidatesFor(seed: RecordingSeed, entries: YtEntry[]): YoutubeCandidat
       // Search results come back flat, without the artist field, so the fallback was the channel
       // name — and a label or reupload channel is never named after the artist. The artist is in
       // the video title instead, which is where this now looks.
-      const credited = normalize(`${artist} ${entry.title}`);
-      const wanted = normalize(seed.artist);
-      const artistScore =
-        wanted.length > 0 && (credited.includes(wanted) || (artist.length > 0 && wanted.includes(normalize(artist)))) ? 1 : 0;
+      // 붙여 놓고 이어진 부분문자열을 찾으면 순서가 바뀐 이름을 놓친다. 시드는 "혁오 (HYUKOH)"
+      // 라 적고 영상은 "HYUKOH(혁오)" 라 적는데, 앞엣것은 "혁오hyukoh" 뒤엣것은 "hyukoh혁오"가
+      // 되어 서로를 품지 못한다 — 위잉위잉이 아티스트 0점을 받은 까닭이다. 낱말로 보면 된다.
+      const credited = new Set([...tokens(artist), ...tokens(entry.title)]);
+      const artistScore = nameSpellings(seed.artist).some((spelling) => spelling.every((word) => credited.has(word))) ? 1 : 0;
       // An upload of the same recording drifts a second or two from the catalogue length —
       // silence padding, a trimmed fade. Past the tolerance it falls away quickly rather than
       // over twelve seconds: a copy that runs ten seconds long is a different edit, not a fade.

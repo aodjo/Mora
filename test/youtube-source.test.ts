@@ -22,6 +22,22 @@ test("official means the artist's own channel, not the word in a channel name", 
   assert.equal(isArtistChannel("", "IU"), false);
 });
 
+test("a name written in two scripts is the same name whichever half is used", () => {
+  // 카탈로그는 "혁오 (HYUKOH)" 라 적고 채널은 "HYUKOH" 하나만 쓴다. 모든 낱말이 채널에
+  // 있기를 요구하던 판정은 그 채널을 남의 것으로 보았고, 위잉위잉의 공식 오디오가 비공식으로
+  // 밀려나 길이가 0.0초 차이인데도 검수로 갔다.
+  assert.equal(isArtistChannel("HYUKOH", "혁오 (HYUKOH)"), true);
+  assert.equal(isArtistChannel("혁오", "혁오 (HYUKOH)"), true);
+  assert.equal(isArtistChannel("HYUKOH - Topic", "혁오 (HYUKOH)"), true);
+  assert.equal(isArtistChannel("이지금 [IU Official]", "아이유 (IU)"), true);
+
+  // 이름을 부르지 않은 채널은 여전히 남의 것이다.
+  assert.equal(isArtistChannel("웅키", "혁오 (HYUKOH)"), false);
+  assert.equal(isArtistChannel("j", "혁오 (HYUKOH)"), false);
+  assert.equal(isArtistChannel("JXS_BP Official", "BTS"), false);
+  assert.equal(isArtistChannel("7clouds K-pop", "aespa"), false);
+});
+
 test("uploads that are not the released recording are dropped", () => {
   // Every one of these outranked the real audio in a live search.
   assert.equal(isDifferentRecording("ギラギラ - Ado / covered NORISTRY", "ギラギラ"), true);
