@@ -125,6 +125,40 @@ def downloaded(directory: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
+# 실패가 이 곡의 성질인가, 지금 이 연결의 사정인가. 앞엣것이면 다음 후보로 넘어가는 것이
+# 옳고, 뒤엣것이면 넘어가서는 안 된다 — 아래 wrong_length 를 보라.
+PASSING_TROUBLE = re.compile(
+    r"connection refused|failed to establish|temporary failure|timed out|read timeout"
+    r"|connection reset|network is unreachable|proxy|socks"
+    r"|sign in to confirm you.{0,3}re not a bot"
+    r"|http error (?:429|5\d\d)"
+    r"|unable to download (?:webpage|api page)",
+    re.IGNORECASE,
+)
+
+# 곡 메타데이터와 실제 음원의 길이 차이를 어디까지 같은 곡으로 볼 것인가.
+#
+# 제대로 맞은 70 곡에서 재니 가운뎃값이 0.0 초, 가장 벌어진 것이 2.4 초였고 5 초를 넘는 곡은
+# 하나도 없었다. 마스터가 다르거나 앞뒤에 잠깐이 붙는 정도가 그 폭이다. 다른 곡은 보통 수십
+# 초씩 벌어지므로, 관측 최대의 네 배쯤에 두면 정상을 자르지 않으면서 남을 잡는다.
+SAME_SONG_SECONDS = 10.0
+
+
+def wrong_length(path: Path, job: dict[str, Any]) -> float | None:
+    """받아 온 음원이 이 곡이 아닐 때, 얼마나 어긋났는지. 맞으면 None."""
+    wanted = int(job.get("recording", {}).get("duration_ms") or 0)
+    if wanted <= 0:
+        return None
+    try:
+        got = float(probe(path).get("format", {}).get("duration", 0)) * 1000
+    except Exception:
+        return None
+    if got <= 0:
+        return None
+    apart = abs(got - wanted) / 1000.0
+    return apart if apart > SAME_SONG_SECONDS else None
+
+
 def download(job: dict[str, Any], directory: Path, cookie_file: str | None, proxy: str | None = None) -> Path:
     """
     The audio, from the first source that gives it up.
@@ -162,10 +196,27 @@ def download(job: dict[str, Any], directory: Path, cookie_file: str | None, prox
         if result.returncode == 0:
             existing = downloaded(directory)
             if existing is not None:
-                return existing
+                # 받아 온 것이 이 곡이 맞는지. 대체 후보는 검수를 거치지 않은 순위표의 아랫줄이라
+                # 다른 곡일 수 있고, 그러면 앵커가 하나도 안 잡힌다 — 그것은 화면에 "정렬이
+                # 나빴다" 로만 보이고 무엇이 잘못됐는지는 말해 주지 않는다.
+                apart = wrong_length(existing, job)
+                if apart is None:
+                    return existing
+                existing.unlink(missing_ok=True)
+                refused.append(f"{url}: 길이가 {apart:.0f}초 어긋난다 — 이 곡이 아니다")
+                continue
         # yt-dlp 가 왜 안 됐는지 말했는데 그것을 버리면, 남는 것은 "안 됐다" 뿐이다.
         said = [line for line in result.stderr.splitlines() if line.strip()]
-        refused.append(f"{url}: {said[-1] if said else f'exit {result.returncode}'}")
+        why = said[-1] if said else f"exit {result.returncode}"
+        refused.append(f"{url}: {why}")
+        # 연결이 막힌 것을 곡이 없는 것으로 읽으면, 멀쩡한 1 순위를 두고 아랫줄로 내려간다.
+        # 경유지가 죽은 동안 그렇게 돌아 세 곡이 다른 음원 위에 얹혔다. 이럴 때는 여기서
+        # 멈춘다 — 작업은 잠시 뒤 같은 음원으로 다시 온다.
+        if PASSING_TROUBLE.search(why):
+            error = RuntimeError("SOURCE_UNREACHABLE")
+            error.detail = "\n".join(refused)  # type: ignore[attr-defined]
+            print(f"[download] 지금은 닿지 않는다, 다음 후보로 넘어가지 않는다\n{error.detail}", file=sys.stderr)
+            raise error
     error = RuntimeError("YTDLP_FAILED")
     error.detail = "\n".join(refused)  # type: ignore[attr-defined]
     print(f"[download] {error.detail}", file=sys.stderr)
@@ -2092,7 +2143,13 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
         directory = Path(tempfile.mkdtemp(prefix=f"mora-{job['job_id']}-", dir=params.get("work_root")))
     notify("probe", "started", 0.01)
     notify("download", "started", 0.03)
-    source = downloaded(directory) or download(job, directory, params.get("cookie_file"), params.get("proxy"))
+    # 앞선 시도가 남긴 파일은 그대로 쓴다 — 다시 받는 것은 비싸다. 다만 그것이 이 곡이
+    # 맞는지는 확인하고 쓴다. 잘못 받아 둔 것을 물려받으면 재시도가 몇 번이든 같은 결과다.
+    source = downloaded(directory)
+    if source is not None and wrong_length(source, job) is not None:
+        source.unlink(missing_ok=True)
+        source = None
+    source = source or download(job, directory, params.get("cookie_file"), params.get("proxy"))
     notify("download", "completed", 0.1)
     metadata = probe(source)
     duration_ms = round(float(metadata.get("format", {}).get("duration", 0)) * 1000)

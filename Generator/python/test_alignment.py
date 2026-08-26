@@ -596,6 +596,62 @@ check("아무것도 못 들으면 가사 전체가 빈 자리", daemon.longest_a
 check("가사가 없으면 0", daemon.longest_anchor_gap([], DENSE_HEARD) == 0)
 check("문턱은 환경변수로 끌 수 있다", isinstance(daemon.HEAR_ENOUGH_GAP, int))
 
+# ── 받아 온 것이 이 곡이 맞는가 ──────────────────────────────────────────────
+#
+# 1 순위 음원이 잠깐 안 잡히면 데몬은 다음 후보로 내려갔다. 그 아랫줄은 사람이 고른 적이
+# 없는 순위표이고, 다른 곡일 수 있다. 경유지가 죽어 있던 사이에 그렇게 세 곡이 남의 음원
+# 위에 얹혔는데, 화면에는 "밀도 0%" 로만 보였다 — 왜인지는 어디에도 없었다.
+
+check("연결이 막힌 것은 지나가는 사정이다",
+      all(daemon.PASSING_TROUBLE.search(said) for said in [
+          "ERROR: unable to download video data: HTTP Error 429: Too Many Requests",
+          "[Errno 111] Connection refused (caused by TransportError(...))",
+          "ERROR: [youtube] abc: Sign in to confirm you’re not a bot.",
+          "ERROR: unable to download webpage: The read operation timed out",
+          "ERROR: HTTP Error 503: Service Unavailable",
+      ]))
+
+check("곡이 없는 것은 그 곡의 성질이다",
+      not any(daemon.PASSING_TROUBLE.search(said) for said in [
+          "ERROR: [youtube] abc: Video unavailable",
+          "ERROR: [youtube] abc: Private video. Sign in if you've been granted access",
+          "ERROR: [youtube] abc: This video has been removed by the uploader",
+          "ERROR: [youtube] abc: Sign in to confirm your age",
+          "ERROR: Requested format is not available",
+      ]))
+
+
+class _Probed:
+    """probe 를 갈아끼워, 파일을 만들지 않고 길이만 재는 자리를 시험한다."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+
+    def __enter__(self):
+        self.real = daemon.probe
+        daemon.probe = lambda path: {"format": {"duration": str(self.seconds)}}
+        return self
+
+    def __exit__(self, *_):
+        daemon.probe = self.real
+
+
+def _job(ms: int | None) -> dict:
+    return {"recording": {} if ms is None else {"duration_ms": ms}}
+
+
+NOWHERE = Path("/dev/null")
+with _Probed(209.0):
+    check("2 초쯤 어긋난 것은 같은 곡이다", daemon.wrong_length(NOWHERE, _job(211_000)) is None)
+    check("같은 길이는 당연히 같은 곡", daemon.wrong_length(NOWHERE, _job(209_000)) is None)
+    apart = daemon.wrong_length(NOWHERE, _job(160_000))
+    check("49 초가 어긋나면 다른 곡이다", apart is not None and round(apart) == 49, str(apart))
+    check("문턱 바로 아래는 통과", daemon.wrong_length(NOWHERE, _job(219_000)) is None)
+    check("문턱을 넘으면 걸린다", daemon.wrong_length(NOWHERE, _job(220_500)) is not None)
+    # 길이를 모르는 곡까지 막으면, 메타데이터가 빈 곡은 영영 처리되지 않는다.
+    check("곡 길이를 모르면 따지지 않는다", daemon.wrong_length(NOWHERE, _job(None)) is None)
+    check("길이가 0 이면 따지지 않는다", daemon.wrong_length(NOWHERE, _job(0)) is None)
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
