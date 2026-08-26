@@ -8,11 +8,24 @@ type JobFilter = "all" | "active" | "failed" | "done";
 /** 더 진행되지 않는 상태들 — 여기서는 사람이 다시 시작할 수 있어야 한다. */
 const DONE_STATES = ["failed", "unsupported_language", "candidate_ready", "cancelled"];
 
-const filters: Array<[JobFilter, string, (state: string) => boolean]> = [
+/**
+ * 재시도로 대기열에 돌아간 작업은 state 가 queued 다 — 실패한 적이 없는 새 작업과 같은 값이다.
+ * 상태만 보고 나누면 그 둘이 한 칸에 들어가고, 화면에는 "할당 대기" 로만 보인다. 실제로 그런
+ * 일이 있었다: 118번 연속으로 실패하는 동안 '실패' 탭은 0 이었고, 아무도 여섯 시간을 몰랐다.
+ * 마지막 시도가 남긴 error_code 가 그 차이를 알고 있으니, 그것까지 보고 나눈다.
+ */
+function stumbled(item: AdminItem): boolean {
+  const state = text(item.state, "");
+  if (["failed", "unsupported_language"].includes(state)) return true;
+  // 지금 누가 붙들고 있는 작업의 옛 오류는 아직 실패가 아니다.
+  return text(item.error_code, "") !== "" && !["claimed", "running"].includes(state);
+}
+
+const filters: Array<[JobFilter, string, (item: AdminItem) => boolean]> = [
   ["all", "전체", () => true],
-  ["active", "진행", (state) => ["queued", "claimed", "running"].includes(state)],
-  ["failed", "실패", (state) => ["failed", "unsupported_language"].includes(state)],
-  ["done", "완료", (state) => ["candidate_ready", "published", "cancelled"].includes(state)],
+  ["active", "진행", (item) => ["queued", "claimed", "running"].includes(text(item.state, "")) && !stumbled(item)],
+  ["failed", "실패", stumbled],
+  ["done", "완료", (item) => ["candidate_ready", "published", "cancelled"].includes(text(item.state, ""))],
 ];
 
 export function JobsView({
@@ -26,7 +39,7 @@ export function JobsView({
 }) {
   const { showToast } = useToast();
   const [filter, setFilter] = useState<JobFilter>("all");
-  const visible = items.filter((item) => (filters.find(([id]) => id === filter)?.[2] ?? (() => true))(text(item.state, "")));
+  const visible = items.filter((item) => (filters.find(([id]) => id === filter)?.[2] ?? (() => true))(item));
 
   async function retry(id: string): Promise<void> {
     try {
@@ -64,7 +77,7 @@ export function JobsView({
         {filters.map(([id, label, match]) => (
           <button key={id} role="tab" aria-selected={filter === id} className={filter === id ? "active" : ""} onClick={() => setFilter(id)}>
             <span>{label}</span>
-            <b>{items.filter((item) => match(text(item.state, ""))).length}</b>
+            <b>{items.filter((item) => match(item)).length}</b>
           </button>
         ))}
       </nav>
@@ -76,7 +89,7 @@ export function JobsView({
           const progress = Math.max(0, Math.min(1, number(item.progress)));
           const running = state === "running" || state === "claimed";
           // unsupported_language gets its own friendly line below instead of a raw error code.
-          const failed = state === "failed";
+          const failed = stumbled(item) && state !== "unsupported_language";
           const recordingId = text(item.recording_id);
           return (
             <article
@@ -112,7 +125,7 @@ export function JobsView({
                       <b>{Math.round(progress * 100)}%</b>
                     </>
                   )}
-                  {state === "queued" && <span className="job-stage">할당 대기</span>}
+                  {state === "queued" && !failed && <span className="job-stage">할당 대기</span>}
                   {failed && (
                     <span className="job-fail">
                       {stageLabel(item.current_stage) || "처리"} 실패
@@ -121,6 +134,10 @@ export function JobsView({
                         {number(item.attempt_count)}/{number(item.max_attempts, 3)}회 시도
                       </em>
                     </span>
+                  )}
+                  {/* 코드만 놓고는 다시 돌리는 것 말고 할 일이 떠오르지 않는다. 이 실패는 음원이 잘못 뽑힌 것이라 사람이 고를 수 있다. */}
+                  {item.error_code === "NO_VOCAL_TRACK" && (
+                    <span className="job-stage">노래가 없는 반주 음원입니다 — 다른 후보를 고르세요</span>
                   )}
                   {/* Terminal states: the badge already names the state, so this line says what happens next. */}
                   {state === "candidate_ready" && <span className="job-stage">타이밍 검수 대기</span>}

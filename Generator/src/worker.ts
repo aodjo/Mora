@@ -227,12 +227,18 @@ export class GeneratorWorker {
     }
   }
   private async sendFailure(input: GeneratorJobInput, error: unknown): Promise<void> {
+    // 길면 잘라 보낸다 — 진단은 첫 몇 줄에 있고, 이벤트 한 건이 무한정 커지면 안 된다.
+    const said = detailOf(error);
+
     const value: StageEvent = {
       job_id: input.job_id,
       attempt_id: input.attempt_id,
       stage: "cleanup",
       state: "failed",
       code: safeCode(error),
+      // 파이썬이 남긴 말은 여기까지 와 있었는데 콘솔에만 찍고 버렸다. 서버에 없으면 나중에
+      // 왜 멈췄는지 물을 데가 없다 — 실제로 118번 실패하는 동안 남은 것은 코드 하나뿐이었다.
+      ...(said === undefined ? {} : { detail: said }),
       at: Date.now(),
     };
     try {
@@ -242,6 +248,13 @@ export class GeneratorWorker {
     }
   }
 }
+/** 파이썬이 죽기 전에 남긴 말, 이벤트 한 건에 실을 만한 길이로. */
+function detailOf(error: unknown): string | undefined {
+  const said = (error as Error & { detail?: string }).detail;
+  if (typeof said !== "string" || said.trim().length === 0) return undefined;
+  return said.length > 1000 ? `${said.slice(0, 1000)}…` : said;
+}
+
 /**
  * Failures the job's own input decides, which the same input will reach again every attempt.
  *

@@ -2165,7 +2165,11 @@ def respond(identifier: Any, result: Any = None, error: Exception | None = None)
         payload = {"jsonrpc": "2.0", "id": identifier, "result": result}
     else:
         code = str(error) if str(error).isupper() and " " not in str(error) else "ML_PIPELINE_FAILED"
-        payload = {"jsonrpc": "2.0", "id": identifier, "error": {"code": code, "message": code}}
+        # 코드를 두 번 보내던 자리다. 무엇이 왜 안 됐는지는 detail 에 있는데 그것을 버리면,
+        # 받는 쪽에는 토큰 하나만 남아 IP 차단과 쿠키 만료와 비공개 영상이 같아 보인다.
+        said = getattr(error, "detail", None)
+        message = said if isinstance(said, str) and said.strip() else code
+        payload = {"jsonrpc": "2.0", "id": identifier, "error": {"code": code, "message": message}}
         traceback.print_exc(file=sys.stderr)
     sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
     sys.stdout.flush()

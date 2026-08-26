@@ -1456,6 +1456,7 @@ async function stageEvent(env: WorkerEnv, actor: Actor, value: Record<string, un
     state: value.state as StageEvent["state"],
     ...(value.progress === undefined ? {} : { progress: numberValue(value.progress, 0, 1) }),
     ...(value.code === undefined ? {} : { code: requiredString(value.code, 100) }),
+    ...(typeof value.detail === "string" && value.detail.length > 0 ? { detail: value.detail.slice(0, 2000) } : {}),
     ...(typeof value.metrics === "object" && value.metrics !== null && !Array.isArray(value.metrics)
       ? { metrics: value.metrics as Record<string, number> }
       : {}),
@@ -1474,7 +1475,9 @@ async function stageEvent(env: WorkerEnv, actor: Actor, value: Record<string, un
       item.state,
       item.progress ?? null,
       item.code ?? null,
-      JSON.stringify(item.metrics ?? {}),
+      // 지표는 숫자만 담기로 한 자리다. 실패가 남긴 말은 그 옆에 따로 둔다 — 자리를 빌려
+      // 쓰면 지표를 읽는 쪽이 숫자가 아닌 것을 만난다.
+      JSON.stringify(item.detail === undefined ? (item.metrics ?? {}) : { ...(item.metrics ?? {}), detail: item.detail }),
       now,
     ),
     // Stage events keep arriving after the job settles; they must not walk a finished job back to running.

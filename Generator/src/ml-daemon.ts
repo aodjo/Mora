@@ -100,7 +100,7 @@ export class MlDaemon {
         if (!pending) return;
         this.#pending.delete(response.id);
         if (pending.timeout !== undefined) clearTimeout(pending.timeout);
-        response.error ? pending.reject(this.#failure(response.error.code)) : pending.resolve(response.result);
+        response.error ? pending.reject(this.#failure(response.error.code, response.error.message)) : pending.resolve(response.result);
       } catch {
         /* daemon stdout is protocol-only */
       }
@@ -109,10 +109,18 @@ export class MlDaemon {
     this.#process.on("exit", (code) => this.#rejectAll(new Error(`ML_DAEMON_EXIT_${code}`)));
   }
   /** The error, carrying the last of what Python said before it died. */
-  #failure(code: string): Error {
-    const said = this.#stderrTail
-      .filter((line) => line.trim().length > 0)
-      .slice(-12)
+  #failure(code: string, message?: string): Error {
+    // 파이썬이 이유를 말했으면 그 말이 먼저다. stderr 꼬리는 마지막 열두 줄이라, 대체 주소를
+    // 여럿 시도한 실패에서는 정작 고른 주소의 거절 사유가 잘려 나간다.
+    const spoken = typeof message === "string" && message !== code && message.trim().length > 0 ? message : "";
+    const said = [
+      spoken,
+      this.#stderrTail
+        .filter((line) => line.trim().length > 0)
+        .slice(-12)
+        .join("\n"),
+    ]
+      .filter((part) => part.length > 0)
       .join("\n");
     const error = new Error(code);
     if (said.length > 0) (error as Error & { detail?: string }).detail = said;

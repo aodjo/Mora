@@ -104,6 +104,8 @@ export interface StageEvent {
   progress?: number;
   code?: string;
   metrics?: Record<string, number>;
+  /** 실패한 단계가 남긴 말. 코드 하나로는 IP 차단과 쿠키 만료와 비공개 영상이 같아 보인다. */
+  detail?: string;
   at: number;
 }
 

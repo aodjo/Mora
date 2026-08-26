@@ -9,6 +9,14 @@ import type { WorkerEnv } from "./env.js";
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 // Audit rows are kept indefinitely; stage events are diagnostics and expire after 30 days.
 const DIAGNOSTIC_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+// 소리는 검수를 위해 올린다. 그 일이 끝나면 다시 열리지 않는데, 지우는 코드가 한 줄도
+// 없어 곡마다 스무 남짓 메가바이트가 영영 남았다 — 한창 돌 때 시간당 2GiB 씩 늘었다.
+// 정렬 결과와 진단(파형·체크포인트·전사)은 작고 오래 쓸모가 있으니 남기고, 다시 듣지
+// 않을 소리만 거둔다. 2주는 사람이 한 곡을 다시 들여다볼 만한 시간이다.
+const AUDIO_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+// 한 번에 거두는 양. 크론이 하루 한 번 도는데, 이보다 많이 쌓이면 다음 날이 이어받는다.
+const RECLAIM_LIMIT = 2000;
+const RECLAIM_CHUNK = 500;
 const securityHeaders = {
   "Cache-Control": "no-store",
   "Referrer-Policy": "no-referrer",
@@ -129,5 +137,31 @@ export default {
       env.ADMIN_DB.prepare("DELETE FROM collector_pairings WHERE expires_at < ?1").bind(now),
       env.ADMIN_DB.prepare("DELETE FROM generator_pairings WHERE expires_at < ?1").bind(now),
     ]);
+    await reclaimAudio(env, now);
   },
 } satisfies ExportedHandler<WorkerEnv>;
+
+/**
+ * Give back the space held by audio nobody will listen to again.
+ *
+ * Every read path already asks for `deleted_at IS NULL`, so marking the row is enough to make
+ * the artifact disappear from the console; the object is what costs money, and that goes first.
+ * If the worker dies between the two, the row is still there and the next run tries again —
+ * the other order would leave objects no row remembers, which nothing could ever find to delete.
+ */
+async function reclaimAudio(env: WorkerEnv, now: number): Promise<void> {
+  const stale = await env.ADMIN_DB.prepare(
+    `SELECT id,r2_key FROM artifacts
+     WHERE deleted_at IS NULL AND content_type LIKE 'audio/%' AND created_at < ?1
+     ORDER BY created_at LIMIT ?2`,
+  )
+    .bind(now - AUDIO_RETENTION_MS, RECLAIM_LIMIT)
+    .all<{ id: string; r2_key: string }>();
+  for (let start = 0; start < stale.results.length; start += RECLAIM_CHUNK) {
+    const batch = stale.results.slice(start, start + RECLAIM_CHUNK);
+    await env.ADMIN_ARTIFACTS.delete(batch.map((row) => row.r2_key));
+    await env.ADMIN_DB.prepare(`UPDATE artifacts SET deleted_at=?1 WHERE id IN (${batch.map(() => "?").join(",")})`)
+      .bind(now, ...batch.map((row) => row.id))
+      .run();
+  }
+}
