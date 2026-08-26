@@ -191,8 +191,8 @@ check("라틴 문자는 모음 덩어리로 센다", daemon.syllables("we") == 1
 check("숫자도 한 몫", daemon.syllables("3") == 1)
 check("셀 것이 없어도 한 몫은 준다", daemon.syllables("!!") == 1)
 
-check("토큰이 낱말이면 음절대로", daemon.token_weights(["못 도망쳐"], [2]) == [1.0, 3.0])
-check("토큰이 낱말이 아니면 같은 몫", daemon.token_weights(["못 도망쳐"], [5]) == [1.0] * 5)
+check("토큰이 낱말이면 음절대로", daemon.token_weights([["못", "도망쳐"]], [2]) == [1.0, 3.0])
+check("토큰이 낱말이 아니면 같은 몫", daemon.token_weights([["못", "도망쳐"]], [5]) == [1.0] * 5)
 
 
 # ── 두 증인은 서로 다르게 틀린다: 정렬기는 정밀하고 받아쓰기는 거칠다 ──
@@ -244,7 +244,7 @@ crushed = [
     [5, 60284, 60344, 0.00],   # 도망쳐
 ]
 crushed_lines = [[57320, 60344]]
-weights = daemon.token_weights([CRUSHED_LINE], [6])
+weights = daemon.token_weights([CRUSHED_LINE.split()], [6])
 daemon.spread_crushed_words(crushed, crushed_lines, [6], weights)
 check("몫은 음절 수를 따른다", weights == [4.0, 4.0, 1.0, 2.0, 1.0, 3.0], str(weights))
 check("짓눌린 낱말이 모두 바닥을 넘는다", all(w[2] - w[1] >= 100 for w in crushed[2:]), str([w[2] - w[1] for w in crushed[2:]]))
@@ -258,7 +258,7 @@ check("독립된 증인과 만난다", abs(crushed[3][1] - 59320) < 400, f"남�
 
 single = [[0, 13344, 14058, 0.9], [1, 14058, 14863, 0.9], [2, 14863, 15528, 0.9], [3, 15528, 15568, 0.9], [4, 15568, 15900, 0.9]]
 single_lines = [[13344, 15900]]
-daemon.spread_crushed_words(single, single_lines, [5], daemon.token_weights(["사막같은 몸에서 겨우 날 떼어"], [5]))
+daemon.spread_crushed_words(single, single_lines, [5], daemon.token_weights([["사막같은", "몸에서", "겨우", "날", "떼어"]], [5]))
 check("날이 볼 수 있는 길이를 갖는다", single[3][2] - single[3][1] >= 120, f"{single[3][2] - single[3][1]}ms")
 check("시간은 앞 단어에서 나온다", single[2][2] == single[3][1], f"겨우 끝 {single[2][2]} vs 날 시작 {single[3][1]}")
 check("멀쩡한 이웃은 건드리지 않는다", single[0] == [0, 13344, 14058, 0.9], str(single[0]))
@@ -464,7 +464,7 @@ over: list[list[int | float]] = [
     [4, 101330, 101650, 0.5], [5, 101650, 102200, 0.5],
     [6, 102200, 102310, 0.5], [7, 102310, 102420, 0.5], [8, 102420, 102850, 0.5], [9, 102850, 103340, 0.5],
 ]
-over_weights = daemon.token_weights([OVER_LINE], [10])
+over_weights = daemon.token_weights([OVER_LINE.split()], [10])
 moved = daemon.place_backing_runs(over, [10], [OVER_LINE], over_weights, [(101.52, 102.24), (102.97, 103.54)])
 check("괄호 낱말만 옮긴다", moved == 4, f"{moved}개")
 check("두 번째 목소리가 시작한 데서 시작한다", over[6][1] == 101_520, f"{over[6][1]}ms")
@@ -651,6 +651,53 @@ with _Probed(209.0):
     # 길이를 모르는 곡까지 막으면, 메타데이터가 빈 곡은 영영 처리되지 않는다.
     check("곡 길이를 모르면 따지지 않는다", daemon.wrong_length(NOWHERE, _job(None)) is None)
     check("길이가 0 이면 따지지 않는다", daemon.wrong_length(NOWHERE, _job(0)) is None)
+
+# ── 낱말은 워커가 가른 대로 쓴다 ────────────────────────────────────────────
+#
+# 데몬이 line.split() 으로 다시 가르면 워커의 tokenizeV2 와 달라진다. 영어와 한국어는 둘이
+# 같지만 일본어는 띄어쓰기가 없어 한 줄이 통째로 낱말 하나가 된다. 그 어긋남은 조용하다 —
+# 앵커가 줄 단위로만 잡히고, 음절 가중치가 전부 1.0 이 되고, 괄호 판정이 통째로 건너뛰어졌다.
+
+JA_LINE = "出来るだけ嘘は無いように"
+JA_WORDS = ["出来", "るだけ", "嘘", "は", "無", "いように"]
+JA_VARIANT = {
+    "text": JA_LINE,
+    "token_lines": [{"text": JA_LINE, "words": JA_WORDS,
+                     "spans": [[0, 2], [2, 5], [5, 6], [6, 7], [7, 8], [8, 12]]}],
+}
+
+lines, words, spans = daemon.variant_lines(JA_VARIANT)
+check("일본어 한 줄이 여섯 낱말로 온다", words == [JA_WORDS], str(words))
+check("split() 이었다면 하나였다", JA_LINE.split() == [JA_LINE])
+
+# 워커가 보내지 않으면(옛 워커) 예전대로 가른다.
+old_lines, old_words, old_spans = daemon.variant_lines({"text": "we gonna ride\nall night long"})
+check("보내 주지 않으면 예전처럼 공백으로", old_words == [["we", "gonna", "ride"], ["all", "night", "long"]])
+check("그때는 자리도 없다", old_spans == [None, None])
+
+check("음절 가중치가 낱말마다 다르다",
+      len(set(daemon.token_weights([JA_WORDS], [len(JA_WORDS)]))) > 1,
+      str(daemon.token_weights([JA_WORDS], [len(JA_WORDS)])))
+check("한 줄로 왔다면 전부 같은 몫이었다",
+      daemon.token_weights([[JA_LINE]], [6]) == [1.0] * 6)
+
+# 괄호는 토큰에서 떨어져 나가므로 자리로 판정한다.
+ASIDE = "다시 만나 (꺼져)"
+ASIDE_SPANS = [[0, 2], [3, 5], [7, 9]]
+check("괄호 안의 낱말만 곁소리로 잡는다",
+      daemon.bracket_mask(ASIDE, ASIDE_SPANS) == [False, False, True],
+      str(daemon.bracket_mask(ASIDE, ASIDE_SPANS)))
+check("자리를 안 주면 예전 방식과 같다",
+      daemon.bracket_mask(ASIDE) == [False, False, True],
+      str(daemon.bracket_mask(ASIDE)))
+# 일본어는 괄호가 있어도 판정 자체가 돌지 않았다 — 낱말 수와 토큰 수가 늘 달랐기 때문이다.
+JA_ASIDE = "君の名前(小さく)"
+check("일본어 곁소리도 이제 잡힌다",
+      daemon.bracket_mask(JA_ASIDE, [[0, 1], [1, 2], [2, 4], [5, 8]]) == [False, False, False, True],
+      str(daemon.bracket_mask(JA_ASIDE, [[0, 1], [1, 2], [2, 4], [5, 8]])))
+check("괄호만 있고 글자가 없으면 곁소리가 아니다",
+      daemon.bracket_mask("(!!) 노래", [[1, 3], [5, 7]]) == [False, False],
+      str(daemon.bracket_mask("(!!) 노래", [[1, 3], [5, 7]])))
 
 print()
 if failures:

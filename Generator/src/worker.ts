@@ -138,11 +138,26 @@ export class GeneratorWorker {
         ...input,
         lyrics: input.lyrics.map((variant) => {
           const tokenization = tokenizeV2(variant.text, variant.language);
+          const points = Array.from(variant.text);
+          const kept = tokenization.lines.filter((line) => !line.excluded && line.tokenIndices.length > 0);
           return {
             ...variant,
-            token_counts: tokenization.lines
-              .filter((line) => !line.excluded && line.tokenIndices.length > 0)
-              .map((line) => line.tokenIndices.length),
+            token_counts: kept.map((line) => line.tokenIndices.length),
+            // 세는 것만 보내면 파이썬은 낱말을 제 손으로 다시 갈라야 하고, 그 방식은 여기와
+            // 다르다. 일본어는 띄어쓰기가 없어 line.split() 이 한 줄을 낱말 하나로 세는데
+            // 여기서는 여섯에서 열로 나뉜다 — 두 셈이 어긋나면 파이썬이 매기는 토큰 번호가
+            // word_spans 를 읽는 쪽이 기대하는 번호와 달라진다. 머리글이 있는 가사에서도
+            // 줄 수가 맞지 않아 같은 일이 벌어졌다. 잘라 놓은 것을 그대로 보낸다.
+            token_lines: kept.map((line) => ({
+              text: points.slice(line.start, line.end).join(""),
+              words: line.tokenIndices.map((index) => tokenization.tokens[index]?.canonical ?? ""),
+              // 낱말이 줄의 어디에 놓였는지. 괄호는 토큰에서 떨어져 나가므로 — "(꺼져)" 의
+              // canonical 은 "꺼져" 다 — 어느 낱말이 괄호 안이었는지는 자리를 알아야 안다.
+              spans: line.tokenIndices.map((index) => [
+                (tokenization.tokens[index]?.start ?? line.start) - line.start,
+                (tokenization.tokens[index]?.end ?? line.start) - line.start,
+              ]),
+            })),
           };
         }),
       };

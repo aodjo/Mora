@@ -1123,7 +1123,7 @@ def match_tokens(lyric: list[str], heard: list[dict[str, Any]]) -> dict[int, dic
 BRACKETS = {"(": ")", "[": "]", "{": "}", "（": "）", "［": "］"}
 
 
-def bracket_mask(line: str) -> list[bool]:
+def bracket_mask(line: str, spans: list[list[int]] | None = None) -> list[bool]:
     """
     Which written words of the line are a bracketed aside — the second voice.
 
@@ -1135,19 +1135,47 @@ def bracket_mask(line: str) -> list[bool]:
 
     A word is inside when the brackets around it are open, whether they opened on this word
     or an earlier one. Brackets holding no letters are punctuation, not a voice.
+
+    spans 는 낱말이 줄의 어디에 놓였는지다. 워커가 가른 낱말은 구두점이 떨어져 나가 있어
+    — "(꺼져)" 가 "꺼져" 로 온다 — 낱말만 보아서는 괄호를 알 수 없다. 자리를 받으면 줄을
+    한 번 훑어 괄호 깊이를 세고 각 낱말이 어느 깊이에 있었는지 본다. 자리가 없으면(옛 워커)
+    예전처럼 공백으로 가른다.
     """
-    mask: list[bool] = []
+    if spans is None:
+        mask: list[bool] = []
+        depth = 0
+        for word in line.split():
+            inside = depth > 0
+            for character in word:
+                if character in BRACKETS:
+                    depth += 1
+                    inside = True
+                elif character in BRACKETS.values() and depth > 0:
+                    depth -= 1
+            mask.append(inside and re.search(r"[^\W_]", word, re.UNICODE) is not None)
+        return mask
+
+    points = list(line)
+    # 글자마다, 그 글자를 읽기 전의 괄호 깊이.
+    depth_at: list[int] = []
     depth = 0
-    for word in line.split():
-        inside = depth > 0
-        for character in word:
-            if character in BRACKETS:
-                depth += 1
-                inside = True
-            elif character in BRACKETS.values() and depth > 0:
-                depth -= 1
-        mask.append(inside and re.search(r"[^\W_]", word, re.UNICODE) is not None)
-    return mask
+    for character in points:
+        depth_at.append(depth)
+        if character in BRACKETS:
+            depth += 1
+        elif character in BRACKETS.values() and depth > 0:
+            depth -= 1
+    depth_at.append(depth)
+
+    out: list[bool] = []
+    for begin, finish in spans:
+        begin = max(0, min(begin, len(points)))
+        finish = max(begin, min(finish, len(points)))
+        # 낱말이 시작하는 자리의 깊이, 또는 낱말 안에서 괄호가 열렸다면 그것도 안이다.
+        inside = depth_at[begin] > 0 or any(points[k] in BRACKETS for k in range(begin, finish))
+        word = "".join(points[begin:finish])
+        out.append(inside and re.search(r"[^\W_]", word, re.UNICODE) is not None)
+    return out
 
 
 def is_backing_line(line: str) -> bool:
@@ -1381,11 +1409,41 @@ def syllables(word: str) -> int:
     return max(1, count)
 
 
-def token_weights(text_lines: list[str], counts: list[int]) -> list[float]:
-    """토큰마다 몇 음절어치 시간을 받을 자격이 있는지. 토큰이 낱말이 아니면 다 같은 몫이다."""
+def variant_lines(variant: dict[str, Any]) -> tuple[list[str], list[list[str]], list[list[list[int]] | None]]:
+    """가사의 줄과, 줄마다의 낱말과, 그 낱말이 줄의 어디에 놓였는지. 자르는 일은 이쪽에서 하지 않는다.
+
+    낱말을 여기서 line.split() 으로 가르면 워커가 tokenizeV2 로 가른 것과 달라진다. 영어와
+    한국어는 둘이 같지만 일본어는 띄어쓰기가 없어 한 줄이 통째로 낱말 하나가 되고 — 「出来る
+    だけ嘘は無いように」한 줄이 저쪽에서는 여섯 낱말이다 — 그 어긋남은 두 곳에서 값을 치른다.
+    앵커를 줄 단위로만 잡게 되어 정렬이 거칠어지고, 낱말마다 매기는 번호가 word_spans 를 읽는
+    쪽이 기대하는 토큰 번호와 달라진다.
+
+    줄 목록도 마찬가지다. 여기서는 빈 줄만 걸렀고 저쪽은 「[Verse 1]」 같은 머리글도 걸렀으므로,
+    머리글이 있는 가사에서는 줄 수가 맞지 않았다. 그러면 예전 코드는 token_counts 를 버리고
+    split() 로 물러났는데, 그 순간 번호 체계가 통째로 어긋난다 — 일본어만의 이야기가 아니다.
+
+    그래서 잘라 놓은 것을 그대로 받아 쓴다. 없으면 (옛 워커) 예전처럼 가른다.
+    """
+    supplied = variant.get("token_lines")
+    if isinstance(supplied, list) and supplied:
+        lines = [str(item.get("text", "")) for item in supplied]
+        words = [[str(word) for word in item.get("words", [])] for item in supplied]
+        spans = [[[int(a), int(b)] for a, b in item.get("spans", [])] or None for item in supplied]
+        return lines, words, spans
+    lines = [line for line in str(variant.get("text", "")).splitlines() if line.strip()]
+    return lines, [line.split() for line in lines], [None] * len(lines)
+
+
+def token_weights(line_words: list[list[str]], counts: list[int]) -> list[float]:
+    """토큰마다 몇 음절어치 시간을 받을 자격이 있는지.
+
+    예전에는 줄을 여기서 다시 갈라 그 수가 counts 와 맞을 때만 음절을 셌다. 일본어는 한 줄이
+    통째로 낱말 하나로 갈려 한 번도 맞은 적이 없고, 그래서 모든 토큰이 똑같이 1.0 을 받았다 —
+    한 글자짜리 조사와 네 음절 낱말이 같은 시간을 나눠 가졌다는 뜻이다. 이제 갈라 놓은 것을
+    받으므로 그 자리가 없다."""
     weights: list[float] = []
     for line_index, count in enumerate(counts):
-        written = text_lines[line_index].split() if line_index < len(text_lines) else []
+        written = line_words[line_index] if line_index < len(line_words) else []
         if len(written) == count:
             weights.extend(float(syllables(word)) for word in written)
         else:
@@ -1858,12 +1916,10 @@ def align_variant(
     detected: str = "und",
     second_voice: list[tuple[float, float]] | None = None,
 ) -> dict[str, Any]:
-    text_lines = [line for line in str(variant["text"]).splitlines() if line.strip()]
-    counts = [int(value) for value in variant.get("token_counts", [])]
-    if len(counts) != len(text_lines):
-        counts = [max(1, len(line.split())) for line in text_lines]
+    text_lines, line_words, line_spans_at = variant_lines(variant)
+    counts = [len(words) for words in line_words]
     # Where the transcriber actually heard these words beats dividing the song by word count.
-    lyric_words = [comparable(word) for line in text_lines for word in line.split() if comparable(word)]
+    lyric_words = [comparable(word) for words in line_words for word in words if comparable(word)]
     start, end = audio_bounds(asr, duration_ms, lyric_words)
     proportional_windows, fallback_words = proportional_spans(counts, start, end)
     heard_words = asr_words(asr)
@@ -1881,7 +1937,12 @@ def align_variant(
         # 음원에서는 마지막 줄들이 부르지 않은 구간 위에 놓일 수 있다. 소리가 실제로 멎는
         # 자리를 포락선에서 구하는 편이 옳고, 그것은 아직 재어 보지 않았다.
         ceiling=duration_ms / 1000.0,
-        backing=[flag for line in text_lines for word, flag in zip(line.split(), bracket_mask(line)) if comparable(word)],
+        backing=[
+            flag
+            for index, line in enumerate(text_lines)
+            for word, flag in zip(line_words[index], bracket_mask(line, line_spans_at[index]))
+            if comparable(word)
+        ],
     )
     # When was each line's first word heard — the counter-witness against leading noise.
     anchors = match_sequences(lyric_words, heard_words)
@@ -1900,7 +1961,7 @@ def align_variant(
     word_offset = 0
     token_offset = 0
     for line_index, line in enumerate(text_lines):
-        written = line.split()
+        written = line_words[line_index]
         line_word_count = len([word for word in written if comparable(word)])
         opening = anchors.get(word_offset)
         if line_word_count > 0 and opening is not None:
@@ -1944,7 +2005,7 @@ def align_variant(
         for line_index, line in enumerate(text_lines):
             spots = [
                 position
-                for position, word in enumerate(line.split())
+                for position, word in enumerate(line_words[line_index])
                 if comparable(word) and not any(character in alphabet for character in comparable(word))
             ]
             if spots:
@@ -1954,7 +2015,7 @@ def align_variant(
             voice = mms_voice(vocals)
             if voice is not None:
                 for line_index in illegible:
-                    borrowed_lines[line_index] = mms_line_spans(voice, line_windows[line_index], text_lines[line_index].split())
+                    borrowed_lines[line_index] = mms_line_spans(voice, line_windows[line_index], line_words[line_index])
         result_words: list[list[int | float]] = []
         borrowed_words = 0
         aligned_token_weight = 0.0
@@ -1981,13 +2042,13 @@ def align_variant(
                 # 정렬기가 이 줄에서 아무것도 못 찾았다. 곡 전체를 낱말 수로 나눈 자리를 쓰면
                 # 이 줄의 창과 아무 상관 없는 데로 간다 — 실측에서 첫 줄이 30초에 놓였고, 창은
                 # 12.6초였다. 창을 아는데 곡 전체를 다시 짐작할 이유가 없다.
-                result_words.extend(spread_in_window(line_windows[line_index], token_index, count, token_weights(text_lines, counts)))
+                result_words.extend(spread_in_window(line_windows[line_index], token_index, count, token_weights(line_words, counts)))
             token_index += count
             last_token_of_line[token_index - 1] = line_index
         snap_line_starts(result_words, line_windows, counts, line_start_witness_ms)
         extend_held_endings(result_words, line_windows, last_token_of_line, heard_words)
         snap_words_to_witness(result_words, counts, witness_ms)
-        weights = token_weights(text_lines, counts)
+        weights = token_weights(line_words, counts)
         spread_crushed_words(result_words, line_windows, counts, weights)
         # 겹쳐 부른 말은 옆에 적혀 있을 뿐 뒤에 부른 것이 아니다. 들린 자리가 있으면 그리로.
         place_backing_runs(result_words, counts, text_lines, weights, second_voice or [])
@@ -2167,7 +2228,7 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     # 가사의 낱말을 먼저 갖춰 두어야 어디가 비었는지 알 수 있다. 변형이 여럿이면 가장 긴
     # 것을 쓴다 — 짧은 변형에서 비지 않은 자리도 긴 변형에서는 빌 수 있다.
     heard_target = max(
-        ([comparable(word) for line in str(variant.get("text", "")).splitlines() for word in line.split() if comparable(word)]
+        ([comparable(word) for words in variant_lines(variant)[1] for word in words if comparable(word)]
          for variant in job.get("lyrics", [])),
         key=len,
         default=[],
