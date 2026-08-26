@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SongTitleLyricsProvider, inferLyricsLanguage } from "../Collector/src/songtitle-provider.js";
+import { SongTitleLyricsProvider, inferLyricsLanguage, isAnnotatedTranslation } from "../Collector/src/songtitle-provider.js";
 import type { SongTitleRouter } from "../Collector/src/songtitle-provider.js";
 
 test("SongTitle adapter preserves every non-empty provider result", async () => {
@@ -42,6 +42,38 @@ test("language inference is conservative for supported markets", () => {
   assert.equal(inferLyricsLanguage("君の名前を呼ぶ"), "ja");
   assert.equal(inferLyricsLanguage("Hello world"), "en");
   assert.equal(inferLyricsLanguage("你好世界"), undefined);
+});
+
+test("a name glossed in Hangul does not make an English song Korean", () => {
+  // Genie heads its sheets with the song and the artist, the artist in Korean. Four characters
+  // out of 2,600 sent Drake to the Korean recogniser.
+  const drake = `Best I Ever Had - Drake (드레이크)\n${"baby you ma everything you all i eva wanted ".repeat(40)}`;
+  assert.equal(inferLyricsLanguage(drake), "en");
+  // A K-pop lyric that is mostly English is still Korean. This is the lowest Hangul share in the
+  // collection, ATEEZ' "BAD" at 8%.
+  assert.equal(inferLyricsLanguage(`${"I know you want it bad so bad ".repeat(11)}${"우리 둘만의 밤 ".repeat(3)}`), "ko");
+});
+
+test("a Japanese sheet republished with a Korean reading and translation is refused", () => {
+  // Verbatim shape from Melon, Bugs and FLO: what is sung, how to say it, what it means. Only a
+  // third of it is ever voiced.
+  const annotated = [
+    "駄目駄目駄目",
+    "다메 다메 다메",
+    "안 돼, 안 돼, 안 돼",
+    "脳みその中から「やめろ馬鹿」と喚くモラリティ",
+    "노-미소노 나카카라 「야메로 바카」토 와메쿠 모라리티",
+    "머릿속에서 「그만둬, 바보」라고 외치는 Morality",
+  ].join("\n");
+  assert.equal(isAnnotatedTranslation(annotated), true);
+
+  // Genie's copy of the same song, which is what should be timed.
+  assert.equal(isAnnotatedTranslation("駄目駄目駄目\n脳みその中から「やめろ馬鹿」と喚くモラリティ\nダーリンベイビーダーリン"), false);
+  // Neither market's own lyrics carry the other's script at all.
+  assert.equal(isAnnotatedTranslation("따사로운 햇살 속에서\n종소리가 울려 퍼지네"), false);
+  assert.equal(isAnnotatedTranslation("出来るだけ嘘は無いように\nどんな時も優しくあれるように"), false);
+  assert.equal(isAnnotatedTranslation("Hello world"), false);
+  assert.equal(isAnnotatedTranslation(""), false);
 });
 
 test("SongTitle adapter drops the notice a provider serves when it has no lyrics", async () => {

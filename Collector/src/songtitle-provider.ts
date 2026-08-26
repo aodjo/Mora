@@ -71,13 +71,59 @@ export function sameSong(found: string | undefined, wanted: string): boolean {
   return provided.includes(asked) || asked.includes(provided);
 }
 
+function scriptCounts(text: string): { hangul: number; kana: number; han: number; latin: number; total: number } {
+  const count = (pattern: RegExp) => (text.match(pattern) ?? []).length;
+  const hangul = count(/\p{Script=Hangul}/gu);
+  const kana = count(/[\p{Script=Hiragana}\p{Script=Katakana}]/gu);
+  const han = count(/\p{Script=Han}/gu);
+  const latin = count(/\p{Script=Latin}/gu);
+  return { hangul, kana, han, latin, total: hangul + kana + han + latin };
+}
+
+/**
+ * How much of a sheet a script has to cover before it names the language.
+ *
+ * Presence was the old rule, and one character decided a whole sheet. Genie's copy of Drake's
+ * "Best I Ever Had" opens on the header "Best I Ever Had - Drake (드레이크)", and those four
+ * Hangul characters — 0.15% of 2,600 — sent an English rap to the Korean recogniser. Sharing it
+ * out tells that apart from a real K-pop lyric, which mixes English freely but not that freely:
+ * the lowest in the collection is ATEEZ' "BAD" at 8% Hangul against 92% Latin. Anything between
+ * the two works, and this sits in the middle of a gap fifty times wide.
+ */
+const ENOUGH_TO_NAME = 0.02;
+
 export function inferLyricsLanguage(text: string): string | undefined {
-  if (/\p{Script=Hangul}/u.test(text)) return "ko";
-  if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)) return "ja";
-  if (/\p{Script=Latin}/u.test(text) && !/[\p{Script=Han}\p{Script=Cyrillic}\p{Script=Arabic}]/u.test(text)) {
+  const { hangul, kana, han, latin, total } = scriptCounts(text);
+  if (total === 0) return undefined;
+  if (hangul / total >= ENOUGH_TO_NAME) return "ko";
+  if (kana / total >= ENOUGH_TO_NAME) return "ja";
+  if (latin > 0 && han === 0 && !/[\p{Script=Cyrillic}\p{Script=Arabic}]/u.test(text)) {
     return "en";
   }
   return undefined;
+}
+
+/**
+ * A sheet that prints a reading guide and a translation under every line that is actually sung.
+ *
+ * Melon, Bugs and FLO serve Japanese songs to Korean readers three lines at a time — the
+ * Japanese, then its pronunciation spelled in Hangul, then what it means. 米津玄師's "IRIS OUT"
+ * arrives from Genie at 673 characters and from FLO at 2,387, and the extra 1,714 are never
+ * voiced. The aligner cannot tell which third to listen for, so it spreads the song across all
+ * three and every timing after the first line is wrong.
+ *
+ * No real lyric mixes the two scripts. Of 498 sheets collected, thirteen carry both Hangul and
+ * kana above a tenth, and those thirteen are exactly the annotated ones — the lightest at 43%
+ * Hangul over 14% kana, against a clean sheet's zero. All ten songs they belong to have an
+ * unannotated copy from another provider, so refusing them costs no song its lyrics.
+ *
+ * A genuinely bilingual Korean-Japanese recording would be refused too. None exists in the
+ * collection, and timing a song against a sheet that is two thirds unsung is the worse trade.
+ */
+export function isAnnotatedTranslation(text: string): boolean {
+  const { hangul, kana, total } = scriptCounts(text);
+  if (total === 0) return false;
+  return hangul / total >= 0.1 && kana / total >= 0.1;
 }
 
 export class SongTitleLyricsProvider implements LyricsProvider {
@@ -90,6 +136,7 @@ export class SongTitleLyricsProvider implements LyricsProvider {
     return response.results.flatMap((result): LyricsProviderResult[] => {
       if (result.lyrics.trim().length === 0) return [];
       if (!looksLikeLyrics(result.lyrics)) return [];
+      if (isAnnotatedTranslation(result.lyrics)) return [];
       if (!sameSong(result.title, input.title)) return [];
       const reference = providerReference(result);
       const language = inferLyricsLanguage(result.lyrics);

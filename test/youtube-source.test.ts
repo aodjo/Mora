@@ -33,10 +33,29 @@ test("uploads that are not the released recording are dropped", () => {
   assert.equal(isDifferentRecording("Red Velvet - Hawaii (Slowed + Reverb)", "Hawaii"), true);
 });
 
+test("the backing track is dropped however the label abbreviated it", () => {
+  // 10CM's own channel posted this one, so every other signal said take it. Nothing is sung on
+  // it: the separated voice came out 61 dB under the mix and not one word could be anchored.
+  assert.equal(isDifferentRecording("To Reach You (Inst.) (너에게 닿기를 (Inst.))", "너에게 닿기를"), true);
+  assert.equal(isDifferentRecording("aespa 에스파 'Whiplash' (Inst)", "Whiplash"), true);
+  assert.equal(isDifferentRecording("IU '밤편지' Inst Ver.", "밤편지"), true);
+  assert.equal(isDifferentRecording("YOASOBI「アイドル」Off Vocal", "アイドル"), true);
+  assert.equal(isDifferentRecording("Red Velvet - Hawaii (MR)", "Hawaii"), true);
+  assert.equal(isDifferentRecording("레드벨벳 Hawaii MR 제거", "Hawaii"), true);
+  assert.equal(isDifferentRecording("아이유 밤편지 인스트", "밤편지"), true);
+  assert.equal(isDifferentRecording("NewJeans - Supernatural (Backing Track)", "Supernatural"), true);
+});
+
 test("a song is not disqualified by the words in its own title", () => {
   assert.equal(isDifferentRecording("Oasis - Live Forever (Official Video)", "Live Forever"), false);
   assert.equal(isDifferentRecording("Bruce Springsteen - Cover Me", "Cover Me"), false);
   assert.equal(isDifferentRecording("Piano Man - Billy Joel", "Piano Man"), false);
   assert.equal(isDifferentRecording("Red Velvet 레드벨벳 'Hawaii' Official Audio", "Hawaii"), false);
   assert.equal(isDifferentRecording("【Ado】ギラギラ (Gira Gira)", "ギラギラ"), false);
+  // "inst" is short enough to collide. It may not fire inside a longer word, and the two-letter
+  // "mr" only counts parenthesized or in front of a version word — otherwise every Mr. in an
+  // artist's name would disqualify the song underneath it.
+  assert.equal(isDifferentRecording("Owl City - Fireflies (Instant Crush Edit)", "Fireflies"), false);
+  assert.equal(isDifferentRecording("Mr. Kitty - After Dark", "After Dark"), false);
+  assert.equal(isDifferentRecording("SUPER JUNIOR 슈퍼주니어 'Mr. Simple'", "Mr. Simple"), false);
 });

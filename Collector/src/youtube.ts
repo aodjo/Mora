@@ -33,9 +33,15 @@ function normalize(value: string): string {
  * it, a backing track, or a master that has been re-timed. "cover" alone missed "covered by",
  * and the ASCII words missed every Japanese and Korean upload — the top hit for Ado's ギラギラ
  * was a cover scoring 0.89.
+ *
+ * The spelled-out "instrumental" is the western habit. Korean and Japanese labels post the
+ * backing track as "(Inst.)", and they post it from the artist's own channel, so it clears the
+ * official-channel check and outranks the real upload. 10CM's "To Reach You (Inst.)" was
+ * selected that way, and a track with no voice on it cannot be aligned at all — every word came
+ * out guessed. Abbreviations are the whole exposure here, so they are all listed.
  */
 const NOT_THE_RECORDING =
-  /\b(?:cover(?:ed|s)?|karaoke|instrumental|remix|mashup|nightcore|reverb|acoustic|piano|8d\s*audio|vinyl|rip)\b|\b(?:sped|speed)\s*up\b|\bslowed\b|[+-]\s*\d+(?:\.\d+)?\s*st\b|pitch\s*shift|커버|노래방|반주|불러봄|歌ってみた|カラオケ|弾いてみた|演奏してみた/iu;
+  /\b(?:cover(?:ed|s)?|karaoke|instrumental|inst|off\s*vocal|backing\s*track|remix|mashup|nightcore|reverb|acoustic|piano|8d\s*audio|vinyl|rip)\b|\b(?:sped|speed)\s*up\b|\bslowed\b|\(\s*mr\s*\)|\bmr\s*(?:ver\.?|version|제거|버전)|[+-]\s*\d+(?:\.\d+)?\s*st\b|pitch\s*shift|커버|노래방|반주|인스트|가라오케|불러봄|歌ってみた|カラオケ|弾いてみた|演奏してみた/iu;
 
 /**
  * A rendition of the song that is not the recording the seed names: another language's cut runs
