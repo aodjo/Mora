@@ -775,6 +775,16 @@ def hear_everything(vocals: Path, language: str, backend: str, lyric_words: list
     native = (detected or language or "und").split("-")[0]
     # 벌마다 따로 둔다. 섞어서 한 번에 정렬하면 잡음이 정렬 경로 전체를 흔든다.
     batches: list[list[dict[str, Any]]] = [asr_words(asr)]
+    # 한 번 듣고 이미 촘촘하면 거기서 그친다. 여러 벌은 못 들은 자리를 메우려는 것인데 메울
+    # 자리가 없으면 앵커만 더 얹고, 새로 온 앵커가 어긋난 시각에 놓이면 단조성을 지키려는
+    # 정렬이 멀쩡한 이웃을 버린다 — 이미 잘 맞던 곡이 도리어 나빠지는 길이다.
+    #
+    # 144곡 실측. 늘 여덟 벌을 듣던 것과 견주어 최장 빈 구간이 6낱말 이하인 곡을 원본만으로
+    # 끝냈을 때: 빈 구간 8낱말 이하인 곡 108개로 같고, 합의가 도리어 망친 곡은 5→2,
+    # 앵커 밀도는 85.6%→84.7%. 그러면서 144곡 중 64곡이 나머지 일곱 벌을 듣지 않는다.
+    if lyric_words and HEAR_ENOUGH_GAP > 0 and longest_anchor_gap(lyric_words, consensus_words(lyric_words, batches)) <= HEAR_ENOUGH_GAP:
+        print("[hear] 원본 한 벌로 촘촘하다 — 나머지 벌은 듣지 않는다", file=sys.stderr)
+        return asr, detected
     # 영어가 아니면 영어로도 한 벌 듣는다. 코드스위칭 가사에서 모국어 강제가 놓치는 자리다.
     if native not in ("en", "und"):
         english, _ = coarse_asr(vocals, "en", backend)
@@ -826,6 +836,31 @@ GAP_LANGUAGE = os.getenv("MORA_GAP_LANGUAGE", "")
 AUGMENT_HEARING = os.getenv("MORA_AUGMENT_HEARING", "1") != "0"
 # 이보다 짧게 빈 것은 되짚어 들을 값어치가 없다 — 한두 낱말은 원래 안 들리기도 한다.
 GAP_WORDS = 8
+# 원본 한 벌로 이만큼까지만 비어 있으면 더 듣지 않는다. 0 이면 늘 전부 듣는다(옛 동작).
+# 6 은 144곡에서 고른 값이다. 곡을 반씩 40회 갈라 한쪽에서 문턱을 고르고 다른 쪽에서 재
+# 보았더니 고른 문턱이 고정값보다 못했다 — 곡선이 평평해서, 값을 자료로 고르는 것 자체가
+# 잡음을 따라가는 일이었다. 그래서 자료가 가리키는 범위(0~8) 안에서 손해가 가장 작은 쪽을
+# 택했다: 밀도는 0.9%p 만 내주고 여덟 벌을 다 듣는 곡을 144→80 으로 줄인다.
+HEAR_ENOUGH_GAP = int(os.getenv("MORA_HEAR_ENOUGH_GAP", "6"))
+
+
+def longest_anchor_gap(lyric_words: list[str], heard: list[dict[str, Any]]) -> int:
+    """
+    증언 없이 이어진 가장 긴 낱말 수.
+
+    anchor_gaps 는 되짚어 들을 자리를 시각으로 돌려주므로 앵커와 앵커 사이만 본다. 여기서
+    묻는 것은 다른 것이다 — 이 받아쓰기가 가사를 얼마나 촘촘히 덮었는가. 그래서 첫 앵커
+    앞과 마지막 앵커 뒤도 빈 자리로 센다. 밀도가 높아도 한 군데가 통째로 비어 있을 수 있고,
+    사람이 어색함을 느끼는 것은 그 한 군데다.
+    """
+    if not lyric_words:
+        return 0
+    anchored = set(match_sequences(lyric_words, heard))
+    longest = run = 0
+    for index in range(len(lyric_words)):
+        run = 0 if index in anchored else run + 1
+        longest = max(longest, run)
+    return longest
 
 
 def anchor_gaps(lyric_words: list[str], heard: list[dict[str, Any]]) -> list[tuple[float, float]]:

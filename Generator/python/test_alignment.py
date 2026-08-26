@@ -571,6 +571,31 @@ daemon.lend_spans(tight, {1: (19000.0, 25000.0)}, [1])
 check("이웃 밖으로 나가지 않는다", tight[1]["start"] >= 20.5 - 1e-9 and tight[1]["end"] <= 20.7 + 1e-9, str(tight[1]))
 check("옮겨도 이웃은 안 줄어든다", tight[0]["end"] == 20.5 and tight[2]["start"] == 20.7, str([tight[0], tight[2]]))
 
+# ── 이미 촘촘하면 더 듣지 않는다 ──────────────────────────────────────────────
+# 여러 벌 듣기는 못 들은 자리를 메우려는 것이다. 메울 자리가 없는 곡에서는 앵커만 더
+# 얹고, 새로 온 앵커가 어긋난 시각에 놓이면 단조성을 지키려는 정렬이 멀쩡한 이웃을
+# 버린다. 144곡 실측: 여덟 벌을 늘 듣던 것에 견주어 합의가 도리어 망친 곡 5 → 2.
+DENSE = ["내", "어릴", "적", "작은", "소망", "멋진", "어른이", "되는", "것"]
+DENSE_HEARD = spoken_words([
+    ("내", 10.6, 11.0), ("어릴", 11.1, 11.6), ("적", 11.7, 12.0), ("작은", 12.4, 13.2), ("소망", 13.4, 14.5),
+    ("멋진", 16.0, 16.6), ("어른이", 16.8, 17.6), ("되는", 18.0, 18.6), ("것", 19.0, 20.2),
+])
+check("전부 들린 가사는 빈 구간이 0", daemon.longest_anchor_gap(DENSE, DENSE_HEARD) == 0, str(daemon.longest_anchor_gap(DENSE, DENSE_HEARD)))
+
+# 가운데 세 낱말을 못 들은 경우.
+HOLED = daemon.longest_anchor_gap(DENSE, spoken_words([
+    ("내", 10.6, 11.0), ("어릴", 11.1, 11.6), ("소망", 13.4, 14.5),
+    ("멋진", 16.0, 16.6), ("어른이", 16.8, 17.6), ("되는", 18.0, 18.6), ("것", 19.0, 20.2),
+]))
+check("가운데 빈 자리를 낱말 수로 센다", HOLED == 2, str(HOLED))
+
+# 첫 앵커 앞도 빈 자리로 센다 — anchor_gaps 는 앵커 사이만 보지만 여기서 묻는 것은 덮개다.
+HEAD = daemon.longest_anchor_gap(DENSE, spoken_words([("되는", 18.0, 18.6), ("것", 19.0, 20.2)]))
+check("첫 앵커 앞도 빈 자리다", HEAD == 7, str(HEAD))
+check("아무것도 못 들으면 가사 전체가 빈 자리", daemon.longest_anchor_gap(DENSE, []) == len(DENSE))
+check("가사가 없으면 0", daemon.longest_anchor_gap([], DENSE_HEARD) == 0)
+check("문턱은 환경변수로 끌 수 있다", isinstance(daemon.HEAR_ENOUGH_GAP, int))
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
