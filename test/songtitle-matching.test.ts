@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { comparable, pickTrack, sameArtist, sameTitle } from "../packages/songtitle/src/util/match.js";
-import { genie } from "../packages/songtitle/src/providers/genie.js";
-import { vibe } from "../packages/songtitle/src/providers/vibe.js";
-import { flo } from "../packages/songtitle/src/providers/flo.js";
-import { bugs } from "../packages/songtitle/src/providers/bugs.js";
-import { melon } from "../packages/songtitle/src/providers/melon.js";
-import type { ProviderContext } from "../packages/songtitle/src/types.js";
+import { comparable, pickTrack, sameArtist, sameTitle, genie, vibe, flo, bugs, melon } from "@mora/songtitle";
+import type { ProviderContext } from "@mora/songtitle";
 
 /** URL 접두사 → 응답 본문. 등록되지 않은 URL 요청은 그 자체가 테스트 실패다. */
 function fakeFetch(routes: Record<string, string>): typeof fetch {

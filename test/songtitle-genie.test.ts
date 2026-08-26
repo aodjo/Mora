@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { genie } from "../packages/songtitle/src/providers/genie.js";
+import { genie } from "@mora/songtitle";
 
 const SEARCH = `<table><tbody><tr class="list" songid="98798057">
 <td><a href="#" class="title ellipsis" title="살인 아니고 사랑인데요??"><span class="icon">19금</span>살인 아니고 사랑인데요??</a>

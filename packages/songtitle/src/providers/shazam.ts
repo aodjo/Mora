@@ -11,6 +11,7 @@ import { sameTitle } from "../util/match.js";
 export const shazam: Provider = {
   name: "shazam",
   browserCapable: true,
+  needsBrowser: true, // 브라우저가 없으면 매번 조용히 null — 가용성 보고로 드러낸다
   async fetch(query, ctx) {
     if (!ctx.browser) return null; // 브라우저 없이는 방법이 없음(공개 API 사망)
     return shazamViaBrowser(query, ctx);

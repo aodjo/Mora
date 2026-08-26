@@ -50,6 +50,8 @@ export interface Provider {
   readonly keyName?: string | undefined;
   /** 키가 없어도 브라우저 폴백으로 동작 가능하면 true (라우터 스킵 방지) */
   readonly browserCapable?: boolean | undefined;
+  /** 브라우저 없이는 아예 시도조차 못 하면 true (가용성 보고에서 "죽었다"고 알린다) */
+  readonly needsBrowser?: boolean | undefined;
   /** 가사를 찾으면 결과, 못 찾으면 null, 오류면 throw */
   fetch(query: SearchQuery, ctx: ProviderContext): Promise<LyricsResult | null>;
 }

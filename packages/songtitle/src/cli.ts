@@ -84,8 +84,10 @@ function printHelp(): void {
   -h, --help               이 도움말
 
 프로바이더: ${names}
-키 필요: genius(GENIUS_ACCESS_TOKEN) — --browser 켜면 키 없이도 크롤링
-         lyricfind(LYRICFIND_API_KEY) — 사이트가 CAPTCHA라 키 필수 (없으면 skip)
+키 필요: genius(GENIUS_ACCESS_TOKEN) — 없으면 곡 URL을 조립해 읽는 폴백으로 동작하지만
+         라틴 문자 제목만 닿는다. 일본어/한국어 곡까지 받으려면 토큰이 필요하다(무료 발급).
+         lyricfind(LYRICFIND_API_KEY) — 가사 경로가 AWS WAF로 막혀 있어 키 필수 (없으면 skip)
+         shazam — SONGTITLE_BROWSER=1(--browser) 없이는 동작 불가
 
 예:
   lyrics-router "너를 처음 본 순간" -a "검정치마"

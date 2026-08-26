@@ -13,9 +13,20 @@ interface LyricFindResp {
 
 /**
  * LyricFind — 라이선스 API(lyric.do) 전용. `LYRICFIND_API_KEY` 필수.
- * 웹사이트(lyrics.lyricfind.com)는 검색·가사 페이지 전체가 CAPTCHA 퍼즐로 보호되어
- * 브라우저 크롤링으로는 통과할 수 없으므로 브라우저 폴백을 제공하지 않는다
- * (browserCapable 아님 → 키가 없으면 라우터가 skip).
+ *
+ * "웹을 뜯으면 되지 않나"는 확인해봤고, 안 된다 (2026-08 측정):
+ *  - api.lyricfind.com/search.do, /lyric.do 는 키 없이 호출하면 HTTP 200 본문에
+ *    `{"code":200,"description":"NOT AUTHORIZED","message":"An apikey is required."}` 를 준다.
+ *  - lyrics.lyricfind.com 은 홈·차트·아티스트·browse 는 200으로 열리지만,
+ *    가사 본문 경로 `/lyrics/*` 만 AWS WAF 뒤에 있다 — 응답이 `HTTP 202`,
+ *    `x-amzn-waf-action: challenge`, 본문 0바이트. 즉 사이트 전체가 아니라
+ *    "가사만" 골라 막아둔 것이다. 통과하려면 WAF 챌린지 토큰을 발급받아야 하는데
+ *    그건 보호장치 우회라 하지 않는다.
+ *  - 모든 페이지에 `<meta name="tdm-reservation" content="1">` — 기계 수집 거부를
+ *    기계가 읽을 수 있게 명시해둔 태그다. 크롤링은 이 의사에 반한다.
+ *
+ * 그래서 브라우저 폴백을 제공하지 않는다 (browserCapable 아님 → 키가 없으면 라우터가 skip).
+ * 이 프로바이더를 살리는 길은 LyricFind와 라이선스 계약을 맺고 키를 받는 것뿐이다.
  */
 export const lyricfind: Provider = {
   name: "lyricfind",
