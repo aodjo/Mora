@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isArtistChannel, isDifferentRecording } from "../Collector/src/youtube.js";
+import { canAutoSelect } from "../Collector/src/service.js";
+import type { RecordingSeed } from "../Collector/src/types.js";
+import { isArtistChannel, isDifferentRecording, searchYoutubeMusic, type YtEntry } from "../Collector/src/youtube.js";
 
 test("official means the artist's own channel, not the word in a channel name", () => {
   // Real artist channels, including the Topic channel a label feeds automatically.
@@ -58,4 +60,105 @@ test("a song is not disqualified by the words in its own title", () => {
   assert.equal(isDifferentRecording("Owl City - Fireflies (Instant Crush Edit)", "Fireflies"), false);
   assert.equal(isDifferentRecording("Mr. Kitty - After Dark", "After Dark"), false);
   assert.equal(isDifferentRecording("SUPER JUNIOR 슈퍼주니어 'Mr. Simple'", "Mr. Simple"), false);
+});
+
+test("an hour of the song on repeat is not the song", () => {
+  // The old check read /\d+\s*(?:시간|hours?|hr)\b/ and could not fire on a Korean title at
+  // all: \b after 간 asks for an ASCII word character, so every 시간 upload went through.
+  assert.equal(isDifferentRecording("아이유 (IU) - 밤편지 1시간", "밤편지"), true);
+  assert.equal(isDifferentRecording("아이유 (IU) - 밤편지 1시간 연속듣기", "밤편지"), true);
+  assert.equal(isDifferentRecording("Ado - 唱 1時間耐久", "唱"), true);
+  assert.equal(isDifferentRecording("NewJeans - Supernatural 1 hour loop", "Supernatural"), true);
+  assert.equal(isDifferentRecording("Red Velvet - Hawaii (10 hours)", "Hawaii"), true);
+  // Edits that are longer than the master by construction, and the compilations.
+  assert.equal(isDifferentRecording("aespa 에스파 'Whiplash' (Extended Mix)", "Whiplash"), true);
+  assert.equal(isDifferentRecording("Red Velvet - Hawaii 반복재생", "Hawaii"), true);
+  assert.equal(isDifferentRecording("NewJeans - Ditto 메들리", "Ditto"), true);
+  assert.equal(isDifferentRecording("IU - Love wins all 슬로우드", "Love wins all"), true);
+});
+
+test("a loop word in the song's own name does not disqualify the song", () => {
+  // Judged on what the uploader added, like every other disqualifier, so a song that counts
+  // hours or is called Loop keeps its place.
+  assert.equal(isDifferentRecording("선미 (SUNMI) - 24시간이 모자라", "24시간이 모자라"), false);
+  assert.equal(isDifferentRecording("Rokudenashi - Loop", "Loop"), false);
+  assert.equal(isDifferentRecording("Ado - 唱", "唱"), false);
+  // "Extended Play" is an EP. It says nothing about which cut of the audio this is.
+  assert.equal(isDifferentRecording("beabadoobee - Cologne (Our Extended Play)", "Cologne"), false);
+});
+
+const WHIPLASH: RecordingSeed = {
+  artist: "aespa",
+  title: "Whiplash",
+  duration_ms: 184_000,
+  popularity: 1,
+  freshness: 0,
+  market: "KR",
+};
+
+/**
+ * The shape the product owner keeps hitting: the artist's own channel holds the music video,
+ * which runs half a minute long, and the only upload that runs to the master is a reupload.
+ */
+const WHIPLASH_RESULTS: YtEntry[] = [
+  { id: "mv111111111", title: "aespa 에스파 'Whiplash' MV", duration: 216, channel: "aespa", uploader: "aespa" },
+  {
+    id: "reup2222222",
+    title: "aespa (에스파) - Whiplash [Official Audio]",
+    duration: 184,
+    channel: "K-Pop Vibes",
+    uploader: "K-Pop Vibes",
+  },
+];
+
+const found = async (seed: RecordingSeed, entries: YtEntry[]) => searchYoutubeMusic(seed, async () => entries);
+
+test("an unofficial upload that runs to the master outranks the artist's own music video", async () => {
+  const sources = await found(WHIPLASH, WHIPLASH_RESULTS);
+  assert.equal(sources[0]?.video_id, "reup2222222", "길이가 맞는 쪽이 먼저다");
+  assert.equal(sources[0]?.official, false);
+  assert.equal(sources[1]?.video_id, "mv111111111", "뮤직비디오는 떨어뜨리지 않고 뒤로 미룬다");
+  // Ownership used to sort above the score outright, which put the 3:36 video first.
+  assert.ok((sources[0]?.score ?? 0) > (sources[1]?.score ?? 1));
+});
+
+test("a length that agrees with the catalogue is enough to select an unofficial upload", async () => {
+  // The old rule needed 0.85, and a flat search hands back the whole video title, so titleScore
+  // is 0.8 for almost every real candidate and nothing but an exact-title official upload could
+  // reach it. Length agreement is what says this is that recording.
+  const catalogued = await found({ ...WHIPLASH, catalogue_duration_ms: 184_000 }, WHIPLASH_RESULTS);
+  assert.equal(canAutoSelect(catalogued[0], 184_000), true);
+  assert.equal(catalogued[0]?.catalogue_drift_ms, 0);
+
+  // Most songs never reach LyricFind — MusicBrainz answers with the ISRC and the length
+  // together — so there is no catalogue_drift_ms and the length on the recording is all there
+  // is. It is still the length we publish, and it still decides.
+  const plain = await found(WHIPLASH, WHIPLASH_RESULTS);
+  assert.equal(plain[0]?.catalogue_drift_ms, undefined);
+  assert.equal(canAutoSelect(plain[0], 184_000), true);
+
+  // The music video is second choice and stays in review whoever posted it.
+  assert.equal(canAutoSelect(plain[1], 184_000), false);
+});
+
+test("the only upload there is still reaches review rather than being dropped", async () => {
+  // A song with nothing but its music video must not become "음원 없음": that answer is
+  // remembered, and the song never comes back.
+  const sources = await found(WHIPLASH, [WHIPLASH_RESULTS[0]!]);
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0]?.official, true);
+  assert.equal(canAutoSelect(sources[0], 184_000), false, "길이가 32초 어긋난다");
+});
+
+test("a shortlist is not a place for whatever the search returned", async () => {
+  const noise: YtEntry[] = [
+    // Names neither the song nor the artist. A length that happens to agree cannot make it this
+    // song, and letting it through would hand the recording a duration from the wrong track.
+    { id: "other111111", title: "TWICE - Strategy (feat. Megan Thee Stallion)", duration: 184, channel: "TWICE" },
+    // Shorts and edits carry the right title over a fragment; compilations carry it over far too
+    // much. Both bounds are unchanged.
+    { id: "short222222", title: "aespa 에스파 'Whiplash' #shorts", duration: 45, channel: "aespa" },
+    { id: "compil33333", title: "aespa 에스파 'Whiplash' + b-sides", duration: 620, channel: "aespa" },
+  ];
+  assert.deepEqual(await found(WHIPLASH, noise), []);
 });

@@ -88,6 +88,32 @@ test("the catalogue length decides auto-selection, not who uploaded the file", (
   assert.equal(canAutoSelect(undefined), false);
 });
 
+test("the length on the recording decides even when LyricFind never answered", () => {
+  // MusicBrainz hands back the ISRC and the length together, so enrichment stops there and no
+  // catalogue length is ever recorded. That is the common case, not the exception, and it used
+  // to leave ownership as the only way through — which is why almost everything sat in review.
+  const swim: YoutubeCandidate = { ...source, official: false, score: 0.88, duration_ms: 159_400, catalogue_drift_ms: undefined };
+  assert.equal(canAutoSelect(swim, 159_000), true);
+
+  // The 4:05 music video on the artist's own channel against a 2:39 recording. Ownership is a
+  // nudge in the score, never a substitute for a length that disagrees.
+  assert.equal(canAutoSelect({ ...swim, official: true, score: 0.93, duration_ms: 245_000 }, 159_000), false);
+  // 3s is the tolerance: measured across 70 clean alignments the gap peaked at 2.4s.
+  assert.equal(canAutoSelect({ ...swim, duration_ms: 156_000 }, 159_000), true);
+  assert.equal(canAutoSelect({ ...swim, duration_ms: 155_000 }, 159_000), false);
+
+  // The catalogue's answer is preferred when there is one, and it is the stricter judge here.
+  assert.equal(canAutoSelect({ ...swim, catalogue_drift_ms: 86_000 }, 159_000), false);
+
+  // No length anywhere and no length on the upload: nothing to compare, so ownership is all
+  // that is left. It is the fallback, not the rule.
+  assert.equal(canAutoSelect({ ...swim, duration_ms: 0 }, undefined), false);
+  assert.equal(canAutoSelect({ ...swim, duration_ms: 0, official: true }, undefined), true);
+
+  // A length match cannot rescue an upload that does not say it is this song.
+  assert.equal(canAutoSelect({ ...swim, score: 0.68 }, 159_000), false);
+});
+
 test("a song already in the catalogue is skipped before anything is spent", () => {
   const index = new CollectedIndex([
     { artist: "BTS", title: "SWIM", isrc: "USA2P2600449" },

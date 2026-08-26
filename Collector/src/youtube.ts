@@ -55,14 +55,35 @@ const OTHER_RENDITION =
 const A_PERFORMANCE = /\b(?:live|라이브)\b|歌唱|공연/iu;
 
 /**
+ * An hour of the song on repeat, a medley, or a stretched edit. The title is the song's, the
+ * audio is not the released master, and the length gives it away only when it is a full hour —
+ * a three-song medley or an "extended mix" sits comfortably inside the duration bounds.
+ *
+ * The hour check used to live inline as /\d+\s*(?:시간|hours?|hr)\b/ and never once fired on a
+ * Korean upload: \b after 간 asks for an ASCII word character that a Hangul syllable can never
+ * be, so "아이유 밤편지 1시간" tested false. The digit is what carries the meaning, so the
+ * boundary is spelled as "not another digit" instead.
+ *
+ * Only phrases that name the edit are listed. "extended" steps around "Extended Play", which is
+ * an EP and says nothing about the audio; 슬로우드 is the Korean spelling of slowed, whose
+ * English form NOT_THE_RECORDING already carries; 반복재생·연속듣기 are what a Korean loop
+ * upload calls itself when it does not count hours; 메들리/メドレー are medley in the scripts the
+ * uploads are actually written in. Bare 루프 is left out: it lives inside 루프탑 and other
+ * ordinary words, and a Korean loop upload says 시간 or 반복 anyway.
+ */
+const A_LOOP_OR_COMPILATION =
+  /\d+\s*(?:시간|時間)(?!\d)|\d+\s*(?:hours?|hrs?)\b|\bloop(?:ed|ing)?\b|\bextended\b(?!\s*play\b)|반복\s*재생|연속\s*(?:재생|듣기)|\bmedley\b|메들리|メドレー|슬로우드/iu;
+
+/**
  * Whether the upload is something other than the released recording. Only what the uploader
  * wrote around the song title counts, so that Oasis' "Live Forever" and Springsteen's "Cover
- * Me" are not disqualified by their own names.
+ * Me" are not disqualified by their own names — and, now that the loop phrases are judged the
+ * same way, neither is a song of its own called "Loop" or one whose title counts hours.
  */
 export function isDifferentRecording(videoTitle: string, songTitle: string): boolean {
   const escaped = songTitle.trim().replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const added = escaped.length === 0 ? videoTitle : videoTitle.replace(new RegExp(escaped, "giu"), " ");
-  return NOT_THE_RECORDING.test(added) || OTHER_RENDITION.test(added) || A_PERFORMANCE.test(added);
+  return NOT_THE_RECORDING.test(added) || OTHER_RENDITION.test(added) || A_PERFORMANCE.test(added) || A_LOOP_OR_COMPILATION.test(added);
 }
 
 /** Channel-name words that say nothing about who owns the channel. */
@@ -92,6 +113,17 @@ export function isArtistChannel(channel: string, artist: string): boolean {
   if (!wanted.every((word) => owner.includes(word))) return false;
   return owner.includes("official") || owner.every((word) => wanted.includes(word) || CHANNEL_NOISE.has(word));
 }
+
+/**
+ * How far an upload of the released master may run from the length we publish the recording at.
+ *
+ * Measured over 70 songs that aligned cleanly: the gap between the catalogue length carried on
+ * the recording and the audio that was actually timed had a median of 0.0s and a maximum of
+ * 2.4s, and not one of them passed 5s. YouTube answers in whole seconds, so rounding alone
+ * spends half of the first second. The old 2s cut through the top of that measured spread; 3s
+ * clears it while staying far below the 5s nothing ever reached.
+ */
+export const RECORDING_DRIFT_TOLERANCE_MS = 3_000;
 
 export interface YoutubeSearchResult {
   video_id: string;
@@ -164,9 +196,8 @@ function candidatesFor(seed: RecordingSeed, entries: YtEntry[]): YoutubeCandidat
       if (!entry.id || !entry.title || entry.live_status === "is_live") return [];
       const title = entry.track ?? entry.title;
       const artist = entry.artist ?? entry.uploader ?? entry.channel ?? "";
+      // Covers, backing tracks, other renditions, stage cuts, and loops or medleys.
       if (isDifferentRecording(entry.title, seed.title)) return [];
-      // A loop or compilation shares the title but not the recording.
-      if (/\d+\s*(?:시간|hours?|hr)\b/iu.test(entry.title)) return [];
       const durationMs = Math.round((entry.duration ?? 0) * 1000);
       // Snippets, edits and Shorts carry the right title over a fragment of the song, and a
       // compilation carries it over far too much. Judge against the length we are looking for.
@@ -184,16 +215,44 @@ function candidatesFor(seed: RecordingSeed, entries: YtEntry[]): YoutubeCandidat
       const artistScore =
         wanted.length > 0 && (credited.includes(wanted) || (artist.length > 0 && wanted.includes(normalize(artist)))) ? 1 : 0;
       // An upload of the same recording drifts a second or two from the catalogue length —
-      // silence padding, a trimmed fade. Scoring that linearly from zero made auto-selection
-      // demand a match inside half a second, which almost nothing survives.
-      const drift = seed.duration_ms === undefined ? undefined : Math.abs(seed.duration_ms - durationMs);
-      const durationScore = drift === undefined || durationMs === 0 ? 0.5 : drift <= 2_000 ? 1 : Math.max(0, 1 - (drift - 2_000) / 12_000);
+      // silence padding, a trimmed fade. Past the tolerance it falls away quickly rather than
+      // over twelve seconds: a copy that runs ten seconds long is a different edit, not a fade.
+      // Neutral at 0.5 when there is no length to compare against, so an unknown neither
+      // vouches for the upload nor argues against it.
+      const drift = seed.duration_ms === undefined || durationMs === 0 ? undefined : Math.abs(seed.duration_ms - durationMs);
+      const durationScore =
+        drift === undefined
+          ? 0.5
+          : drift <= RECORDING_DRIFT_TOLERANCE_MS
+            ? 1
+            : Math.max(0, 1 - (drift - RECORDING_DRIFT_TOLERANCE_MS) / 9_000);
       const channel = entry.channel ?? entry.uploader ?? "";
       const official = isArtistChannel(channel, seed.artist);
       const catalogueDrift =
         seed.catalogue_duration_ms === undefined || durationMs === 0 ? undefined : Math.abs(seed.catalogue_duration_ms - durationMs);
-      const score = titleScore * 0.45 + artistScore * 0.35 + durationScore * 0.15 + (official ? 0.05 : 0) - (isVideo ? 0.1 : 0);
-      if (score < 0.55) return [];
+      /**
+       * Length first, then who the upload says it is, and ownership only as a nudge.
+       *
+       * The weights used to read 0.45 title / 0.35 artist / 0.15 length, and the title is the
+       * one signal a flat search cannot deliver: yt-dlp returns the whole video title, so
+       * titleScore is 0.8 rather than 1 for the large majority of real candidates and no
+       * unofficial upload could reach 0.85 however exactly it matched. Length is also the only
+       * thing here that speaks to the question we actually care about — is this that recording
+       * — because a cover, a live cut and a remaster all carry a perfect title and artist.
+       *
+       * Ownership is worth 0.05: enough to put the artist's own copy above an identical
+       * reupload, never enough to stand in for a length that disagrees.
+       */
+      const score = durationScore * 0.4 + titleScore * 0.35 + artistScore * 0.2 + (official ? 0.05 : 0) - (isVideo ? 0.1 : 0);
+      // Neither the song nor the artist is named: the search answered with something else
+      // entirely, and no length agreement can make it this song.
+      if (titleScore === 0 && artistScore === 0) return [];
+      // Only a floor against noise. The shortlist is what a person gets to choose from, and a
+      // candidate dropped here is not demoted but gone — with nothing left, the song is filed
+      // as "음원 없음" and remembered, so it never comes back. Length disagreement belongs to
+      // the ranking and to auto-selection, not to this gate: some songs have only their music
+      // video, and review can still offer it.
+      if (score < 0.35) return [];
       return [
         {
           url: `https://music.youtube.com/watch?v=${entry.id}`,
@@ -214,13 +273,18 @@ function candidatesFor(seed: RecordingSeed, entries: YtEntry[]): YoutubeCandidat
 }
 
 /**
- * Once the catalogue length has confirmed a copy is the released master, who uploaded it is the
- * tie-break worth having: a fan lyrics video and the artist's own upload of the same audio both
- * match to the second, and the artist's is the one that will still be there next month.
+ * Confirmed by the catalogue length first, then by the score, and only then by who posted it.
+ *
+ * Ownership used to sort above the score outright, which put an official channel's mediocre
+ * match ahead of an unofficial exact one — the artist's 4:05 music video ahead of the only copy
+ * of the 2:39 master. It is the tie-break worth having, not a rank of its own: a fan lyrics
+ * video and the artist's own upload of the same audio match to the second, and the artist's is
+ * the one that will still be there next month.
  */
 function rankSource(a: YoutubeCandidate, b: YoutubeCandidate): number {
-  const verified = (item: YoutubeCandidate): number => (item.catalogue_drift_ms !== undefined && item.catalogue_drift_ms <= 2_000 ? 1 : 0);
-  return verified(b) - verified(a) || Number(b.official) - Number(a.official) || b.score - a.score;
+  const verified = (item: YoutubeCandidate): number =>
+    item.catalogue_drift_ms !== undefined && item.catalogue_drift_ms <= RECORDING_DRIFT_TOLERANCE_MS ? 1 : 0;
+  return verified(b) - verified(a) || b.score - a.score || Number(b.official) - Number(a.official);
 }
 
 function youtubeDlCommand(): string {

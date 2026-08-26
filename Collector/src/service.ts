@@ -2,7 +2,7 @@ import type { LyricsProvider, LyricsProviderResult } from "../../packages/contra
 import { chartSeeds } from "./charts.js";
 import { MusicBrainzClient } from "./musicbrainz.js";
 import type { CollectorConfig, RecordingSeed, YoutubeCandidate } from "./types.js";
-import { searchYoutubeMusic } from "./youtube.js";
+import { RECORDING_DRIFT_TOLERANCE_MS, searchYoutubeMusic } from "./youtube.js";
 
 export interface CollectionReport {
   discovered: number;
@@ -191,7 +191,8 @@ export class CollectorService {
     // 최근에 들어온 것부터 — 새로 수집된 곡의 앨범이 아직 안 걸린 것일 가능성이 높다.
     for (const isrc of collected.isrcs.reverse()) {
       if (found.length >= want) break;
-      const recording = await this.#musicbrainz.identify({ artist: "", title: "", isrc, popularity: 0, freshness: 0, market: "KR" })
+      const recording = await this.#musicbrainz
+        .identify({ artist: "", title: "", isrc, popularity: 0, freshness: 0, market: "KR" })
         .catch(() => undefined);
       const release = recording?.release_mbid;
       if (release === undefined || seen.has(release)) continue;
@@ -212,7 +213,8 @@ export class CollectorService {
         found.push(sibling);
       }
     }
-    if (found.length > 0) this.config.onProgress?.({ stage: "expanded", album: `앨범 ${seen.size}장`, added: found.length, total: found.length });
+    if (found.length > 0)
+      this.config.onProgress?.({ stage: "expanded", album: `앨범 ${seen.size}장`, added: found.length, total: found.length });
     return found;
   }
 
@@ -296,7 +298,9 @@ export class CollectorService {
           this.config.onProgress?.({ stage: "skipped", current: index + 1, total: queue.length, song, reason: "no-lyrics" });
           continue;
         }
-        const selected = canAutoSelect(sources[0]);
+        // The seed's own length, not the resolved one: when nothing knew how long the song was,
+        // `durationMs` is the candidate's own length and checking it against itself always agrees.
+        const selected = canAutoSelect(sources[0], identified.duration_ms);
         const response = await this.#fetch(`${this.config.adminUrl.replace(/\/$/u, "")}/admin/api/collector/recordings`, {
           method: "POST",
           headers: { authorization: `Bearer ${this.config.adminToken}`, "content-type": "application/json" },
@@ -345,7 +349,9 @@ export class CollectorService {
           total: queue.length,
           song: `${seed.artist} - ${seed.title}`,
           destination: result.job_id ? "generator" : "review",
-          ...(result.job_id ? { jobId: result.job_id } : { reason: reviewReason(result.blocked_by ?? [], sources) }),
+          ...(result.job_id
+            ? { jobId: result.job_id }
+            : { reason: reviewReason(result.blocked_by ?? [], sources, identified.duration_ms) }),
           deduplicated: result.deduplicated === true,
         });
       } catch (error) {
@@ -364,8 +370,16 @@ export class CollectorService {
   }
 }
 
-/** Rounding alone puts a match half a second out: YouTube reports whole seconds, catalogues do not. */
-const CATALOGUE_DRIFT_TOLERANCE_MS = 2_000;
+/**
+ * How well the title and the artist have to agree before a length match is allowed to decide.
+ *
+ * 0.85 was set against weights that no unofficial upload could reach: a flat yt-dlp search
+ * returns the whole video title, so titleScore is 0.8 rather than 1 for the large majority of
+ * real candidates, and the arithmetic left the artist's own channel as the only way through.
+ * At 0.75 an upload still has to name both the song and the artist — a title-only or
+ * artist-only match lands at 0.68 or below and stays in review.
+ */
+const AUTO_SELECT_SCORE = 0.75;
 
 /**
  * Whether a source can go to the Generator without a person looking at it.
@@ -374,32 +388,50 @@ const CATALOGUE_DRIFT_TOLERANCE_MS = 2_000;
  * BANGTANTV and HYBE LABELS, and for "SWIM" those channels hold a 4:05 music video and a 2:52
  * performance cut, while the only copy of the 2:39 recording is a reupload. What decides whether
  * timings will be right is not who posted the file but whether it runs to the length of the
- * master we publish under, and Spotify answers that against the ISRC itself: the real uploads
- * came in 993ms, 467ms and 920ms out, the music video 86 seconds out. So the catalogue length is
- * the gate, and the artist's channel is one way to clear it rather than the only one.
+ * master we publish under: the real uploads came in 993ms, 467ms and 920ms out, the music video
+ * 86 seconds out. Over 70 songs that aligned cleanly the gap never passed 2.4s.
+ *
+ * So length is the gate and ownership is a nudge in the score, with one exception that is not a
+ * preference but an absence: with no length on the recording at all there is nothing to compare,
+ * and then the artist's own channel is the only assurance left. That path is rarer than the
+ * previous code implied — it is the fallback, not the rule.
+ *
+ * The length compared against is the one the recording will be published with, whatever filled
+ * it in. `catalogue_drift_ms` is set only when LyricFind answered, which happens only when
+ * MusicBrainz left the ISRC or the length blank; for every other song the length is MusicBrainz'
+ * and just as much the length we publish. Pass the seed's own length, never the one resolved
+ * from the candidate — comparing an upload against itself always agrees.
  */
-export function canAutoSelect(best: YoutubeCandidate | undefined): boolean {
-  if (best === undefined || best.score < 0.85) return false;
-  if (best.catalogue_drift_ms !== undefined) return best.catalogue_drift_ms <= CATALOGUE_DRIFT_TOLERANCE_MS;
-  // Nothing authoritative to measure against, so ownership is the only assurance left.
+export function canAutoSelect(best: YoutubeCandidate | undefined, recordingDurationMs?: number): boolean {
+  if (best === undefined || best.score < AUTO_SELECT_SCORE) return false;
+  const drift = recordingDrift(best, recordingDurationMs);
+  if (drift !== undefined) return drift <= RECORDING_DRIFT_TOLERANCE_MS;
   return best.official;
 }
 
+/** The candidate's distance from the length we publish, preferring the catalogue's answer. */
+function recordingDrift(best: YoutubeCandidate, recordingDurationMs?: number): number | undefined {
+  if (best.catalogue_drift_ms !== undefined) return best.catalogue_drift_ms;
+  if (recordingDurationMs === undefined || !(best.duration_ms > 0)) return undefined;
+  return Math.abs(recordingDurationMs - best.duration_ms);
+}
+
 /** Turns the server's list of what is missing into something worth reading in a log. */
-export function reviewReason(blockedBy: string[], sources: YoutubeCandidate[]): string {
+export function reviewReason(blockedBy: string[], sources: YoutubeCandidate[], recordingDurationMs?: number): string {
   const parts: string[] = [];
   if (blockedBy.includes("source")) {
     const best = sources[0];
-    parts.push(best === undefined ? "음원 후보 없음" : `자동 선택 기준 미달 (${whyNotSelected(best)})`);
+    parts.push(best === undefined ? "음원 후보 없음" : `자동 선택 기준 미달 (${whyNotSelected(best, recordingDurationMs)})`);
   }
   return parts.length > 0 ? parts.join(" · ") : "확인 필요";
 }
 
 /** Names the one thing standing between the best candidate and the Generator. */
-function whyNotSelected(best: YoutubeCandidate): string {
-  if (best.score < 0.85) return `점수 ${best.score.toFixed(2)}`;
-  if (best.catalogue_drift_ms === undefined) return "카탈로그 길이 없음, 아티스트 채널 아님";
-  return `길이 ${(best.catalogue_drift_ms / 1000).toFixed(1)}초 차이`;
+function whyNotSelected(best: YoutubeCandidate, recordingDurationMs?: number): string {
+  if (best.score < AUTO_SELECT_SCORE) return `점수 ${best.score.toFixed(2)}`;
+  const drift = recordingDrift(best, recordingDurationMs);
+  if (drift === undefined) return "카탈로그 길이 없음, 아티스트 채널 아님";
+  return `길이 ${(drift / 1000).toFixed(1)}초 차이`;
 }
 
 export function lyricsSearchInput(seed: RecordingSeed): Parameters<LyricsProvider["search"]>[0] {
