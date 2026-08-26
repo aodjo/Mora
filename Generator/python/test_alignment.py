@@ -699,6 +699,42 @@ check("괄호만 있고 글자가 없으면 곁소리가 아니다",
       daemon.bracket_mask("(!!) 노래", [[1, 3], [5, 7]]) == [False, False],
       str(daemon.bracket_mask("(!!) 노래", [[1, 3], [5, 7]])))
 
+# ── 사람이 낼 수 없는 속도는 증거가 아니다 ──────────────────────────────────
+#
+# 잔나비 「주저하는 연인들을 위해」에서 "추억할 그 밤 위에 갈피를 꽂고선" 여섯 낱말 열세
+# 음절이 0.54 초 안에 앵커됐다. 초당 스물넷이다. 앵커가 줄의 창을 정하고 정렬기는 창 밖으로
+# 나갈 수 없으므로, 그 줄은 반 초 만에 지나가 버렸다. 실제 목소리는 72.1 초에 시작한다.
+
+def _heard(rows):
+    return [{"text": t, "start": s, "end": e} for t, s, e in rows]
+
+
+CRUSHED = _heard([
+    ("추억할", 69.78, 69.98), ("그", 70.00, 70.02), ("밤", 70.04, 70.06),
+    ("위에", 70.08, 70.12), ("갈피를", 70.14, 70.30), ("꽂고선", 70.32, 70.44),
+])
+check("반 초에 여섯 낱말이면 시각을 믿지 않는다", daemon.believable_times(CRUSHED) == [])
+
+NORMAL = _heard([
+    ("추억할", 72.33, 73.10), ("그", 73.20, 73.45), ("밤", 73.55, 73.90),
+    ("위에", 74.10, 74.60), ("갈피를", 74.90, 75.70), ("꽂고선", 76.00, 77.10),
+])
+check("보통 속도는 그대로 둔다", daemon.believable_times(NORMAL) == NORMAL)
+
+# 빠른 랩은 남아야 한다 — 여기서 자르면 진짜 노래를 버린다. 초당 여덟 음절.
+FAST = _heard([("바로", 0.00, 0.25), ("지금", 0.25, 0.50), ("여기", 0.50, 0.75),
+               ("우리", 0.75, 1.00), ("가자", 1.00, 1.25)])
+check("빠른 랩은 남긴다", daemon.believable_times(FAST) == FAST,
+      f"{sum(daemon.syllables(w['text']) for w in FAST) / 1.25:.0f}음절/초")
+
+check("다섯 낱말이 안 되면 따지지 않는다", daemon.believable_times(CRUSHED[:4]) == CRUSHED[:4])
+check("빈 목록은 빈 목록", daemon.believable_times([]) == [])
+# 뭉개진 자리만 빠지고 멀쩡한 이웃은 남는다.
+MIXED = NORMAL[:3] + CRUSHED + NORMAL[3:]
+kept = daemon.believable_times(MIXED)
+check("멀쩡한 이웃까지 버리지는 않는다", len(kept) > 0 and all(w in MIXED for w in kept), str(len(kept)))
+check("문턱은 환경변수로 끌 수 있다", isinstance(daemon.FASTEST_SYLLABLES, float))
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")

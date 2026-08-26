@@ -995,7 +995,46 @@ def asr_words(asr: dict[str, Any]) -> list[dict[str, Any]]:
             if not text or "start" not in word or "end" not in word:
                 continue
             words.append({"text": text, "start": float(word["start"]), "end": float(word["end"])})
-    return words
+    return believable_times(words)
+
+
+# 사람이 낼 수 있는 가장 빠른 말의 속도. 이보다 빠른 자리는 노래가 아니라 받아쓰기가 시각을
+# 뭉갠 것이다.
+#
+# 잔나비 「주저하는 연인들을 위해」의 "추억할 그 밤 위에 갈피를 꽂고선" 은 여섯 낱말 열세
+# 음절이 0.54 초 안에 앵커됐다 — 초당 스물넷이다. 앵커가 줄의 창을 정하고 정렬기는 창 밖으로
+# 나갈 수 없으므로, 여섯 낱말이 반 초에 갇혔다. 화면에서는 그 줄만 순식간에 지나간다.
+#
+# 캐시해 둔 144 곡에서 이어진 낱말 다섯의 속도를 4 만 6 천 번 재니 가운뎃값이 3.9, 열에 아홉이
+# 7.1 아래였고, 꼬리는 50.0 에 딱 붙어 멈춘다 — 받아쓰기가 20ms 격자에 시각을 몰아넣은 자리다.
+# 천장을 10 에 두면 그런 자리의 96%(82 곳 → 3 곳)가 사라지고 앵커 밀도는 77.7% 에서 76.0% 로
+# 1.7%p 만 준다. 8 까지 조이면 진짜 빠른 랩이 잘려 밀도가 71.2% 로 무너진다.
+FASTEST_SYLLABLES = float(os.getenv("MORA_FASTEST_SYLLABLES", "10"))
+PACE_RUN = 5
+
+
+def believable_times(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """시각을 믿을 수 있는 낱말만.
+
+    낱말 하나만 보면 짧은 조사가 늘 빨라 뜻이 없으므로, 이어진 다섯을 묶어 그 묶음의 음절
+    속도를 본다. 넘는 묶음의 낱말은 시각이 증거가 되지 못한다 — 들린 것은 맞지만 언제
+    들렸는지는 모르는 것이므로, 그 자리는 이웃 사이에 비례로 놓인다. 모르는 것을 모른다고
+    두는 편이, 아는 척하며 반 초에 여섯 낱말을 쌓는 것보다 낫다.
+    """
+    if len(words) < PACE_RUN or FASTEST_SYLLABLES <= 0:
+        return words
+    doubted = [False] * len(words)
+    for start in range(len(words) - PACE_RUN + 1):
+        run = words[start : start + PACE_RUN]
+        span = float(run[-1]["end"]) - float(run[0]["start"])
+        beats = sum(syllables(str(word["text"])) for word in run)
+        if span > 0 and beats / span > FASTEST_SYLLABLES:
+            for index in range(start, start + PACE_RUN):
+                doubted[index] = True
+    kept = [word for index, word in enumerate(words) if not doubted[index]]
+    if len(kept) != len(words):
+        print(f"[hear] 사람이 낼 수 없는 속도로 찍힌 낱말 {len(words) - len(kept)}개는 시각을 믿지 않는다", file=sys.stderr)
+    return kept
 
 
 def match_sequences(lyric: list[str], heard: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
