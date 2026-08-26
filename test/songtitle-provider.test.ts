@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SongTitleLyricsProvider, inferLyricsLanguage, isAnnotatedTranslation } from "../Collector/src/songtitle-provider.js";
+import { SongTitleLyricsProvider, inferLyricsLanguage, isAnnotatedTranslation, sameArtist } from "../Collector/src/songtitle-provider.js";
 import type { SongTitleRouter } from "../Collector/src/songtitle-provider.js";
 
 test("SongTitle adapter preserves every non-empty provider result", async () => {
@@ -104,6 +104,29 @@ test("SongTitle adapter drops the notice a provider serves when it has no lyrics
     result.map((item) => item.provider),
     ["flo"],
   );
+});
+
+test("a title alone does not name a song", () => {
+  // Melon answered サザンオールスターズ' "FRIENDS" with Anne-Marie's. Same word, different
+  // record — and the title check had nothing to disagree with.
+  assert.equal(sameArtist("Anne-Marie", "サザンオールスターズ"), false);
+  assert.equal(sameArtist("Ed Sheeran", "IU"), false);
+  assert.equal(sameArtist("아이유", "태연"), false);
+});
+
+test("the same artist written a dozen ways is still the same artist", () => {
+  assert.equal(sameArtist("사잔 올 스타즈", "사잔 올 스타즈"), true);
+  assert.equal(sameArtist("BTS (방탄소년단)", "BTS"), true);
+  assert.equal(sameArtist("aespa", "aespa 에스파"), true);
+  assert.equal(sameArtist("Anne-Marie", "anne marie"), true);
+  // 합작 크레딧은 이름을 이어 붙인다. 그중 하나만 맞으면 그 사람의 곡이다.
+  assert.equal(sameArtist("Anne-Marie & Rudimental", "Anne-Marie"), true);
+  assert.equal(sameArtist("Ella Langley", "Ella Langley & Morgan Wallen"), true);
+  assert.equal(sameArtist("Drake feat. 21 Savage", "Drake"), true);
+  assert.equal(sameArtist("HUNTR/X, EJAE, AUDREY NUNA", "HUNTR/X"), true);
+  // 크레딧을 안 적는 공급자는 제목 검사에 맡긴다 — 막으면 그 공급자가 통째로 사라진다.
+  assert.equal(sameArtist(undefined, "IU"), true);
+  assert.equal(sameArtist("", "IU"), true);
 });
 
 test("SongTitle adapter drops lyrics a provider matched to a different song", async () => {

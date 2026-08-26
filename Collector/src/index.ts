@@ -8,5 +8,6 @@ export {
   createSongTitleProviderFromEnv,
   inferLyricsLanguage,
   isAnnotatedTranslation,
+  sameArtist,
 } from "./songtitle-provider.js";
 export type * from "./types.js";

@@ -71,6 +71,35 @@ export function sameSong(found: string | undefined, wanted: string): boolean {
   return provided.includes(asked) || asked.includes(provided);
 }
 
+/**
+ * Whether the credit the provider printed is the artist we asked about.
+ *
+ * A title on its own does not name a song. Melon answered サザンオールスターズ' "FRIENDS"
+ * with Anne-Marie's — same word, different record — and the title check waved it through,
+ * so a Japanese song was timed against English lyrics it does not contain.
+ *
+ * Credits are written loosely: "Anne-Marie", "Anne-Marie & Rudimental", "BTS (방탄소년단)",
+ * "アイナ・ジ・エンド" for a member of a group. So this asks whether either name is inside
+ * the other rather than whether they are equal, and a provider that prints no credit is
+ * still trusted — the title check is what guards those.
+ */
+export function sameArtist(found: string | undefined, wanted: string): boolean {
+  if (found === undefined) return true;
+  const provided = normalizeTitle(found);
+  const asked = normalizeTitle(wanted);
+  if (provided.length === 0 || asked.length === 0) return true;
+  if (provided.includes(asked) || asked.includes(provided)) return true;
+  // 합작이면 크레딧이 "A & B", "A feat. B" 처럼 여럿을 이어 붙인다. 그중 하나만 맞아도 된다.
+  const parts = (name: string): string[] =>
+    name
+      .split(/[,&·×]|\bfeat\.?\b|\bft\.?\b|\bwith\b|\band\b/giu)
+      .map((piece) => normalizeTitle(piece))
+      .filter((piece) => piece.length > 0);
+  const mine = parts(wanted);
+  const theirs = parts(found);
+  return mine.some((one) => theirs.some((other) => one.includes(other) || other.includes(one)));
+}
+
 function scriptCounts(text: string): { hangul: number; kana: number; han: number; latin: number; total: number } {
   const count = (pattern: RegExp) => (text.match(pattern) ?? []).length;
   const hangul = count(/\p{Script=Hangul}/gu);
@@ -138,6 +167,7 @@ export class SongTitleLyricsProvider implements LyricsProvider {
       if (!looksLikeLyrics(result.lyrics)) return [];
       if (isAnnotatedTranslation(result.lyrics)) return [];
       if (!sameSong(result.title, input.title)) return [];
+      if (!sameArtist(result.artist, input.artist)) return [];
       const reference = providerReference(result);
       const language = inferLyricsLanguage(result.lyrics);
       return [
