@@ -32,6 +32,11 @@ export interface GeneratorWorkerOptions {
   onStatus?: (status: GeneratorWorkerStatus) => void;
 }
 
+/** 빈 큐를 물어보는 간격의 천장. */
+const IDLE_CEILING_MS = 60_000;
+/** 심장 소리 사이의 최소 간격. 워커가 죽은 것을 알아채는 데 이 정도면 충분하다. */
+const HEARTBEAT_EVERY_MS = 30_000;
+
 export class GeneratorWorker {
   #stopped = false;
   constructor(readonly options: GeneratorWorkerOptions) {}
@@ -42,14 +47,25 @@ export class GeneratorWorker {
   async run(): Promise<void> {
     let connected = false;
     let idle = false;
+    // 연달아 빈손으로 돌아온 횟수. 한 곡이라도 잡으면 0 으로 돌아간다.
+    let empty = 0;
+    let lastBeat = 0;
+    let desired = "active";
     while (!this.#stopped) {
-      const heartbeat = await this.options.admin.heartbeat({ worker_id: this.options.workerId, version: this.options.version });
-      if (!connected) {
-        this.options.onStatus?.({ state: "connected", desiredState: heartbeat.desired_state });
-        connected = true;
+      const now = Date.now();
+      // 심장 소리는 살아 있다는 말이지 일감을 묻는 것이 아니다. 반복마다 보낼 이유가 없다.
+      if (now - lastBeat >= HEARTBEAT_EVERY_MS) {
+        desired = (await this.options.admin.heartbeat({ worker_id: this.options.workerId, version: this.options.version }))
+          .desired_state;
+        lastBeat = now;
+        if (!connected) {
+          this.options.onStatus?.({ state: "connected", desiredState: desired });
+          connected = true;
+        }
       }
-      if (heartbeat.desired_state !== "active") {
-        await delay(5000);
+      if (desired !== "active") {
+        empty += 1;
+        await delay(this.quiet(empty));
         continue;
       }
       const leased = await this.options.queue.pull();
@@ -58,13 +74,34 @@ export class GeneratorWorker {
           this.options.onStatus?.({ state: "idle" });
           idle = true;
         }
-        await delay(this.options.idleMs ?? 5000);
+        empty += 1;
+        await delay(this.quiet(empty));
         continue;
       }
       idle = false;
+      empty = 0;
       this.options.onStatus?.({ state: "processing", jobId: leased.body.job_id });
       await this.process(leased);
     }
+  }
+
+  /**
+   * 빈 큐를 얼마나 뜸하게 물어볼 것인가.
+   *
+   * 놀고 있어도 5 초마다 심장 소리 하나와 물음 하나를 보냈다 — 워커 한 대가 하루 34,560 번,
+   * 세 대면 103,680 번이다. Cloudflare 무료 플랜의 하루 한도가 100,000 번이라, 아무 일도
+   * 하지 않는 것만으로 Worker 가 꺼졌고 관리 화면과 공개 API 가 함께 멎었다.
+   *
+   * 일감이 있을 때는 빨라야 하고 없을 때는 느려도 된다. 처음 빈손일 때는 그대로 5 초이므로
+   * 한 곡을 끝내고 다음 곡을 집는 속도는 달라지지 않는다. 계속 비어 있으면 1 분까지 물러난다 —
+   * 그때 워커 한 대는 하루 4,320 번이다.
+   */
+  private quiet(empty: number): number {
+    const base = this.options.idleMs ?? 5000;
+    // 천장에 닿는 데 필요한 만큼만 곱한다 — 하루를 놀면 empty 가 천을 넘고, 그때 2**999 를
+    // 셈해 봐야 어차피 천장으로 잘린다.
+    const doublings = Math.min(Math.max(0, empty - 1), Math.ceil(Math.log2(IDLE_CEILING_MS / base)) + 1);
+    return Math.min(IDLE_CEILING_MS, base * 2 ** doublings);
   }
   private async process(leased: LeasedMessage): Promise<void> {
     let input: GeneratorJobInput | undefined;

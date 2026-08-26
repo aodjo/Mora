@@ -1,6 +1,6 @@
 import { Check, Loader2, Music, Plus, Search, ShoppingBasket, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, liveEvents } from "../api";
 import { PROVIDER_ICONS } from "./provider-icons";
 import { useToast } from "../Toast";
 
@@ -98,9 +98,8 @@ export function AddSongsView() {
 
   useEffect(() => {
     void loadBasket();
-    // 처리 중인 항목이 있으면 상태가 바뀌는 것을 지켜본다.
-    const timer = window.setInterval(() => void loadBasket(), 5_000);
-    return () => window.clearInterval(timer);
+    // 처리 중인 항목이 있으면 상태가 바뀌는 것을 지켜본다 — 보고 있는 동안만.
+    return liveEvents(() => void loadBasket());
   }, [loadBasket]);
 
   const runSearch = useCallback(async function runSearch(text: string, providers: ProviderId[]): Promise<void> {

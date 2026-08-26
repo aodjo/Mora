@@ -28,3 +28,5 @@ Generator/mora@0.1.0
 X-darwin-arm64/
 DESIGN.md
 HAR.jsonl
+# 듣기 캐시 — 가사 본문이 들어 있고 18MB 다. 만드는 데 곡당 139초.
+Generator/eval/hearing/

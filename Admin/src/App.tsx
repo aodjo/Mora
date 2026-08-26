@@ -437,8 +437,9 @@ function CollectionPanel() {
   }, []);
   useEffect(() => {
     load();
-    const timer = window.setInterval(load, 5_000);
-    return () => window.clearInterval(timer);
+    // 맨 setInterval 은 탭이 뒤에 있어도 계속 물었다. 책상에 열어 둔 창 하나가 하루 17,280 번,
+    // 무료 플랜 하루 한도의 6 분의 1 이다. liveEvents 는 보고 있을 때만 묻는다.
+    return liveEvents(load);
   }, [load]);
   if (status === null) return null;
   const queued = status.pending + status.claimed;
