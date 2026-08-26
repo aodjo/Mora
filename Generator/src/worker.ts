@@ -183,8 +183,7 @@ export class GeneratorWorker {
       // 파이썬이 죽기 전에 남긴 말 — 코드 하나만 보고는 아무것도 고칠 수 없다.
       const detail = (error as Error & { detail?: string }).detail;
       if (detail !== undefined) this.options.onStatus?.({ state: "warning", message: `파이프라인 실패 원인:\n${detail}` });
-      // A language the aligner has no model for will fail again on every attempt.
-      retrying = leased.attempts < 3 && safeCode(error) !== "UNSUPPORTED_LANGUAGE";
+      retrying = leased.attempts < 3 && !SETTLED_BY_THE_INPUT.has(safeCode(error));
       if (retrying)
         await this.settle(() => this.options.queue.retry(leased.leaseId, Math.min(300, 30 * 2 ** Math.max(0, leased.attempts - 1))));
       else await this.settle(() => this.options.queue.ack(leased.leaseId));
@@ -243,6 +242,16 @@ export class GeneratorWorker {
     }
   }
 }
+/**
+ * Failures the job's own input decides, which the same input will reach again every attempt.
+ *
+ * A language the aligner has no model for is one. A source with no singing on it is the other:
+ * labels post the backing track from the artist's own channel as "(Inst.)", it outranks the real
+ * upload, and separating it yields a voice 60 dB under the mix. Three attempts at that is three
+ * downloads and three separations to arrive at the same word.
+ */
+const SETTLED_BY_THE_INPUT = new Set(["UNSUPPORTED_LANGUAGE", "NO_VOCAL_TRACK"]);
+
 function safeCode(error: unknown): string {
   const message = error instanceof Error ? error.message : "UNKNOWN";
   return /^[A-Z0-9_]+$/u.test(message) ? message.slice(0, 100) : "PIPELINE_FAILED";

@@ -20,9 +20,14 @@ function venvPython(): string | undefined {
 }
 
 function daemonEnvironment(): NodeJS.ProcessEnv {
-  if (!existsSync(VENV_BIN)) return process.env;
-  const path = process.env.PATH === undefined ? VENV_BIN : `${VENV_BIN}${delimiter}${process.env.PATH}`;
-  return { ...process.env, PATH: path };
+  // yt-dlp 는 유튜브의 JS 서명을 풀 런타임을 찾는데, 기본으로는 deno 만 본다. node 는 늘
+  // 여기 있다 — 이 데몬을 띄우는 것이 node 프로그램이다. 그런데 PATH 에서 찾게 두면, 로그인
+  // 셸이 아닌 환경에서는 없다고 나온다 (실측한 박스에서 which node 가 빈 줄이었다). 어디에
+  // 있는지 아는 쪽이 말해 준다.
+  const base: NodeJS.ProcessEnv = { ...process.env, MORA_NODE: process.env.MORA_NODE ?? process.execPath };
+  if (!existsSync(VENV_BIN)) return base;
+  const path = base.PATH === undefined ? VENV_BIN : `${VENV_BIN}${delimiter}${base.PATH}`;
+  return { ...base, PATH: path };
 }
 
 interface RpcResponse<T> {

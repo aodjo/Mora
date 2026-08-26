@@ -32,6 +32,24 @@ def module_exists(name: str) -> bool:
         return False
 
 
+def module_loads(name: str) -> bool:
+    """
+    Whether the module can actually be imported, not merely found.
+
+    find_spec only asks whether the files are on disk; it never runs them, so a package whose
+    own dependency is missing still answers yes. On the measured box audio_separator was
+    installed but audioread was not, the self-test reported split_voices passed, and the stage
+    quietly skipped itself on every song — a check that says "ready" about something that
+    cannot start is worse than no check.
+    """
+    try:
+        importlib.import_module(name)
+        return True
+    except Exception as error:
+        print(f"[self_test] {name} 을(를) 불러오지 못했습니다 — {type(error).__name__}: {error}", file=sys.stderr)
+        return False
+
+
 # 가속기를 못 찾은 이유. "cpu" 라는 답만 들고는 무엇을 고쳐야 할지 알 수 없다.
 backend_fallback: dict[str, str] = {}
 
@@ -62,7 +80,9 @@ def self_test() -> dict[str, Any]:
         "htdemucs_ft": "passed" if module_exists("demucs") else "failed",
         "coarse_asr": "passed" if (backend == "mps" and module_exists("mlx_whisper")) or module_exists("whisperx") else "failed",
         "forced_align": "passed" if module_exists("whisperx") else "failed",
-        "split_voices": "passed" if module_exists("audio_separator") else "skipped",
+        # 이 단계는 실패해도 곡을 세우지 않고 조용히 건너뛴다. 그래서 여기서만은 "찾았다" 가
+        # 아니라 "불러와진다" 를 물어야 한다 — 아무도 소리를 내지 않을 것이므로.
+        "split_voices": "passed" if module_loads("audio_separator") else "skipped",
         "mixed_script": "passed" if module_exists("torchaudio") and module_exists("uroman") else "skipped",
         "diarization": "passed" if module_exists("pyannote.audio") and bool(os.getenv("HF_TOKEN")) else "skipped",
     }
@@ -122,7 +142,17 @@ def download(job: dict[str, Any], directory: Path, cookie_file: str | None, prox
     refused: list[str] = []
     for url in urls:
         output = directory / "source.%(ext)s"
-        args = ["yt-dlp", "--no-playlist", "--no-write-info-json", "--js-runtimes", "node", "-f", "bestaudio/best", "-o", str(output)]
+        # 어느 node 인지까지 대 준다. 이름만 넘기면 PATH 에서 찾는데, 로그인 셸이 아닌 곳에서는
+        # 없다고 나오고 그러면 서명 없는 클라이언트로 떨어져 봇 확인 화면을 받는다.
+        runtime = f"node:{os.environ['MORA_NODE']}" if os.getenv("MORA_NODE") else "node"
+        args = ["yt-dlp", "--no-playlist", "--no-write-info-json", "--js-runtimes", runtime, "-f", "bestaudio/best",
+                # 같은 곡이 한 번은 403 으로 막히고 곧바로 다시 하면 받아진다. 서명된 미디어
+                # 주소를 거절하는 것은 그때의 사정이지 곡의 성질이 아니므로, 한 번 튕겼다고
+                # 다음 후보로 넘어가면 멀쩡한 음원을 두고 더 나쁜 것을 고르게 된다.
+                # extractor-retries 는 주소를 새로 받아 오고, retries 는 그 주소로 다시 붙는다.
+                "--retries", "10", "--extractor-retries", "5", "--fragment-retries", "10",
+                "--retry-sleep", "http:exp=2:60", "--sleep-requests", "1",
+                "-o", str(output)]
         if cookie_file:
             args += ["--cookies", cookie_file]
         if proxy:
@@ -148,6 +178,30 @@ def transcode(source: Path, directory: Path) -> Path:
     return output
 
 
+def loudness(audio: Path) -> float:
+    """RMS in dBFS, or -inf for silence. Read in blocks so a long file does not land in memory."""
+    import numpy
+    import soundfile
+
+    total, samples = 0.0, 0
+    with soundfile.SoundFile(str(audio)) as handle:
+        while True:
+            block = handle.read(1 << 20, dtype="float32", always_2d=True)
+            if len(block) == 0:
+                break
+            total += float(numpy.sum(numpy.square(block, dtype=numpy.float64)))
+            samples += block.size
+    if samples == 0 or total <= 0.0:
+        return float("-inf")
+    return 10.0 * math.log10(total / samples)
+
+
+# 목소리가 믹스보다 이만큼 아래면 분리가 아무것도 못 건진 것이다. 멀쩡한 곡은 6~7 dB
+# 아래에 있고, 반주 음원은 61 dB 아래에 있었다 — 그 사이는 텅 비어 있어 문턱을 어디에
+# 두든 같다. 절대값이 아니라 믹스 대비로 재는 것은 마스터가 조용한 음원 때문이다.
+QUIET_VOICE_DB = float(os.getenv("MORA_QUIET_VOICE_DB", "-35"))
+
+
 def separate(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
     output = directory / "demucs"
     stem_dir = output / "htdemucs_ft" / mixture.stem
@@ -157,6 +211,14 @@ def separate(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
     stems = {path.stem: path for path in stem_dir.glob("*.wav")}
     if "vocals" not in stems:
         raise RuntimeError("VOCALS_MISSING")
+    # 반주 음원을 받아 온 것을 여기서 잡는다. 제목 필터는 "(Inst.)" 같은 줄임말마다 새고,
+    # 새면 그 뒤가 전부 헛돈다 — 아무것도 못 들으니 앵커가 0 이 되고, 낱말은 전부 추측으로
+    # 채워지며, 추측은 지표에 잘 나오므로 그대로 공개된다. 10CM "너에게 닿기를" 이 그랬다.
+    # 여기서 재는 값은 이미 만들어 둔 파일 두 개를 읽는 것이 전부다.
+    voice, whole = loudness(stems["vocals"]), loudness(mixture)
+    if voice - whole < QUIET_VOICE_DB:
+        print(f"[separate] 목소리가 믹스보다 {whole - voice:.0f} dB 아래다 — 반주 음원으로 본다", file=sys.stderr)
+        raise RuntimeError("NO_VOCAL_TRACK")
     return stems
 
 
@@ -521,8 +583,13 @@ def invented_segment(text: str, sheet: str) -> bool:
     return any(phrase in written and len(phrase) * 3 >= len(written) for phrase in INVENTED_PHRASES)
 
 
-def listen_again(vocals: Path, begin: float, finish: float, backend: str) -> dict[str, Any] | None:
-    """Transcribe one stretch on its own, letting the transcriber pick the language itself."""
+def listen_again(vocals: Path, begin: float, finish: float, backend: str, language: str = "und") -> dict[str, Any] | None:
+    """
+    Transcribe one stretch on its own, letting the transcriber pick the language itself.
+
+    상투구를 되살리는 쪽은 언어를 고르게 두어야 한다 — 한국어로 분류된 곡의 영어 후렴이
+    그렇게 되살아났다. 빈 자리를 메우는 쪽은 그렇지 않을 수 있으므로 부르는 쪽에서 정한다.
+    """
     try:
         import soundfile
 
@@ -534,7 +601,7 @@ def listen_again(vocals: Path, begin: float, finish: float, backend: str) -> dic
         with tempfile.TemporaryDirectory() as scratch:
             clip = Path(scratch) / "again.wav"
             soundfile.write(str(clip), samples[first:last], rate)
-            heard, _ = coarse_asr(clip, "und", backend)
+            heard, _ = coarse_asr(clip, language, backend)
         offset = first / rate
         for segment in heard.get("segments") or []:
             segment["start"] = float(segment.get("start", 0)) + offset
@@ -548,6 +615,242 @@ def listen_again(vocals: Path, begin: float, finish: float, backend: str) -> dic
     except Exception as error:
         print(f"[asr] second listen failed error={type(error).__name__}: {error}", file=sys.stderr)
         return None
+
+
+SEMITONE = 2 ** (1 / 12)
+
+# 소리를 조금씩 틀어 다시 듣는 벌들. (이름, ffmpeg 필터, 시각에 곱할 값).
+#
+# 오토튠은 음높이를 격자에 붙여 놓아 음소 경계를 뭉갠다. 반음쯤 옮기면 포먼트가 함께 움직여
+# 그 격자에서 벗어나고, 받아쓰기가 다르게 듣는다. 어느 벌이 맞을지는 곡마다 다르고 미리 알
+# 수 없다 — 코르티스 「REDRED」는 +2 반음에서 증언 없는 자리가 59 에서 31 낱말로 줄었는데
+# 같은 벌이 Lil Baby 「Dead Fresh」에서는 51 을 95 로 늘렸고, -2 반음은 정확히 그 반대였다.
+# 그래서 고르지 않고 전부 듣고 합친다. 틀리게 들은 말은 정렬에서 버려지므로 손해가 없다.
+#
+# 속도를 바꾼 벌은 시각이 그 배율만큼 어긋난다. 0.9 배로 늘였다면 늘인 소리의 T 초는 원본의
+# T*0.9 초다. 되돌리지 않고 합치면 앵커는 늘고 타이밍은 망가진다 — 지표만 좋아 보이는 실패다.
+AUGMENTS: tuple[tuple[str, str, float], ...] = (
+    ("pitch+1", f"asetrate=44100*{SEMITONE},aresample=44100,atempo={1 / SEMITONE}", 1.0),
+    ("pitch-1", f"asetrate=44100*{1 / SEMITONE},aresample=44100,atempo={SEMITONE}", 1.0),
+    ("pitch+2", f"asetrate=44100*{SEMITONE ** 2},aresample=44100,atempo={1 / SEMITONE ** 2}", 1.0),
+    ("pitch-2", f"asetrate=44100*{1 / SEMITONE ** 2},aresample=44100,atempo={SEMITONE ** 2}", 1.0),
+    ("slow", "atempo=0.9", 0.9),
+    ("fast", "atempo=1.1", 1.1),
+)
+
+
+def rescale_segments(asr: dict[str, Any], factor: float) -> dict[str, Any]:
+    """늘이거나 줄인 소리에서 들은 시각을 원본의 시각으로 되돌린다.
+
+    세그먼트째 옮긴다. 낱말만 옮기면 audio_bounds 가 보는 첫·끝 세그먼트와 어긋난다.
+    """
+    if factor == 1.0:
+        return asr
+    moved = []
+    for segment in asr.get("segments") or []:
+        words = [
+            {**word, "start": float(word["start"]) * factor, "end": float(word["end"]) * factor}
+            for word in (segment.get("words") or [])
+            if "start" in word and "end" in word
+        ]
+        moved.append({
+            **segment,
+            "start": float(segment.get("start", 0)) * factor,
+            "end": float(segment.get("end", 0)) * factor,
+            **({"words": words} if segment.get("words") else {}),
+        })
+    return {**asr, "segments": moved}
+
+
+def augmented_hearing(vocals: Path, language: str, backend: str) -> list[dict[str, Any]]:
+    """소리를 틀어 가며 다시 들은 받아쓰기들. 시각은 모두 원본의 것으로 돌려 놓는다."""
+    heard: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory() as scratch:
+        for name, filters, factor in AUGMENTS:
+            clip = Path(scratch) / f"{name}.wav"
+            try:
+                run_command(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-i", str(vocals),
+                             "-af", filters, str(clip)], "AUGMENT_FAILED")
+                asr, _ = coarse_asr(clip, language, backend)
+            except Exception as error:
+                print(f"[hear] {name} 을 듣지 못했다 — {type(error).__name__}", file=sys.stderr)
+                continue
+            heard.append(rescale_segments(asr, factor))
+    return heard
+
+
+def merged_words(*heard: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """여러 벌의 받아쓰기를 시각 순으로 꿴다. 앵커를 잡는 쪽은 순서를 보므로 시각이 실이다."""
+    return sorted((word for batch in heard for word in batch), key=lambda word: (word["start"], word["end"]))
+
+
+# 같은 자리를 가리킨다고 볼 시각 차이. 이보다 가까우면 두 벌이 같은 것을 들었다고 본다.
+AGREE_SECONDS = 0.4
+
+
+def consensus_words(lyric: list[str], batches: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """
+    여러 벌이 저마다 잡은 앵커를 모아, 같은 자리를 가리키는 것끼리 표를 세어 하나로 정한다.
+
+    벌을 통째로 한 목록에 쏟아붓고 한 번에 정렬하면 오히려 나빠진다. 글자 단위 Needleman-
+    Wunsch 는 전역 최적을 찾으므로, 받아쓴 글자가 여덟 배가 되면 가사의 낱말이 엉뚱한 곳의
+    비슷한 글자와 맞춰질 기회도 여덟 배가 되고 정렬 경로 전체가 다른 해로 옮겨간다. 실측하면
+    Morgan Wallen 「Been By Now」은 앵커가 407 에서 394 로 줄었고, 어느 한 벌을 빼도 회복되지
+    않았다 — 나쁜 벌 하나가 아니라 섞은 것 자체의 효과다.
+
+    그래서 섞지 않는다. 벌마다 제 안에서 깨끗이 정렬해 앵커를 얻고, 그 앵커들만 모은다.
+    여러 벌이 한 낱말을 같은 시각으로 가리키면 그것은 강한 증거다 — 서로 다른 소리에서 같은
+    답이 나왔다는 뜻이므로. 한 벌만 가리키면 약한 증거이니 표가 많은 쪽을 택한다.
+
+    다만 섞기에도 제 몫이 있다. 전역 정렬은 어느 벌도 혼자서는 못 찾은 매칭을 찾아내므로,
+    섞기도 한 표를 받는다 — 빈 자리를 메울 뿐 아니라 이미 표가 있는 자리의 다수결에도 참여한다.
+
+    한동안 이 설명은 "빈 자리만 메운다" 고 적혀 있었고 코드는 그렇지 않았다. 어느 쪽이 옳은지
+    141 곡으로 재어 보니 코드 쪽이었다 — 모든 자리에 표를 주면 최장 빈 구간 평균 6.8, 빈 자리만
+    메우면 6.9 이고, 빈 구간이 20 을 넘는 곡은 6 대 8 이다. 차이는 작지만 방향이 일정하다.
+    글을 코드에 맞춘다.
+    """
+    votes: dict[int, list[dict[str, Any]]] = {}
+    for batch in batches:
+        for index, word in match_sequences(lyric, batch).items():
+            votes.setdefault(index, []).append(word)
+
+    # 벌을 통째로 섞어 한 번에 정렬하면, 어느 개별 벌도 찾지 못한 매칭이 나온다 — 米津玄師
+    # 「IRIS OUT」에서 벌마다 따로 세면 앵커가 61 개인데 섞으면 79 개였다. 정렬이 전역 최적을
+    # 찾기 때문이고, 그것이 섞기의 장점이자 단점이다. 그래서 뼈대는 표로 세우고, 표가 하나도
+    # 없는 자리만 섞기에서 가져온다. 시각을 정하는 일은 여전히 표가 한다.
+    if len(batches) > 1:
+        for index, word in match_sequences(lyric, merged_words(*batches)).items():
+            votes.setdefault(index, []).append(word)
+
+    agreed: list[dict[str, Any]] = []
+    for index, heard in sorted(votes.items()):
+        # 가까운 시각끼리 묶는다. 가장 큰 무리가 이기고, 그 무리의 가운뎃값을 쓴다.
+        heard.sort(key=lambda word: word["start"])
+        best: list[dict[str, Any]] = []
+        for start in range(len(heard)):
+            group = [word for word in heard[start:] if word["start"] - heard[start]["start"] <= AGREE_SECONDS]
+            if len(group) > len(best):
+                best = group
+        middle = best[len(best) // 2]
+        agreed.append({
+            # 가사의 낱말 그대로 적는다 — 이 목록은 "이렇게 들렸다고 믿는 것"이고, 뒤에서
+            # 다시 정렬될 때 제 자리를 찾아야 한다.
+            "text": lyric[index],
+            "start": float(middle["start"]),
+            "end": float(middle["end"]),
+            "votes": len(best),
+        })
+    agreed.sort(key=lambda word: (word["start"], word["end"]))
+    return agreed
+
+
+def merge_segments(asr: dict[str, Any], *others: dict[str, Any]) -> dict[str, Any]:
+    """받아쓰기 여러 벌을 한 벌로 합친다 — 세그먼트를 시각 순으로 꿰기만 한다."""
+    segments = [*(asr.get("segments") or [])]
+    for other in others:
+        segments.extend(other.get("segments") or [])
+    segments.sort(key=lambda segment: float(segment.get("start", 0)))
+    return {**asr, "segments": segments}
+
+
+def hear_everything(vocals: Path, language: str, backend: str, lyric_words: list[str]) -> tuple[dict[str, Any], str]:
+    """
+    가사의 낱말마다 그것이 들린 자리를 찾을 때까지 듣는다.
+
+    한 번 듣고 마는 것으로는 모자란다. 코르티스 「REDRED」는 오토튠에 가사의 68% 가 영어라
+    한국어로 강제된 받아쓰기가 "kickin in" 을 "키기니" 로 들었고, 366 낱말 중 앵커가 붙은 것은
+    69 개뿐이었다 — 문턱(30)은 넉넉히 넘었으나 증언 없이 이어 간 자리가 59 낱말에 이르렀고,
+    그 사이는 두 앵커를 균등히 나눈 짐작이다.
+
+    두 가지를 한다. 먼저 모국어와 영어로 각각 듣고 합친다 — 12 곡에서 재니 8 곡이 늘고 줄어든
+    곡은 없었으며, 순한국어 곡(라틴 5%)조차 손해가 없었다. 정렬기가 Needleman-Wunsch 라
+    남는 말을 건너뛸 수 있기 때문이다.
+
+    그다음, 그러고도 비어 있는 자리를 찾아 그 구간만 잘라 다시 듣는다. 짧게 들려주면 그
+    구간의 소리로 언어가 정해지고, 온 곡에 눌려 묻혔던 말이 드러난다. 새로 들은 것이 없으면
+    멈춘다 — 같은 자리를 다시 들어도 같은 답이 온다.
+    """
+    asr, detected = coarse_asr(vocals, language, backend)
+    native = (detected or language or "und").split("-")[0]
+    # 벌마다 따로 둔다. 섞어서 한 번에 정렬하면 잡음이 정렬 경로 전체를 흔든다.
+    batches: list[list[dict[str, Any]]] = [asr_words(asr)]
+    # 영어가 아니면 영어로도 한 벌 듣는다. 코드스위칭 가사에서 모국어 강제가 놓치는 자리다.
+    if native not in ("en", "und"):
+        english, _ = coarse_asr(vocals, "en", backend)
+        asr = merge_segments(asr, english)
+        batches.append(asr_words(english))
+    if AUGMENT_HEARING:
+        for heard in augmented_hearing(vocals, native, backend):
+            asr = merge_segments(asr, heard)
+            batches.append(asr_words(heard))
+    if not lyric_words:
+        return asr, detected
+
+    for _round in range(GAP_ROUNDS):
+        gaps = anchor_gaps(lyric_words, consensus_words(lyric_words, batches))
+        if not gaps:
+            break
+        found = 0
+        for begin, finish in gaps[:GAP_CLIPS]:
+            again = listen_again(vocals, begin, finish, backend, GAP_LANGUAGE or native)
+            if again is None:
+                continue
+            fresh = again.get("segments") or []
+            found += sum(len(segment.get("words") or []) for segment in fresh)
+            asr = merge_segments(asr, again)
+            batches.append(asr_words(again))
+        print(f"[hear] 빈 자리 {len(gaps)}곳을 다시 들어 낱말 {found}개를 더 얻었다", file=sys.stderr)
+        if found == 0:
+            break
+
+    # 앵커를 잡는 쪽은 이 목록을 본다. 세그먼트는 audio_bounds 와 상투구 검사가 쓰므로
+    # 그대로 남겨 둔다 — 둘은 다른 것을 묻는다.
+    agreed = consensus_words(lyric_words, batches)
+    if agreed:
+        asr = {**asr, "consensus_words": agreed}
+        print(f"[hear] {len(batches)}벌에서 앵커 {len(agreed)}개를 모았다 "
+              f"(둘 이상이 같은 자리를 가리킨 것 {sum(1 for w in agreed if w['votes'] > 1)}개)", file=sys.stderr)
+    return asr, detected
+
+
+# 빈 자리를 몇 번까지 되짚어 들을지, 한 번에 몇 곳까지 볼지. 곡마다 whisper 를 다시 돌리는
+# 일이므로 값이 커지면 처리 시간이 그만큼 늘어난다.
+GAP_ROUNDS = 2
+GAP_CLIPS = 6
+# 되짚어 들을 때 어느 언어로 들을지. 빈 문자열이면 곡의 언어를 쓰고, "und" 면 조각마다 스스로
+# 고르게 둔다. 스스로 고르게 두었더니 어떤 조각을 프랑스어로 판정해 그 언어의 정렬 모델을
+# 내려받는 일이 있었다 — 합치기만 하므로 해는 없으나 값을 치른다.
+GAP_LANGUAGE = os.getenv("MORA_GAP_LANGUAGE", "")
+# 소리를 틀어 여러 벌 듣는 일. 곡당 여섯 벌을 더 듣게 되므로 1 분 남짓이 더 든다.
+AUGMENT_HEARING = os.getenv("MORA_AUGMENT_HEARING", "1") != "0"
+# 이보다 짧게 빈 것은 되짚어 들을 값어치가 없다 — 한두 낱말은 원래 안 들리기도 한다.
+GAP_WORDS = 8
+
+
+def anchor_gaps(lyric_words: list[str], heard: list[dict[str, Any]]) -> list[tuple[float, float]]:
+    """
+    증언이 없는 자리를, 그 앞뒤 앵커가 들린 시각으로 돌려준다.
+
+    가사의 낱말 번호로는 어디가 비었는지 알 수 있어도 그것을 오디오의 어느 초에서 찾아야
+    하는지는 알 수 없다. 빈 구간의 양옆에 붙은 앵커가 그 답을 들고 있다 — 앞 앵커가 들린 뒤,
+    뒤 앵커가 들리기 전 어딘가에서 그 낱말들이 불렸다.
+    """
+    anchors = match_sequences(lyric_words, heard)
+    if not anchors:
+        return []
+    placed = sorted(anchors)
+    spans: list[tuple[float, float]] = []
+    for index in range(len(placed) - 1):
+        low, high = placed[index], placed[index + 1]
+        if high - low - 1 < GAP_WORDS:
+            continue
+        begin, finish = float(anchors[low]["end"]), float(anchors[high]["start"])
+        if finish - begin >= 1.0:
+            spans.append((begin, finish))
+    # 넓은 자리부터. 가장 크게 빈 곳이 타이밍을 가장 크게 어긋나게 한다.
+    spans.sort(key=lambda span: span[0] - span[1])
+    return spans
 
 
 def redo_invented_segments(asr: dict[str, Any], lyric_text: str, vocals: Path, backend: str) -> dict[str, Any]:
@@ -591,7 +894,14 @@ def redo_invented_segments(asr: dict[str, Any], lyric_text: str, vocals: Path, b
 
 
 def asr_words(asr: dict[str, Any]) -> list[dict[str, Any]]:
-    """Every word the transcriber heard, in order, with the time it was heard at."""
+    """Every word the transcriber heard, in order, with the time it was heard at.
+
+    여러 벌을 들었다면 그것들이 합의한 목록이 있다. 앵커는 그것으로 잡아야 한다 — 벌을 통째로
+    섞은 목록은 정렬을 흔든다.
+    """
+    agreed = asr.get("consensus_words")
+    if agreed:
+        return list(agreed)
     words: list[dict[str, Any]] = []
     for segment in asr.get("segments") or []:
         for word in segment.get("words") or []:
@@ -1489,6 +1799,15 @@ def align_variant(
     )
     # When was each line's first word heard — the counter-witness against leading noise.
     anchors = match_sequences(lyric_words, heard_words)
+    # 증언이 얼마나 촘촘한가. 앵커를 낱말 번호로 세어 가장 넓게 빈 자리를 잰다 — 양끝도
+    # 빈 자리다. 첫 앵커 앞과 마지막 앵커 뒤는 되짚거나 내다본 것이지 들은 것이 아니다.
+    anchored_at = sorted(anchors)
+    widest_anchor_gap = 0
+    if anchored_at:
+        edges = [-1, *anchored_at, len(lyric_words)]
+        widest_anchor_gap = max(edges[i + 1] - edges[i] - 1 for i in range(len(edges) - 1))
+    else:
+        widest_anchor_gap = len(lyric_words)
     line_start_witness_ms: dict[int, float] = {}
     # 그리고 낱말마다: 받아쓰기가 그 낱말을 들은 시각. 줄 안에서 경계를 다시 긋는 데 쓴다.
     witness_ms: dict[int, float] = {}
@@ -1588,23 +1907,44 @@ def align_variant(
         place_backing_runs(result_words, counts, text_lines, weights, second_voice or [])
         close_lines_over_words(result_words, line_windows, counts)
         coverage = aligned_token_weight / max(1, sum(counts))
-        quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, declared, detected)
+        quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, declared, detected,
+                          anchors=len(anchors), lyric_words=len(lyric_words), widest_gap=widest_anchor_gap)
         if borrowed_words:
             print(f"[mms] borrowed {borrowed_words} word(s) the {language} aligner has no letters for", file=sys.stderr)
         return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}
     except Exception as error:
         print(f"[forced_align] fallback error={type(error).__name__}", file=sys.stderr)
-        quality = measure(fallback_words, line_windows, 0.0, duration_ms, False, str(variant.get("language", "und")).split("-")[0], detected)
+        quality = measure(fallback_words, line_windows, 0.0, duration_ms, False,
+                          str(variant.get("language", "und")).split("-")[0], detected,
+                          anchors=0, lyric_words=len(lyric_words), widest_gap=len(lyric_words))
         return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": fallback_words, "quality": quality}
 
 
-def measure(words: list[list[int | float]], lines: list[list[int]], coverage: float, duration_ms: int, anchored: bool, language: str = "und", detected: str = "und") -> dict[str, float]:
+def measure(
+    words: list[list[int | float]],
+    lines: list[list[int]],
+    coverage: float,
+    duration_ms: int,
+    anchored: bool,
+    language: str = "und",
+    detected: str = "und",
+    anchors: int = 0,
+    lyric_words: int = 0,
+    widest_gap: int = 0,
+) -> dict[str, float]:
     """
     What the alignment is actually worth.
 
     monotonicity, duration_match and language_match used to be the literal 1.0, so every
     candidate scored a perfect 1.000 and the quality gate could never fail — including the
     ones whose timings were a proportional guess. They are measured now.
+
+    anchored 는 문턱을 넘었는가만 말한다. 문턱은 낱말 수의 1/12 이라 366 낱말짜리 곡은 30 개
+    로 통과하는데, 코르티스 「REDRED」는 69 개가 붙어 넉넉히 통과하고도 낱말의 81% 는 앵커
+    없이 보간으로 채워졌다 — 앵커가 52 낱말 연속으로 비는 자리가 있었고 곡의 81~97 초에는
+    하나도 없었다. 오토튠이 음소를 뭉개 받아쓰기가 "kickin in" 을 "키기니" 로 들은 탓이다.
+    창 안에서 정렬기가 놓은 자리는 모두 실측으로 적히므로, 창 자체가 짐작이었다는 사실은
+    개수만 보아서는 어디에도 남지 않는다. 그 바깥층을 여기서 적는다.
     """
     ordered = 0
     for index in range(1, len(words)):
@@ -1624,6 +1964,11 @@ def measure(words: list[list[int | float]], lines: list[list[int]], coverage: fl
         "duration_match": reach,
         "line_plausibility": plausible,
         "asr_anchored": 1.0 if anchored else 0.0,
+        # 낱말 몇에 하나꼴로 실제 증언이 있는가. 문턱을 넘었는지가 아니라 얼마나 촘촘한지다.
+        "anchor_density": min(1.0, anchors / lyric_words) if lyric_words > 0 else 0.0,
+        # 증언 없이 이어 간 가장 긴 구간. 여기가 길수록 그 사이는 균등히 나눈 짐작이다.
+        # 낱말 수로 재고 1.0 을 상한으로 둔다 — 40 낱말이 비면 이미 줄 여럿이 통째로 짐작이다.
+        "anchor_reach": max(0.0, 1.0 - widest_gap / 40.0) if lyric_words > 0 else 0.0,
         "alignment_fallback": 1.0 - coverage,
         "vocal_density": min(1.0, covered / duration_ms) if duration_ms > 0 else 0.0,
     }
@@ -1727,7 +2072,15 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     stems = separate(mixture, directory, config["backend"])
     notify("separate", "completed", 0.52)
     notify("coarse_asr", "started", 0.55)
-    asr, detected = coarse_asr(stems["vocals"], expected_language(job), config["backend"])
+    # 가사의 낱말을 먼저 갖춰 두어야 어디가 비었는지 알 수 있다. 변형이 여럿이면 가장 긴
+    # 것을 쓴다 — 짧은 변형에서 비지 않은 자리도 긴 변형에서는 빌 수 있다.
+    heard_target = max(
+        ([comparable(word) for line in str(variant.get("text", "")).splitlines() for word in line.split() if comparable(word)]
+         for variant in job.get("lyrics", [])),
+        key=len,
+        default=[],
+    )
+    asr, detected = hear_everything(stems["vocals"], expected_language(job), config["backend"], heard_target)
     asr = redo_invented_segments(asr, "\n".join(str(variant.get("text", "")) for variant in job.get("lyrics", [])), stems["vocals"], config["backend"])
     notify("coarse_asr", "completed", 0.64)
     # 리드 위에 겹쳐 부른 목소리는 받아쓰기에 한 글자도 남지 않는다. 읽을 수는 없어도
