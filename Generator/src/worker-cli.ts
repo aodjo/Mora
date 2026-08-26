@@ -84,6 +84,24 @@ try {
     throw new Error("MORA_WORKER_ID does not match the credential file");
 
   const admin = new AdminClient(adminUrl, token);
+  /** 파이프라인 단계를 사람이 읽는 말로. 화면에 뜨는 것은 코드가 아니라 지금 하는 일이어야 한다. */
+  const STAGE_NAMES: Record<string, string> = {
+    probe: "살펴보는 중",
+    download: "내려받는 중",
+    transcode: "변환하는 중",
+    separate: "목소리 가르는 중",
+    coarse_asr: "받아쓰는 중",
+    split_voices: "곁소리 가르는 중",
+    language_validate: "언어 확인",
+    forced_align: "맞춰 놓는 중",
+    diarize: "누가 부르는지",
+    speaker_stems: "목소리별로 가르는 중",
+    index: "지문 만드는 중",
+    quality_gate: "품질 재는 중",
+    candidate_submit: "올리는 중",
+    cleanup: "정리",
+  };
+
   const worker = new GeneratorWorker({
     workerId,
     version: "0.1.0",
@@ -99,8 +117,13 @@ try {
         process.stdout.write("Generator 실행 중: 처리할 작업을 기다립니다. 종료하려면 Ctrl+C를 누르세요.\n");
       } else if (status.state === "warning") {
         process.stdout.write(`${status.message}\n`);
-      } else {
-        process.stdout.write(`작업 처리 시작: ${status.jobId}\n`);
+      } else if (status.state === "stage") {
+        process.stdout.write(`   ${STAGE_NAMES[status.stage] ?? status.stage} ${Math.round(status.progress * 100)}%\n`);
+      } else if (status.state === "done") {
+        const mark = status.outcome === "후보 제출" ? "✔" : "✖";
+        process.stdout.write(`${mark} ${status.song} — ${status.outcome} · ${status.seconds.toFixed(0)}초\n`);
+      } else if (status.song !== undefined) {
+        process.stdout.write(`\n▶ ${status.song}\n`);
       }
     },
   });

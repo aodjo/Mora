@@ -18,7 +18,10 @@ import { join } from "node:path";
 export type GeneratorWorkerStatus =
   | { state: "connected"; desiredState: string }
   | { state: "idle" }
-  | { state: "processing"; jobId: string }
+  | { state: "processing"; jobId: string; song?: string }
+  /** 어느 단계에 들어섰는가. 단계가 바뀔 때만 오지, 진행률마다 오지는 않는다. */
+  | { state: "stage"; song: string; stage: string; progress: number }
+  | { state: "done"; song: string; outcome: string; seconds: number }
   /** Something went wrong that the run survived — worth saying, not worth stopping for. */
   | { state: "warning"; message: string };
 export interface GeneratorWorkerOptions {
@@ -55,8 +58,7 @@ export class GeneratorWorker {
       const now = Date.now();
       // 심장 소리는 살아 있다는 말이지 일감을 묻는 것이 아니다. 반복마다 보낼 이유가 없다.
       if (now - lastBeat >= HEARTBEAT_EVERY_MS) {
-        desired = (await this.options.admin.heartbeat({ worker_id: this.options.workerId, version: this.options.version }))
-          .desired_state;
+        desired = (await this.options.admin.heartbeat({ worker_id: this.options.workerId, version: this.options.version })).desired_state;
         lastBeat = now;
         if (!connected) {
           this.options.onStatus?.({ state: "connected", desiredState: desired });
@@ -110,10 +112,21 @@ export class GeneratorWorker {
     // Derived from the job id rather than a fresh temp dir, so a retry lands on the
     // directory the previous attempt filled and can skip work it already paid for.
     const workDir = join(process.env.MORA_WORK_ROOT ?? tmpdir(), `mora-${leased.body.job_id}`);
+    const began = Date.now();
+    let song = leased.body.job_id;
     try {
       input = await this.options.admin.job(leased.body.job_id);
       const current = input;
+      // 작업 번호만으로는 무엇이 도는지 알 수 없다. 곡 이름을 알아낸 즉시 다시 알린다.
+      song = `${input.recording.artist} - ${input.recording.title}`;
+      this.options.onStatus?.({ state: "processing", jobId: input.job_id, song });
+      let entered = "";
       this.options.daemon.onStage = (value) => {
+        // 진행률은 초마다 오지만 단계는 곡당 열 번쯤 바뀐다. 바뀔 때만 말한다.
+        if (value.stage !== entered) {
+          entered = value.stage;
+          this.options.onStatus?.({ state: "stage", song, stage: value.stage, progress: value.progress ?? 0 });
+        }
         // Progress is telling the console what is happening; it is not the work. A rejected
         // report used to leave an unhandled rejection, which takes the whole process down and
         // loses the job that was mid-flight — a job that is running fine.
@@ -230,7 +243,9 @@ export class GeneratorWorker {
       await this.sendStage(input, "candidate_submit", "completed", 0.99);
       await this.settle(() => this.options.queue.ack(leased.leaseId));
       succeeded = true;
+      this.options.onStatus?.({ state: "done", song, outcome: "후보 제출", seconds: (Date.now() - began) / 1000 });
     } catch (error) {
+      this.options.onStatus?.({ state: "done", song, outcome: safeCode(error), seconds: (Date.now() - began) / 1000 });
       if (input !== undefined) await this.sendFailure(input, error);
       // 파이썬이 죽기 전에 남긴 말 — 코드 하나만 보고는 아무것도 고칠 수 없다.
       const detail = (error as Error & { detail?: string }).detail;
