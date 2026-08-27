@@ -19,6 +19,30 @@
 export const ANCHOR_DENSITY_FLOOR = 0.7;
 export const ANCHOR_REACH_FLOOR = 0.5;
 
+/**
+ * 줄의 경계가 숨 쉬는 자리에 떨어진 비율의 바닥값.
+ *
+ * 앵커 밀도는 "몇 낱말이 실제로 들려서 자리를 잡았나" 만 말한다. 그 자리가 맞는지는 말하지
+ * 않는다. 「우리는 진짜 바다를 보러 가는 거야」는 밀도 97% 인데, 보컬이 곡의 73% 를 채워서
+ * 스물일곱 줄을 아무렇게나 늘어놓아도 전부 "노래 위" 에 있었다. 가리는 것은 줄 사이의 틈이다.
+ *
+ * 열두 곡을 재어 놓았다. 열한 곡이 81~100% 에 모였고 한 곡만 아래에 있다 — 「저 병원가기전에
+ * 유부초밥이 먹고싶은데요」로, 밀도는 0.98 이라 이 문턱이 없으면 그대로 공개된다. 이 잣대가
+ * 더하는 것은 정확히 그 한 곡이다.
+ *
+ * 그 한 곡은 다시 돌릴 때마다 40% 와 50% 사이를 오간다. 그래서 문턱을 50 에 두면 돌린 날에
+ * 따라 통과하기도 하고 막히기도 한다 — 관측값 위에 문턱을 놓으면 안 되는 이유다. 50 과 81
+ * 사이는 비어 있으므로 그 한가운데인 65 에 둔다. 열한 곡은 여유 있게 지나가고 한 곡은
+ * 확실히 막힌다.
+ *
+ * 열두 곡은 문턱을 놓기에 적은 수이고 두 가수에 몰려 있다 — 목록이 다시 차면 141 곡으로
+ * 놓은 앵커 문턱처럼 다시 재야 한다.
+ *
+ * 이 문턱은 비례로 나눈 짐작을 막지 못한다. 그런 후보는 줄이 빈틈없이 붙어 있어 잴 틈이
+ * 아예 없고, 잴 것이 없으면 1.0 이 나온다. 그 길은 밀도 0 이 이미 막는다.
+ */
+export const BREATH_FLOOR = 0.65;
+
 export interface CandidateStanding {
   score: number;
   language: number;
@@ -26,14 +50,23 @@ export interface CandidateStanding {
   density: number;
   /** 1 - 최장 빈 구간/40. 0.5 는 스무 낱말이 통째로 추측이라는 뜻이다. */
   reach: number;
+  /** 줄과 줄 사이가 양옆보다 뚜렷이 내려앉은 비율. 잴 틈이 없으면 1 이다. */
+  breath: number;
 }
 
 export interface QualityLimits {
   score: number;
   density: number;
   reach: number;
+  breath: number;
 }
 
 export function passesQualityGate(item: CandidateStanding, limits: QualityLimits): boolean {
-  return item.score >= limits.score && item.language >= 0.9 && item.density >= limits.density && item.reach >= limits.reach;
+  return (
+    item.score >= limits.score &&
+    item.language >= 0.9 &&
+    item.density >= limits.density &&
+    item.reach >= limits.reach &&
+    item.breath >= limits.breath
+  );
 }

@@ -2093,17 +2093,96 @@ def align_variant(
         place_backing_runs(result_words, counts, text_lines, weights, second_voice or [])
         close_lines_over_words(result_words, line_windows, counts)
         coverage = aligned_token_weight / max(1, sum(counts))
+        # 창을 다 옮기고 난 마지막 자리에서 잰다 — 이 위의 손질들이 경계를 움직이기 때문이다.
+        # 받아쓰기가 이미 16 kHz 로 읽어 둔 것을 다시 쓴다. 파일을 두 번 열 이유가 없다.
+        breathing, gaps_seen = breath_gaps(audio, WHISPER_SAMPLE_RATE, line_windows)
         quality = measure(result_words, line_windows, coverage, duration_ms, anchored_by_asr, declared, detected,
-                          anchors=len(anchors), lyric_words=len(lyric_words), widest_gap=widest_anchor_gap)
+                          anchors=len(anchors), lyric_words=len(lyric_words), widest_gap=widest_anchor_gap,
+                          breathing=breathing)
+        print(f"[breath] {breathing:.0%} of {gaps_seen} line gap(s) land on a breath", file=sys.stderr)
         if borrowed_words:
             print(f"[mms] borrowed {borrowed_words} word(s) the {language} aligner has no letters for", file=sys.stderr)
         return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}
     except Exception as error:
         print(f"[forced_align] fallback error={type(error).__name__}", file=sys.stderr)
+        # 여기 오는 창은 비례로 나눈 짐작이다. 그래도 재어 둔다 — 짐작이 얼마나 빗나가는지가
+        # 잣대를 놓을 때의 대조군이 되고, 실측에서 정말 갈라졌다.
+        breathing = 1.0
+        try:
+            import soundfile
+            heard, rate = soundfile.read(str(vocals), dtype="float32", always_2d=True)
+            breathing, _ = breath_gaps(heard.mean(axis=1), int(rate), line_windows)
+        except Exception:
+            pass
         quality = measure(fallback_words, line_windows, 0.0, duration_ms, False,
                           str(variant.get("language", "und")).split("-")[0], detected,
-                          anchors=0, lyric_words=len(lyric_words), widest_gap=len(lyric_words))
+                          anchors=0, lyric_words=len(lyric_words), widest_gap=len(lyric_words),
+                          breathing=breathing)
         return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": fallback_words, "quality": quality}
+
+
+# 줄 사이가 양옆보다 이만큼 내려앉으면 숨 쉬는 자리로 본다. 사람이 한 소절을 맺고 숨을
+# 들이켜면 대개 10 dB 넘게 떨어진다. 8 로 둔 것은 잔향이 긴 곡에 여유를 준 것이다.
+BREATH_DROP_DB = 8.0
+BREATH_FRAME = 0.02
+# 이보다 짧은 틈은 재지 않는다. 20 ms 단위로 재는데 0.2 초면 열 칸이라, 더 짧으면 바닥값이
+# 한두 칸에 좌우된다.
+BREATH_GAP_SECONDS = 0.2
+# 잴 틈이 이보다 적으면 이 잣대는 할 말이 없다. 없는 근거로 곡을 막지 않는다.
+ENOUGH_BREATH_GAPS = 4
+# whisperx.load_audio 가 내놓는 것. 이 값은 whisper 모델이 요구하는 것이라 바뀌지 않는다.
+WHISPER_SAMPLE_RATE = 16000
+
+
+def breath_gaps(samples: Any, rate: int, lines: list[list[int]]) -> tuple[float, int]:
+    """
+    줄의 경계가 숨 쉬는 자리에 떨어지는가.
+
+    앵커 밀도는 "몇 낱말이 실제로 들려서 자리를 잡았나" 를 말할 뿐, 그 자리가 맞는지는 말하지
+    않는다. 보컬이 내내 차 있는 곡에서는 스물일곱 줄을 아무렇게나 늘어놓아도 전부 노래 위에
+    있다. 가리는 것은 줄과 줄 **사이**다 — 경계가 맞으면 그 틈은 숨 쉬는 자리라 양옆보다
+    뚜렷이 내려앉고, 밀렸으면 노래 한가운데라 내려앉지 않는다.
+
+    절대 문턱으로는 안 된다. 실측에서 -50 dB 를 문턱으로 두었더니 전주(1%)와 후주(5%)는
+    갈라냈지만 줄 사이 스물여섯 개가 모두 "노래 중" 으로 나왔다 — 스템에는 잔향과 숨이 남아
+    그 정도는 넘긴다. 그래서 절대값을 버리고 주변 대비 얼마나 내려앉는지만 본다.
+
+    양옆은 틈에 붙은 1.5 초씩만 본다. 줄 전체를 재면 먼 데의 셈여림이 섞인다. 틈은 가운뎃값이
+    아니라 가장 조용했던 순간으로 본다 — 숨은 짧아서 가운뎃값에 묻힌다.
+    """
+    import numpy
+
+    if rate <= 0 or len(samples) == 0 or len(lines) < 2:
+        return 1.0, 0
+    step = max(1, int(rate * BREATH_FRAME))
+    block = samples[: len(samples) // step * step].reshape(-1, step)
+    if len(block) == 0:
+        return 1.0, 0
+    power = numpy.sqrt(numpy.mean(numpy.square(block, dtype=numpy.float64), axis=1))
+    loud = 20.0 * numpy.log10(numpy.maximum(power, 1e-10))
+
+    def window(begin: float, end: float) -> Any:
+        first = max(0, int(begin / BREATH_FRAME))
+        last = max(first + 1, int(end / BREATH_FRAME))
+        return loud[first:last]
+
+    breathed, counted = 0, 0
+    for index in range(len(lines) - 1):
+        begin, end = int(lines[index][1]) / 1000.0, int(lines[index + 1][0]) / 1000.0
+        if end - begin < BREATH_GAP_SECONDS:
+            continue
+        before = window(max(int(lines[index][0]) / 1000.0, begin - 1.5), begin)
+        after = window(end, min(int(lines[index + 1][1]) / 1000.0, end + 1.5))
+        gap = window(begin, end)
+        if len(before) == 0 or len(after) == 0 or len(gap) == 0:
+            continue
+        around = max(float(numpy.median(before)), float(numpy.median(after)))
+        counted += 1
+        if around - float(numpy.min(gap)) >= BREATH_DROP_DB:
+            breathed += 1
+    if counted < ENOUGH_BREATH_GAPS:
+        return 1.0, counted
+    return breathed / counted, counted
 
 
 def measure(
@@ -2117,6 +2196,7 @@ def measure(
     anchors: int = 0,
     lyric_words: int = 0,
     widest_gap: int = 0,
+    breathing: float = 1.0,
 ) -> dict[str, float]:
     """
     What the alignment is actually worth.
@@ -2155,6 +2235,8 @@ def measure(
         # 증언 없이 이어 간 가장 긴 구간. 여기가 길수록 그 사이는 균등히 나눈 짐작이다.
         # 낱말 수로 재고 1.0 을 상한으로 둔다 — 40 낱말이 비면 이미 줄 여럿이 통째로 짐작이다.
         "anchor_reach": max(0.0, 1.0 - widest_gap / 40.0) if lyric_words > 0 else 0.0,
+        # 줄의 경계가 숨 쉬는 자리에 떨어진 비율. 앵커가 말하지 않는 "그 자리가 맞는가" 를 잰다.
+        "breath_gaps": breathing,
         "alignment_fallback": 1.0 - coverage,
         "vocal_density": min(1.0, covered / duration_ms) if duration_ms > 0 else 0.0,
     }

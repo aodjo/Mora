@@ -735,6 +735,55 @@ kept = daemon.believable_times(MIXED)
 check("멀쩡한 이웃까지 버리지는 않는다", len(kept) > 0 and all(w in MIXED for w in kept), str(len(kept)))
 check("문턱은 환경변수로 끌 수 있다", isinstance(daemon.FASTEST_SYLLABLES, float))
 
+
+# ── 줄의 경계가 숨 쉬는 자리에 떨어지는가 ────────────────────────────────────
+#
+# 앵커 밀도가 높아도 그 자리가 맞다는 뜻은 아니다. 「우리는 진짜 바다를 보러 가는 거야」는
+# 밀도 97% 인데, 보컬이 곡의 73% 를 채워서 스물일곱 줄을 아무렇게나 늘어놓아도 전부 "노래
+# 위" 에 있었다. 가리는 것은 줄 사이의 틈이다.
+import numpy
+
+BREATH_RATE = 16000
+
+
+def _sung(pattern: list[tuple[float, float]], length: float = 30.0):
+    """조용한 바탕에 노래하는 구간만 얹는다. pattern 은 (시작, 끝) 초."""
+    samples = numpy.random.default_rng(7).normal(0, 0.0005, int(length * BREATH_RATE)).astype("float32")
+    for begin, end in pattern:
+        first, last = int(begin * BREATH_RATE), int(end * BREATH_RATE)
+        samples[first:last] += numpy.random.default_rng(9).normal(0, 0.2, last - first).astype("float32")
+    return samples
+
+
+# 다섯 소절, 사이마다 0.5 초씩 쉰다.
+PHRASES = [(1.0, 4.0), (4.5, 7.5), (8.0, 11.0), (11.5, 14.5), (15.0, 18.0)]
+VOICE = _sung(PHRASES)
+RIGHT = [[int(b * 1000), int(e * 1000)] for b, e in PHRASES]
+
+ratio, seen = daemon.breath_gaps(VOICE, BREATH_RATE, RIGHT)
+check("경계가 맞으면 틈이 전부 숨 자리", ratio == 1.0 and seen == 4, f"{ratio:.2f} · 잰 틈 {seen}")
+
+# 통째로 밀면 틈이 노래 한가운데로 들어간다. 이걸 못 가리면 이 잣대는 아무것도 재지 않은 것이다.
+SHIFTED = [[b + 1500, e + 1500] for b, e in RIGHT]
+shifted_ratio, _ = daemon.breath_gaps(VOICE, BREATH_RATE, SHIFTED)
+check("통째로 밀면 떨어진다", shifted_ratio < 0.5, f"{shifted_ratio:.2f}")
+
+# 반만 틀린 경우. 통과냐 탈락이냐가 아니라 얼마나 틀렸는지가 나와야 문턱을 놓을 수 있다.
+# 가운데 두 경계만 소절 안쪽으로 밀었다.
+HALF = [[1000, 4000], [4500, 6000], [6500, 10000], [10500, 14500], [15000, 18000]]
+half_ratio, half_seen = daemon.breath_gaps(VOICE, BREATH_RATE, HALF)
+check("반만 틀리면 반이 나온다", half_ratio == 0.5 and half_seen == 4, f"{half_ratio:.2f} · 잰 틈 {half_seen}")
+
+# 잴 것이 없을 때 0 을 주면 멀쩡한 곡이 막힌다. 할 말이 없으면 1 이다.
+check("틈이 모자라면 아무 말도 하지 않는다", daemon.breath_gaps(VOICE, BREATH_RATE, RIGHT[:2]) == (1.0, 1))
+check("줄이 하나면 잴 틈이 없다", daemon.breath_gaps(VOICE, BREATH_RATE, RIGHT[:1]) == (1.0, 0))
+check("소리가 없으면 아무 말도 하지 않는다", daemon.breath_gaps(numpy.zeros(0, dtype="float32"), BREATH_RATE, RIGHT) == (1.0, 0))
+
+# 붙어 있는 줄은 세지 않는다 — 0.2 초 미만이면 바닥값이 한두 칸에 좌우된다.
+TIGHT = [[1000, 4000], [4050, 7500], [8000, 11000], [11500, 14500], [15000, 18000]]
+tight_ratio, tight_seen = daemon.breath_gaps(VOICE, BREATH_RATE, TIGHT)
+check("붙어 있는 틈은 재지 않는다", tight_seen == 3, f"잰 틈 {tight_seen}")
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")

@@ -71,6 +71,8 @@ function TranscriptPanel({ artifactId }: { artifactId: string }) {
   );
 }
 
+// 자동 승격을 막는 셋(앵커 밀도·빈 구간·숨 자리)이 여기 없어서, 검수하는 사람은 문을 지킨
+// 값을 보지 못한 채 판단해야 했다. 막힌 이유가 보여야 승인할지 말지를 정할 수 있다.
 const qualityNames: Record<string, string> = {
   token_coverage: "토큰",
   monotonicity: "순서",
@@ -78,6 +80,9 @@ const qualityNames: Record<string, string> = {
   duration_match: "구간",
   language_match: "언어",
   asr_anchored: "음성 기준",
+  anchor_density: "앵커 밀도",
+  anchor_reach: "앵커 빈 구간",
+  breath_gaps: "숨 자리",
 };
 
 interface SearchHit {

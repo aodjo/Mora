@@ -3,7 +3,7 @@ import { sheetHash } from "../../../packages/core/src/tokenization/fingerprint.j
 import { tokenizeV2 } from "../../../packages/core/src/tokenization/tokenizer-v2.js";
 import { ServiceError } from "../../../packages/core/src/shared/errors.js";
 import { playlistId, playlistTracks } from "./spotify.js";
-import { ANCHOR_DENSITY_FLOOR, ANCHOR_REACH_FLOOR, passesQualityGate } from "./quality-gate.js";
+import { ANCHOR_DENSITY_FLOOR, ANCHOR_REACH_FLOOR, BREATH_FLOOR, passesQualityGate } from "./quality-gate.js";
 import type {
   GeneratorCandidateSubmission,
   GeneratorJobInput,
@@ -1589,7 +1589,7 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
     .first();
   if (owned === null) throw new ServiceError(409, "CONFLICT");
   const ids: string[] = [];
-  const scores: Array<{ id: string; score: number; language: number; density: number; reach: number }> = [];
+  const scores: Array<{ id: string; score: number; language: number; density: number; reach: number; breath: number }> = [];
   for (const candidate of submission.alignments) {
     const id = crypto.randomUUID();
     ids.push(id);
@@ -1598,10 +1598,13 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
       id,
       score,
       language: candidate.quality.language_match ?? 0,
-      // 옛 Generator 가 낸 후보에는 이 둘이 없다. 없으면 0 으로 두어 사람에게 보낸다 —
-      // 재어 보지 않은 것을 통과시키는 것보다 한 번 더 보는 편이 낫다.
+      // 옛 Generator 가 낸 후보에는 이 셋이 없다. 없으면 0 으로 두어 사람에게 보낸다 —
+      // 재어 보지 않은 것을 통과시키는 것보다 한 번 더 보는 편이 낫다. 새 Generator 는 잴
+      // 틈이 모자란 곡에 1 을 실어 보내므로, "재어 봤는데 할 말이 없다"와 "재지 않았다"가
+      // 여기서 갈린다.
       density: candidate.quality.anchor_density ?? 0,
       reach: candidate.quality.anchor_reach ?? 0,
+      breath: candidate.quality.breath_gaps ?? 0,
     });
     await env.ADMIN_DB.prepare(
       `INSERT INTO alignment_candidates (id,job_id,input_revision_id,variant_id,status,tokenizer,text_hash,fp_lens,fp_types,line_spans,word_spans,word_scores,speaker_turns,word_speakers,line_speakers,quality,quality_score,pipeline_version,backend,hardware,created_by,created_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)`,
@@ -1641,7 +1644,7 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
   await audit(env, actor, "candidate.submit", "job", submission.job_id, { candidate_ids: ids });
   await event(env, "candidate.ready", { job_id: submission.job_id, candidate_ids: ids });
   const settings = await env.ADMIN_DB.prepare(
-    "SELECT key,value FROM settings WHERE key IN ('auto_promotion_enabled','quality_threshold','anchor_density_floor','anchor_reach_floor')",
+    "SELECT key,value FROM settings WHERE key IN ('auto_promotion_enabled','quality_threshold','anchor_density_floor','anchor_reach_floor','breath_floor')",
   ).all<{ key: string; value: string }>();
   const values = Object.fromEntries(settings.results.map((item) => [item.key, item.value]));
   let published = 0;
@@ -1649,9 +1652,10 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
     const threshold = Number(values.quality_threshold ?? "0.9");
     const density = Number(values.anchor_density_floor ?? String(ANCHOR_DENSITY_FLOOR));
     const reach = Number(values.anchor_reach_floor ?? String(ANCHOR_REACH_FLOOR));
+    const breath = Number(values.breath_floor ?? String(BREATH_FLOOR));
     const system: Actor = { type: "service", id: "quality-gate", permissions: new Set(["*"]) };
     for (const item of scores)
-      if (passesQualityGate(item, { score: threshold, density, reach })) {
+      if (passesQualityGate(item, { score: threshold, density, reach, breath })) {
         await promote(env, system, item.id);
         published += 1;
       }
