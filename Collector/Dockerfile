@@ -34,7 +34,8 @@ RUN corepack pnpm install --frozen-lockfile \
 FROM node:24-bookworm-slim
 ARG TARGETARCH
 # Chromium 없이 지으려면 --build-arg WITH_BROWSER=0. 가사 서비스 중 몇은 브라우저 없이는
-# 원문을 주지 않으므로 기본은 넣는 쪽이다. 빼면 이미지가 400 MB 쯤 가벼워진다.
+# 원문을 주지 않으므로 기본은 넣는 쪽이다. 실측으로 2.65 GB 와 859 MB 의 차이다 — 브라우저
+# 자체보다 --with-deps 가 끌어오는 X 라이브러리와 글꼴이 더 무겁다.
 ARG WITH_BROWSER=1
 ENV DEBIAN_FRONTEND=noninteractive \
     NODE_ENV=production \

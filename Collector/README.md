@@ -35,7 +35,7 @@ docker compose logs -f
 
 수집 국가·주기·한도와 Genius/LyricFind 키는 컨테이너가 아니라 Admin 런타임 설정에서 관리합니다. `docker-compose.yml`에 두는 것은 Admin 주소·시간대·프록시뿐입니다.
 
-Chromium 없이 400 MB쯤 가볍게 지으려면 `WITH_BROWSER: "0"`으로 바꿉니다. 그때는 Dashboard의 SongTitle 브라우저 옵션도 함께 꺼야 합니다.
+이미지는 2.65 GB입니다. Chromium 없이 지으면 859 MB로 줄어듭니다 — `docker-compose.yml`의 `WITH_BROWSER`를 `"0"`으로 바꾸고, Dashboard의 SongTitle 브라우저 옵션도 함께 끕니다.
 
 유튜브가 그 기계의 IP를 받아 주지 않으면 `HTTPS_PROXY`를 채웁니다 — yt-dlp가 그 값을 읽습니다. 임대 서버의 IP는 대개 막히므로, 막히지 않는 회선에서 돌리는 편이 간단합니다.
 
