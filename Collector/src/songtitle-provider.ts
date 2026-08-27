@@ -140,6 +140,15 @@ const ENOUGH_TO_NAME = 0.02;
 export function inferLyricsLanguage(text: string): string | undefined {
   const { hangul, kana, han, latin, total } = scriptCounts(text);
   if (total === 0) return undefined;
+  // 한글과 가나가 함께 있으면 많은 쪽이 이긴다. 2% 라는 문턱은 "한글이냐 라틴이냐"를 두고
+  // 실측해 놓은 값이고 그 질문에는 맞지만, "한글이냐 가나냐"에서는 깨진다 — 멜론·벅스·FLO 는
+  // 일본 곡에 한글 발음을 줄마다 달아 주므로 일본어 시트에 한글이 섞이는 것이 정상이다.
+  // 한글을 먼저 검사한다는 이유만으로 일본 곡이 한국어가 되면, Whisper 는 일본어 노래를
+  // 한국어로 받아쓴다. 米津玄師 「IRIS OUT」이 그렇게 앵커 밀도 0.00 을 받았다.
+  //
+  // 발음 표기가 본문보다 많은 시트는 isAnnotatedTranslation 이 따로 막는다. 여기서 가리는
+  // 것은 그 문턱 아래에 있는, 한글이 조금 섞인 멀쩡한 일본어 시트다.
+  if (kana / total >= ENOUGH_TO_NAME && kana > hangul) return "ja";
   if (hangul / total >= ENOUGH_TO_NAME) return "ko";
   if (kana / total >= ENOUGH_TO_NAME) return "ja";
   if (latin > 0 && han === 0 && !/[\p{Script=Cyrillic}\p{Script=Arabic}]/u.test(text)) {

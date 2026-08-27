@@ -44,6 +44,18 @@ test("language inference is conservative for supported markets", () => {
   assert.equal(inferLyricsLanguage("你好世界"), undefined);
 });
 
+test("a Japanese sheet with a Hangul reading guide is still Japanese", () => {
+  // 멜론·벅스·FLO 는 일본 곡을 한국 독자에게 내보낼 때 줄마다 한글 발음을 달아 준다. 그래서
+  // 일본어 시트에 한글이 섞이는 것은 정상인데, 한글을 먼저 2% 문턱으로 검사하던 규칙은 그것을
+  // 한국어라 불렀다. 그러면 Whisper 가 일본어 노래를 한국어로 받아쓴다 — 米津玄師
+  // 「IRIS OUT」이 그렇게 앵커 밀도 0.00, 실측 오차 4.8 초를 받았다. 언어만 바로잡자 0.50 과
+  // 141ms 가 됐다.
+  const guided = `${"君の人生の中に僕はいる ".repeat(30)}${"기미노 진세이 ".repeat(4)}`;
+  assert.equal(inferLyricsLanguage(guided), "ja");
+  // 한글이 더 많으면 그때는 한국어다. 발음 표기가 본문을 넘어서는 시트는 애초에 거부된다.
+  assert.equal(inferLyricsLanguage(`${"사랑은 늘 도망가 ".repeat(30)}${"あの ".repeat(2)}`), "ko");
+});
+
 test("a name glossed in Hangul does not make an English song Korean", () => {
   // Genie heads its sheets with the song and the artist, the artist in Korean. Four characters
   // out of 2,600 sent Drake to the Korean recogniser.

@@ -408,14 +408,46 @@ def expected_language(job: dict[str, Any]) -> str:
     lyrics do.
     """
     recorded = str(job["recording"].get("language", "und")).split("-")[0]
-    if recorded != "und":
-        return recorded
-    votes: dict[str, int] = {}
-    for variant in job.get("lyrics", []):
-        code = str(variant.get("language", "und")).split("-")[0]
-        if code != "und":
-            votes[code] = votes.get(code, 0) + 1
-    return max(votes, key=lambda code: votes[code]) if votes else "und"
+    stated = recorded
+    if stated == "und":
+        votes: dict[str, int] = {}
+        for variant in job.get("lyrics", []):
+            code = str(variant.get("language", "und")).split("-")[0]
+            if code != "und":
+                votes[code] = votes.get(code, 0) + 1
+        stated = max(votes, key=lambda code: votes[code]) if votes else "und"
+    sheets = "\n".join(str(variant.get("text", "")) for variant in job.get("lyrics", []))
+    return sung_language(sheets, stated)
+
+
+def sung_language(text: str, stated: str) -> str:
+    """
+    적힌 글자가 "이 노래는 저 말로 불린다" 고 말하는가.
+
+    written_language 를 그대로 쓸 수는 없다. 그쪽이 답하는 질문은 "어느 음소 모델로 정렬할까"
+    이고 여기는 "어느 말로 받아쓸까" 인데, 로마자에서 둘이 갈린다. 로마자로 적힌 한국어 가사는
+    라틴 글자로 정렬해야 맞지만, 노래는 여전히 한국어로 불린다 — 그 시트를 보고 Whisper 에게
+    영어로 받아쓰라 하면 곡을 통째로 잃는다. 그래서 라틴으로는 뒤집지 않는다.
+
+    한글과 가나는 다르다. 로마자로 적을 수는 있어도 그 반대는 없다 — 한글로 적힌 가사가 영어
+    노래일 수는 없다. 그쪽으로만 뒤집는다.
+
+    실측: songs.json 이 일본어 세 곡을 한국어로 분류하고 있었고, 그 때문에 Whisper 가 일본어
+    노래를 한국어로 받아썼다. 「IRIS OUT」은 앵커 밀도 0.00 에 오차 4.8 초였다. 언어만 바로잡자
+    밀도 0.50, 오차 141 ms 가 됐다. 「Pretender」는 0.07 → 0.83, 「115万キロ」는 0.35 → 0.78.
+    """
+    hangul = sum(1 for character in text if "가" <= character <= "힣")
+    kana = sum(1 for character in text if "぀" <= character <= "ヿ")
+    kanji = sum(1 for character in text if "一" <= character <= "鿿")
+    latin = sum(1 for character in text if character.isascii() and character.isalpha())
+    total = hangul + kana + kanji + latin
+    if total < 20:
+        return stated
+    if kana > 0 and (kana + kanji) / total >= 0.7:
+        return "ja"
+    if hangul / total >= 0.7:
+        return "ko"
+    return stated
 
 
 def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any], str]:
