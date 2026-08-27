@@ -13,6 +13,7 @@ LRCLIB 에서 줄 시작 시각을 받아 정답셋으로 만든다.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.error
@@ -23,7 +24,8 @@ from pathlib import Path
 API = "https://lrclib.net/api/get"
 AGENT = "Mora/0.1 (https://mora.junx.dev)"
 STAMP = re.compile(r"^\[(\d{2}):(\d{2})[.:](\d{2,3})\]\s*(.*)$")
-HERE = Path("/private/tmp/claude-501/-Users-aodjo-Documents/902c1ab8-d352-459a-8ead-dbbe40362867/scratchpad")
+# 만든 것을 어디에 둘지. 정답에는 가사 글자가 들어 있어 저장소에 커밋하지 않는다.
+OUT = Path(os.getenv("MORA_TRUTH", "truth.json"))
 
 
 def ask(artist: str, title: str) -> dict | None:
@@ -34,6 +36,24 @@ def ask(artist: str, title: str) -> dict | None:
             return json.loads(response.read().decode("utf-8"))
     except Exception:
         return None
+
+
+def romanized(text: str, language: str) -> bool:
+    """
+    한글로 불리는 노래를 로마자로 적어 둔 시트인가.
+
+    처음 이 평가셋을 냈을 때 열여덟 곡 중 여덟 곡이 그랬다 — 「WOODZ - Drowning」은 한글이
+    한 자도 없고 라틴이 931 자였다. 그 시트를 그대로 먹이고 "아이돌과 랩은 받아쓰기가 못
+    알아듣는다"고 읽었는데, 제품은 멜론·지니에서 한글 원문을 받으므로 그 실패는 파이프라인의
+    성질이 아니라 자료의 결함이었다. 정답으로 쓸 수 없는 것은 정답 자리에 두지 않는다.
+
+    영어 곡은 라틴으로 적힌 것이 원문이므로 여기 걸리지 않는다.
+    """
+    if language not in ("ko", "ja"):
+        return False
+    native = sum(1 for c in text if "가" <= c <= "힣" or "぀" <= c <= "ヿ" or "一" <= c <= "鿿")
+    latin = sum(1 for c in text if c.isascii() and c.isalpha())
+    return latin > native
 
 
 def parse(synced: str) -> list[dict]:
@@ -54,12 +74,16 @@ def main() -> None:
     songs = json.loads(Path("Generator/eval/songs.json").read_text(encoding="utf-8"))
     truth = []
     for song in songs:
-        if song["language"] != "ko":
+        # 영어 곡은 라틴이 원문이라 로마자 판정에 걸리지 않는다. 함께 재도 된다.
+        if song["language"] not in ("ko", "ja", "en"):
             continue
         result = ask(song["artist"], song["title"])
         synced = (result or {}).get("syncedLyrics") or ""
         lines = parse(synced) if synced else []
         if len(lines) < 5:
+            continue
+        if romanized(" ".join(row["text"] for row in lines), song["language"]):
+            print(f"    로마자라 건너뜀  {song['artist'][:14]} - {song['title'][:26]}")
             continue
         truth.append({
             "video_id": song["video_id"], "artist": song["artist"], "title": song["title"],
@@ -70,7 +94,7 @@ def main() -> None:
               f"{song['artist'][:14]:<16}{song['title'][:26]}")
         time.sleep(0.15)
 
-    (HERE / "truth.json").write_text(json.dumps(truth, ensure_ascii=False), encoding="utf-8")
+    OUT.write_text(json.dumps(truth, ensure_ascii=False), encoding="utf-8")
     total = sum(len(t["lines"]) for t in truth)
     print(f"\n  정답 {len(truth)}곡 · 줄 {total}개")
     # 사람이 찍은 것이라 붙어 있는 줄이 섞인다. 0.3 초 미만 간격은 한 호흡에 두 줄을 찍은 것.

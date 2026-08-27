@@ -506,14 +506,29 @@ def written_language(text: str, declared: str) -> str:
     Only a clear majority overrules the label, and only for a language the aligner has a model
     for; a truly mixed sheet keeps what it was given, and the minority script is borrowed from
     the multilingual aligner word by word.
+
+    가나와 한자를 세지 않던 때가 있었다. 분모가 한글+라틴 뿐이라 일본어 가사는 한글이 0 이고,
+    그래서 라틴 비율이 언제나 100% 로 나왔다 — 라틴 글자 스무 자만 섞이면 어떤 일본어 곡이든
+    영어로 판정됐다. 米津玄師 「IRIS OUT」이 그랬다: 가나·한자 482 자에 라틴 96 자인 글이
+    영어로 넘어가 앵커 밀도 0.00 이 나왔고, 실측 오차는 4.8 초였다. 「Pretender」와
+    「115万キロのフィルム」이 멀쩡했던 것은 라틴이 각각 3 자·8 자라 total < 20 에 걸려
+    우연히 빠져나간 덕이다.
+
+    한자는 분모에 늘 넣지만 ja 후보는 가나가 있을 때만 내놓는다. 한자만 있는 글은 중국어일 수
+    있고, 한국어 가사에도 드물게 섞인다 — 그 몇 자로 일본어라 부를 수는 없다.
     """
     hangul = sum(1 for character in text if "가" <= character <= "힣")
     latin = sum(1 for character in text if character.isascii() and character.isalpha())
-    total = hangul + latin
+    kana = sum(1 for character in text if "぀" <= character <= "ヿ")
+    kanji = sum(1 for character in text if "一" <= character <= "鿿")
+    total = hangul + latin + kana + kanji
     if total < 20:
         return declared
+    candidates = [(hangul / total, "ko"), (latin / total, "en")]
+    if kana > 0:
+        candidates.append(((kana + kanji) / total, "ja"))
     supported = alignable_languages()
-    for share, code in ((hangul / total, "ko"), (latin / total, "en")):
+    for share, code in candidates:
         if share >= 0.7 and code != declared and (supported is None or code in supported):
             return code
     return declared
