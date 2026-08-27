@@ -97,7 +97,23 @@ export function sameArtist(found: string | undefined, wanted: string): boolean {
       .filter((piece) => piece.length > 0);
   const mine = parts(wanted);
   const theirs = parts(found);
-  return mine.some((one) => theirs.some((other) => one.includes(other) || other.includes(one)));
+  if (mine.some((one) => theirs.some((other) => one.includes(other) || other.includes(one)))) return true;
+  // 한 이름을 두 문자로 함께 적을 때, 어느 쪽을 앞에 두느냐는 서비스마다 다르다 —
+  // "혁오 (HYUKOH)" 와 "HYUKOH(혁오)" 는 붙여 놓으면 "혁오hyukoh" 와 "hyukoh혁오"가 되어
+  // 서로를 품지 못한다. 부르는 방식마다 따로 세면 순서가 문제되지 않는다.
+  return spellings(wanted).some((one) => spellings(found).some((other) => one === other));
+}
+
+/**
+ * 한 이름을 부르는 방식들 — 전체, 괄호 밖, 괄호 안.
+ *
+ * "혁오 (HYUKOH)" 는 혁오이기도 하고 HYUKOH 이기도 하다. 서로 다른 이름이 섞이지 않도록
+ * 조각끼리 정확히 같을 때만 같은 이름으로 본다.
+ */
+function spellings(name: string): string[] {
+  const inside = [...name.matchAll(/[（([［]([^）)\]］]+)[）)\]］]/gu)].map((match) => normalizeTitle(match[1] ?? ""));
+  const outside = normalizeTitle(name.replace(/[（([［][^）)\]］]*[）)\]］]/gu, " "));
+  return [normalizeTitle(name), outside, ...inside].filter((part) => part.length > 0);
 }
 
 function scriptCounts(text: string): { hangul: number; kana: number; han: number; latin: number; total: number } {

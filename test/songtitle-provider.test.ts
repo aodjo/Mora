@@ -112,6 +112,9 @@ test("a title alone does not name a song", () => {
   assert.equal(sameArtist("Anne-Marie", "サザンオールスターズ"), false);
   assert.equal(sameArtist("Ed Sheeran", "IU"), false);
   assert.equal(sameArtist("아이유", "태연"), false);
+  // 괄호를 쪼개 본다고 서로 다른 사람이 같아지지는 않아야 한다.
+  assert.equal(sameArtist("BIGBANG", "2NE1"), false);
+  assert.equal(sameArtist("혁오 (HYUKOH)", "잔나비 (JANNABI)"), false);
 });
 
 test("the same artist written a dozen ways is still the same artist", () => {
@@ -124,6 +127,14 @@ test("the same artist written a dozen ways is still the same artist", () => {
   assert.equal(sameArtist("Ella Langley", "Ella Langley & Morgan Wallen"), true);
   assert.equal(sameArtist("Drake feat. 21 Savage", "Drake"), true);
   assert.equal(sameArtist("HUNTR/X, EJAE, AUDREY NUNA", "HUNTR/X"), true);
+  // 한 이름을 두 문자로 함께 적을 때 어느 쪽을 앞에 두느냐는 서비스마다 다르다. 붙여 놓고
+  // 서로를 품는지 보는 방식은 순서가 뒤집히면 막혔다 — 이 검사가 도리어 멀쩡한 가사를
+  // 버리게 된다. YouTube 채널 판정에서 같은 모양의 버그를 고친 것과 짝이다.
+  assert.equal(sameArtist("혁오 (HYUKOH)", "HYUKOH(혁오)"), true);
+  assert.equal(sameArtist("HYUKOH(혁오)", "혁오 (HYUKOH)"), true);
+  assert.equal(sameArtist("아이유 (IU)", "IU (아이유)"), true);
+  assert.equal(sameArtist("방탄소년단 (BTS)", "BTS (방탄소년단)"), true);
+  assert.equal(sameArtist("키키", "KiiiKiii (키키)"), true);
   // 크레딧을 안 적는 공급자는 제목 검사에 맡긴다 — 막으면 그 공급자가 통째로 사라진다.
   assert.equal(sameArtist(undefined, "IU"), true);
   assert.equal(sameArtist("", "IU"), true);
