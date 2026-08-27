@@ -141,6 +141,11 @@ def main() -> None:
             "end_median_ms": statistics.median(abs(v - shift) for v in ends),
             "density": got["quality"].get("anchor_density", 0.0),
         })
+        # 곡마다 남긴다. 끝나고 한 번에 쓰면 기계가 사라질 때 그 판이 통째로 날아간다 —
+        # 실제로 쉰다섯 곡을 그렇게 잃을 뻔했고, 로그를 긁어 겨우 복구했다.
+        out = Path(args.work)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "words-partial.json").write_text(json.dumps(results, ensure_ascii=False), encoding="utf-8")
         last = results[-1]
         print(f"  ✔ {last['song'][:34]:<36}{last['words']:>5}낱말  치우침 {shift / 1000:>+5.1f}s  "
               f"시작오차 {last['start_median_ms']:>5.0f}ms  0.1초내 {last['within_100']:>4.0%}  "

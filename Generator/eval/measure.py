@@ -148,6 +148,10 @@ def main() -> None:
             ],
             "lrclib_seconds": song.get("duration"), "our_seconds": length_ms / 1000,
         })
+        # 곡마다 남긴다. 끝나고 한 번에 쓰면 기계가 사라질 때 그 판이 통째로 날아간다.
+        Path("/workspace/measure").mkdir(parents=True, exist_ok=True)
+        Path("/workspace/measure/result-partial.json").write_text(
+            json.dumps(results, ensure_ascii=False), encoding="utf-8")
         print(f"  ✔ {name[:34]:<36}{len(rows):>3}줄  치우침 {shift / 1000:>+6.1f}s  "
               f"오차 {results[-1]['median']:>5.0f}ms  0.3초내 {results[-1]['within300']:>4.0%}  "
               f"밀도 {quality.get('anchor_density', 0):.2f}  ({time.time() - began:.0f}초)", flush=True)
