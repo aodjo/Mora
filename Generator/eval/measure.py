@@ -128,6 +128,10 @@ def main() -> None:
 
         quality = got["quality"]
         results.append({
+            # publish.py 가 대시보드로 보낼 때 곡을 가리킬 것들. 이름만으로는 같은 제목의
+            # 다른 곡과 섞인다.
+            "video_id": song["video_id"], "artist": song["artist"], "title": song["title"],
+            "language": language,
             "name": name, "lines": len(rows),
             "raw_median": statistics.median([abs(v) for v in raw]),
             "shift": shift,

@@ -2096,6 +2096,87 @@ async function dispatchNotifications(env: WorkerEnv, type: string, data: Record<
   );
 }
 
+/**
+ * 정렬이 실제로 몇 ms 틀리는가.
+ *
+ * 후보마다 붙는 앵커 밀도와 숨 자리는 대리 지표다 — "몇 낱말이 들렸나", "경계가 조용한 데
+ * 있나"를 물을 뿐 "맞나"를 묻지 않는다. 실측으로 밀도 0.99 인 곡이 308ms 틀리고 0.90 인 곡이
+ * 26ms 였다. 진짜 오차는 정답셋(Generator/eval)을 돌려야만 나오고, 그것은 사람이 손으로
+ * 시작한다. 그 결과가 터미널 스크롤백에만 남으면 다음 사람은 견줄 수가 없다.
+ */
+async function latestEval(env: WorkerEnv): Promise<Response> {
+  const run = await env.ADMIN_DB.prepare(
+    "SELECT id,pipeline_version,truth_source,songs,median_error_ms,within_300_share,note,created_at FROM eval_runs ORDER BY created_at DESC LIMIT 1",
+  ).first<Record<string, unknown>>();
+  if (run === null) return json({ run: null, songs: [], history: [] });
+  return json({
+    run,
+    songs: await list(
+      env.ADMIN_DB,
+      `SELECT video_id,artist,title,language,lines,shift_ms,median_error_ms,p90_error_ms,within_300_share,anchor_density,breath_gaps
+       FROM eval_songs WHERE run_id=?1 ORDER BY median_error_ms ASC`,
+      [run.id],
+    ),
+    // 지난 판들. 오늘 146ms 였다가 내일 400ms 가 되면 그 사이에 무엇을 했는지 물어야 한다.
+    history: await list(
+      env.ADMIN_DB,
+      "SELECT id,pipeline_version,songs,median_error_ms,within_300_share,created_at FROM eval_runs ORDER BY created_at DESC LIMIT 20",
+    ),
+  });
+}
+
+async function recordEval(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
+  const songs = Array.isArray(value.songs) ? (value.songs as Array<Record<string, unknown>>) : [];
+  if (songs.length === 0) throw new ServiceError(400, "INVALID_REQUEST");
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const middle = (numbers: number[]): number => {
+    const sorted = [...numbers].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)] ?? 0;
+  };
+  const errors = songs.map((song) => numberValue(song.median_error_ms, 0, 3_600_000));
+  const within = songs.map((song) => numberValue(song.within_300_share, 0, 1));
+  await env.ADMIN_DB.prepare(
+    `INSERT INTO eval_runs (id,pipeline_version,truth_source,songs,median_error_ms,within_300_share,note,created_by,created_at)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)`,
+  )
+    .bind(
+      id,
+      requiredString(value.pipeline_version, 200),
+      requiredString(value.truth_source, 100),
+      songs.length,
+      Math.round(middle(errors)),
+      within.reduce((sum, share) => sum + share, 0) / within.length,
+      typeof value.note === "string" && value.note.length > 0 ? value.note.slice(0, 1000) : null,
+      actor.id,
+      now,
+    )
+    .run();
+  await env.ADMIN_DB.batch(
+    songs.map((song) =>
+      env.ADMIN_DB.prepare(
+        `INSERT INTO eval_songs (run_id,video_id,artist,title,language,lines,shift_ms,median_error_ms,p90_error_ms,within_300_share,anchor_density,breath_gaps)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)`,
+      ).bind(
+        id,
+        requiredString(song.video_id, 64),
+        requiredString(song.artist, 500),
+        requiredString(song.title, 500),
+        requiredString(song.language, 16),
+        numberValue(song.lines, 0, 10_000),
+        Math.round(numberValue(song.shift_ms, -3_600_000, 3_600_000)),
+        Math.round(numberValue(song.median_error_ms, 0, 3_600_000)),
+        Math.round(numberValue(song.p90_error_ms, 0, 3_600_000)),
+        numberValue(song.within_300_share, 0, 1),
+        numberValue(song.anchor_density, 0, 1),
+        numberValue(song.breath_gaps, 0, 1),
+      ),
+    ),
+  );
+  await audit(env, actor, "eval.record", "eval", id, { songs: songs.length });
+  return json({ id }, 201);
+}
+
 export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/admin/api/auth/status") {
@@ -2165,6 +2246,15 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
         "SELECT id,name,version,backend,hardware,capabilities,self_test,production_ready,desired_state,last_seen_at,created_at FROM workers ORDER BY last_seen_at DESC",
       ),
     });
+  }
+  if (request.method === "GET" && url.pathname === "/admin/api/eval") {
+    requirePermission(actor, "dashboard.read");
+    return latestEval(env);
+  }
+  if (request.method === "POST" && url.pathname === "/admin/api/eval") {
+    // 정답셋을 돌리는 것은 워커가 아니라 사람이 손으로 하는 일이라, 작업 권한에 붙인다.
+    requirePermission(actor, "jobs.manage");
+    return recordEval(env, actor, await body(request));
   }
   if (request.method === "GET" && url.pathname === "/admin/api/recordings") {
     requirePermission(actor, "recordings.read");

@@ -3796,3 +3796,98 @@ textarea:focus-visible {
 .lyric-line.active {
   transition: none;
 }
+
+/* 정확도 — 정답셋과 견준 실제 오차.
+   숫자를 견주는 화면이라 자릿수가 어긋나면 읽을 수가 없다. 표의 수는 전부 tabular-nums 로
+   두고 오른쪽으로 붙인다. */
+.accuracy {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.accuracy-band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 28px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.accuracy-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.accuracy-figure strong {
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.accuracy-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.accuracy-move {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.accuracy-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+}
+.accuracy-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.accuracy-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.accuracy-table th:not(:first-child):not(:nth-child(2)) {
+  text-align: right;
+}
+.accuracy-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line-soft, var(--line));
+}
+.accuracy-table td.figure {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.accuracy-table .good {
+  color: var(--good, #2f8f5b);
+}
+.accuracy-table .warn {
+  color: var(--warn, #a97514);
+}
+.accuracy-table .bad {
+  color: var(--bad, #b5443a);
+}
+.accuracy-figure strong.good {
+  color: var(--good, #2f8f5b);
+}
+.accuracy-figure strong.warn {
+  color: var(--warn, #a97514);
+}
+.accuracy-figure strong.bad {
+  color: var(--bad, #b5443a);
+}
+.accuracy-history h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
