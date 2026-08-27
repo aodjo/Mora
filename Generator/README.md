@@ -121,3 +121,19 @@ vast.ai 는 우리가 고른 이미지를 컨테이너로 돌려 줍니다. 그�
 **오래 사는 키를 기계에 심지 않습니다.** 빌린 기계의 환경변수는 그 기계 주인이 읽을 수 있고 vast.ai 의 API 응답에도 그대로 나옵니다. 대신 기계마다 **한 번 쓰고 마는 등록 토큰**(`MORA_ENROLL_TOKEN`)을 주면, 워커가 그것으로 제 키를 받아 옵니다. 토큰은 10 분이면 만료되고 한 번 쓰면 끝나므로 나중에 주워도 쓸 데가 없고, 한 대가 새더라도 그 워커의 키만 폐기하면 됩니다.
 
 `ghcr.io/aodjo/mora-generator` 는 기본이 비공개입니다. 이 방식을 쓰려면 GitHub 패키지 설정에서 공개로 바꾸거나, vast.ai 쪽에 레지스트리 자격을 넣어야 합니다.
+
+## 한 줄로 세우기
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aodjo/Mora/main/Generator/scripts/install.sh | bash
+```
+
+워커까지 곧바로 띄우려면 등록 토큰을 함께 줍니다:
+
+```bash
+curl -fsSL .../install.sh | MORA_ENROLL_TOKEN=mora_… bash
+```
+
+apt·node·저장소·빌드·파이썬 환경을 세우고, 토큰이 있으면 `run-worker.sh` 로 워커까지 띄웁니다. 오늘 두 번 넘어진 자리(다른 설치가 dpkg 를 물고 있어 build-essential 이 조용히 안 깔리던 것, 그래서 한참 뒤 diffq 에서 터지던 것)는 락을 기다리고 gcc 를 확인하는 것으로 막았습니다.
+
+지어 둔 이미지를 쓰는 길도 있지만 9 GB 를 받습니다. 이 길은 필요한 것만 받고 **언제나 그 순간의 `main`** 을 세우므로, 이미지가 낡아 옛 코드로 도는 일이 없습니다. `rent.py` 도 이 길을 씁니다.

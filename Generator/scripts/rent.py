@@ -36,7 +36,11 @@ AGENT = "Mora/0.1 (+https://mora.junx.dev)"
 
 VAST = "https://console.vast.ai/api/v0"
 KEY = Path(os.getenv("VAST_API_KEY_FILE", Path.home() / ".config/vastai/vast_api_key"))
-IMAGE = os.getenv("MORA_GENERATOR_IMAGE", "ghcr.io/aodjo/mora-generator:latest")
+# 지어 둔 이미지를 쓰면 9 GB 를 받는다. 설치 스크립트는 필요한 것만 받으므로 대개 더 빠르고,
+# 이미지가 낡아 옛 코드로 도는 일도 없다 — 언제나 그 순간의 main 을 받는다.
+IMAGE = os.getenv("MORA_GENERATOR_IMAGE", "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime")
+INSTALL = os.getenv(
+    "MORA_INSTALL_URL", "https://raw.githubusercontent.com/aodjo/Mora/main/Generator/scripts/install.sh")
 ADMIN = os.getenv("MORA_ADMIN_URL", "https://mora.junx.dev")
 # 이미지가 비공개일 때 vast.ai 가 받아 올 자격. 반드시 이 저장소의 패키지만 읽는 좁은 토큰을
 # 쓸 것 — classic PAT 의 read:packages 는 그 계정이 읽는 모든 패키지를 연다. fine-grained 로
@@ -114,15 +118,9 @@ def registry_login() -> dict:
 
 def up(offer_ids: list[str], disk: int, admin_token: str) -> None:
     # vast.ai 의 ssh 모드는 이미지의 entrypoint 를 제 것으로 갈아 끼우고 onstart 를 부른다.
-    # 그래서 이미지의 CMD 만 믿으면 워커가 뜨지 않는다 — 여기서 다시 부른다. entrypoint 모드로
-    # 두면 CMD 가 그대로 살지만 ssh 가 없어져 무언가 어긋났을 때 들어가 볼 수가 없다.
-    #
-    # 죽으면 다시 띄운다. 새 판은 이미지를 다시 지어 기계를 새로 빌리는 것으로 받는다.
-    start = (
-        "mkdir -p /workspace/logs && cd /app && "
-        "setsid nohup sh -c 'while true; do node dist/Generator/src/worker-cli.js; sleep 5; done' "
-        "> /workspace/logs/worker.log 2>&1 < /dev/null &"
-    )
+    # 그러니 설치는 onstart 에서 한다 — 지어 둔 이미지를 써도 CMD 가 지워지므로 어차피 여기서
+    # 불러야 하고, 그럴 바에는 9 GB 를 받지 않고 그 순간의 main 을 세우는 편이 낫다.
+    start = f"curl -fsSL {INSTALL} | MORA_ENROLL_TOKEN=__TOKEN__ MORA_ADMIN_URL={ADMIN} bash"
     for offer in offer_ids:
         # 기계마다 새 토큰을 받는다. 하나가 새도 그 한 대에서 끝난다.
         token = enrollment(admin_token)
@@ -130,7 +128,7 @@ def up(offer_ids: list[str], disk: int, admin_token: str) -> None:
         worker = f"fleet-{offer}"
         body = {
             "client_id": "me", "image": IMAGE, "disk": disk, "runtype": "ssh",
-            "label": f"mora-w{offer}", "onstart": start,
+            "label": f"mora-w{offer}", "onstart": start.replace("__TOKEN__", token),
             **registry_login(),
             "env": {
                 "-p 22:22": "1",
