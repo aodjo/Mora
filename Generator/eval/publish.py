@@ -22,6 +22,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+AGENT = "Mora/0.1 (+https://mora.junx.dev)"
+
 
 def pipeline_version() -> str:
     """어느 판의 코드였나. 이것이 없으면 두 판을 견줄 수가 없다."""
@@ -87,7 +89,9 @@ def main() -> None:
         f"{args.admin.rstrip('/')}/admin/api/eval",
         data=json.dumps(payload).encode("utf-8"),
         method="POST",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {args.token}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {args.token}",
+                 # Cloudflare 는 urllib 의 기본 User-Agent 를 보고 1010 으로 막는다.
+                 "User-Agent": AGENT},
     )
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
