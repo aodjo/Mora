@@ -50,3 +50,18 @@ tail -f Generator/.logs/generator.log Generator/.logs/generator.error.log
 ```bash
 Generator/scripts/uninstall-launch-agent.sh
 ```
+
+## 컨테이너로 받아 쓰기
+
+빌린 기계마다 저장소를 받고 apt 를 깔고 torch·whisperx·demucs 를 pip 로 세울 필요 없이, 지어 둔 것을 받아 씁니다.
+
+```bash
+docker run --rm --gpus all \
+  -e MORA_ADMIN_URL=https://mora.junx.dev \
+  -v mora-generator:/data \
+  ghcr.io/aodjo/mora-generator:latest
+```
+
+첫 실행은 PIN 을 띄웁니다. `Admin → 권한·설정 → Generator 연결`에 넣으면 서비스 키를 받아 `/data` 볼륨에 저장하고, 이후 실행은 자동입니다.
+
+이미지는 태그를 붙이거나 릴리스를 낼 때, 또는 Actions 에서 손으로 돌릴 때 지어집니다 (`.github/workflows/generator-image.yml`). GPU 가 필요하므로 `--gpus all` 과 호스트의 NVIDIA Container Toolkit 이 있어야 합니다.
