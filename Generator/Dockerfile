@@ -36,6 +36,9 @@ RUN set -eu; \
 
 WORKDIR /app
 COPY Generator/python ./Generator/python
+# 평가 도구도 함께 넣는다. 기계마다 scp 로 밀어 넣던 것인데, 이미지에 있으면 그 단계가 없어지고
+# 이미지와 도구의 판이 어긋날 일도 없다.
+COPY Generator/eval ./Generator/eval
 RUN pip install --no-cache-dir "./Generator/python[cuda]"
 COPY --from=ts-build /app/dist ./dist
 CMD ["node", "dist/Generator/src/worker-cli.js"]

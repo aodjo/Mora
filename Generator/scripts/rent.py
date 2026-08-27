@@ -36,9 +36,11 @@ AGENT = "Mora/0.1 (+https://mora.junx.dev)"
 
 VAST = "https://console.vast.ai/api/v0"
 KEY = Path(os.getenv("VAST_API_KEY_FILE", Path.home() / ".config/vastai/vast_api_key"))
-# 지어 둔 이미지를 쓰면 9 GB 를 받는다. 설치 스크립트는 필요한 것만 받으므로 대개 더 빠르고,
-# 이미지가 낡아 옛 코드로 도는 일도 없다 — 언제나 그 순간의 main 을 받는다.
-IMAGE = os.getenv("MORA_GENERATOR_IMAGE", "pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime")
+# 지어 둔 이미지를 쓴다. 한때 "9 GB 를 받느니 세우는 편이 낫다"고 판단했는데 거꾸로였다 —
+# 받는 데 1~2 분, 세우는 데 10 분이다(apt·node·pnpm·torch). 네 번 갈아타며 40 분을 그렇게 냈다.
+#
+# 낡을 걱정도 없다. Generator/packages/Server 가 바뀌면 워크플로가 자동으로 다시 짓는다.
+IMAGE = os.getenv("MORA_GENERATOR_IMAGE", "ghcr.io/aodjo/mora-generator:latest")
 INSTALL = os.getenv(
     "MORA_INSTALL_URL", "https://raw.githubusercontent.com/aodjo/Mora/main/Generator/scripts/install.sh")
 ADMIN = os.getenv("MORA_ADMIN_URL", "https://mora.junx.dev")
@@ -121,7 +123,14 @@ def up(offer_ids: list[str], disk: int, admin_token: str) -> None:
     # vast.ai 의 ssh 모드는 이미지의 entrypoint 를 제 것으로 갈아 끼우고 onstart 를 부른다.
     # 그러니 설치는 onstart 에서 한다 — 지어 둔 이미지를 써도 CMD 가 지워지므로 어차피 여기서
     # 불러야 하고, 그럴 바에는 9 GB 를 받지 않고 그 순간의 main 을 세우는 편이 낫다.
-    start = f"curl -fsSL {INSTALL} | MORA_ENROLL_TOKEN=__TOKEN__ MORA_ADMIN_URL={ADMIN} bash"
+    # ssh 모드는 이미지의 entrypoint 를 제 것으로 갈아 끼우므로 CMD 가 지워진다. 여기서 부른다.
+    # 죽으면 다시 띄운다 — 새 판은 이미지를 다시 지어 기계를 새로 빌리는 것으로 받는다.
+    start = (
+        "mkdir -p /workspace/logs && ln -sfn /app /workspace/Mora 2>/dev/null; cd /app && "
+        "MORA_ENROLL_TOKEN=__TOKEN__ MORA_ADMIN_URL=" + ADMIN + " "
+        "setsid nohup sh -c 'while true; do node dist/Generator/src/worker-cli.js; sleep 5; done' "
+        "> /workspace/logs/worker.log 2>&1 < /dev/null &"
+    )
     for offer in offer_ids:
         # 기계마다 새 토큰을 받는다. 하나가 새도 그 한 대에서 끝난다.
         token = enrollment(admin_token)
