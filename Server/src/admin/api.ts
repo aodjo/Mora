@@ -2,6 +2,7 @@ import { preprocessLyrics } from "../../../packages/preprocess/src/index.js";
 import { sheetHash } from "../../../packages/core/src/tokenization/fingerprint.js";
 import { tokenizeV2 } from "../../../packages/core/src/tokenization/tokenizer-v2.js";
 import { ServiceError } from "../../../packages/core/src/shared/errors.js";
+import { playlistId, playlistTracks } from "./spotify.js";
 import { ANCHOR_DENSITY_FLOOR, ANCHOR_REACH_FLOOR, passesQualityGate } from "./quality-gate.js";
 import type {
   GeneratorCandidateSubmission,
@@ -347,34 +348,100 @@ async function addToBasket(env: WorkerEnv, actor: Actor, value: Record<string, u
   const providers = Array.isArray(value.providers)
     ? value.providers.filter((entry): entry is string => typeof entry === "string").slice(0, 8)
     : [];
-  const id = crypto.randomUUID();
-  const now = Date.now();
-  const optional = (key: string, limit: number): string | null =>
-    typeof value[key] === "string" && (value[key] as string).length > 0 ? (value[key] as string).slice(0, limit) : null;
-  const duration = typeof value.duration_ms === "number" && Number.isFinite(value.duration_ms) ? Math.round(value.duration_ms) : null;
-  // Keeping the same song twice is the same intent, so the second keep just refreshes it.
-  await env.ADMIN_DB.prepare(
-    `INSERT INTO song_basket (id,artist,title,album,duration_ms,isrc,artwork,providers,state,added_by,added_at)
-     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'held',?9,?10)
-     ON CONFLICT(artist,title) DO UPDATE SET
-       album=COALESCE(excluded.album,album), duration_ms=COALESCE(excluded.duration_ms,duration_ms),
-       isrc=COALESCE(excluded.isrc,isrc), artwork=COALESCE(excluded.artwork,artwork),
-       providers=excluded.providers, state='held', error=NULL`,
-  )
-    .bind(
-      id,
+  const optional = (key: string, limit: number): string | undefined =>
+    typeof value[key] === "string" && (value[key] as string).length > 0 ? (value[key] as string).slice(0, limit) : undefined;
+  await keepInBasket(env, actor, [
+    {
       artist,
       title,
-      optional("album", 500),
-      duration,
-      optional("isrc", 20),
-      optional("artwork", 500),
-      JSON.stringify(providers),
+      album: optional("album", 500),
+      duration_ms: typeof value.duration_ms === "number" && Number.isFinite(value.duration_ms) ? Math.round(value.duration_ms) : undefined,
+      isrc: optional("isrc", 20),
+      artwork: optional("artwork", 500),
+      providers,
+    },
+  ]);
+  return json({ accepted: true }, 202);
+}
+
+interface BasketSong {
+  artist: string;
+  title: string;
+  album?: string | undefined;
+  duration_ms?: number | undefined;
+  isrc?: string | undefined;
+  artwork?: string | undefined;
+  providers?: string[];
+}
+
+/**
+ * 장바구니에 담는 한 가지 길.
+ *
+ * 한 곡을 손으로 담는 것과 플레이리스트를 통째로 가져오는 것은 같은 일이므로, 담는 규칙도
+ * 하나여야 한다 — 같은 곡을 다시 담는 것은 같은 뜻이니 덮어쓰고, 비어 있던 자리만 채운다.
+ */
+async function keepInBasket(env: WorkerEnv, actor: Actor, songs: BasketSong[]): Promise<number> {
+  const now = Date.now();
+  const statements = songs.map((song) =>
+    env.ADMIN_DB.prepare(
+      `INSERT INTO song_basket (id,artist,title,album,duration_ms,isrc,artwork,providers,state,added_by,added_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'held',?9,?10)
+       ON CONFLICT(artist,title) DO UPDATE SET
+         album=COALESCE(excluded.album,album), duration_ms=COALESCE(excluded.duration_ms,duration_ms),
+         isrc=COALESCE(excluded.isrc,isrc), artwork=COALESCE(excluded.artwork,artwork),
+         providers=excluded.providers, state='held', error=NULL`,
+    ).bind(
+      crypto.randomUUID(),
+      song.artist,
+      song.title,
+      song.album ?? null,
+      song.duration_ms ?? null,
+      song.isrc ?? null,
+      song.artwork ?? null,
+      JSON.stringify(song.providers ?? []),
       actor.id,
       now,
-    )
-    .run();
-  return json({ accepted: true }, 202);
+    ),
+  );
+  // D1 은 한 묶음에 담을 문장 수에 한계가 있다. 백 곡씩 나눠 보낸다.
+  for (let start = 0; start < statements.length; start += 100) {
+    await env.ADMIN_DB.batch(statements.slice(start, start + 100));
+  }
+  return songs.length;
+}
+
+/**
+ * 플레이리스트 하나를 장바구니로.
+ *
+ * 차트는 인기순으로 백 곡을 줄 뿐이지만 플레이리스트는 사람이 골라 둔 것이고, Spotify 는
+ * 곡마다 ISRC 를 들고 있다 — 그것이 있으면 어느 녹음인지가 처음부터 정해져, 이름으로 더듬어
+ * 찾다가 다른 곡을 집는 일이 없어진다.
+ */
+async function importPlaylist(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const id = env.SPOTIFY_CLIENT_ID;
+  const secret = env.SPOTIFY_CLIENT_SECRET;
+  if (id === undefined || secret === undefined) throw new ServiceError(503, "SPOTIFY_NOT_CONFIGURED");
+  const playlist = playlistId(requiredString(value.url, 300));
+  if (playlist === undefined) throw new ServiceError(400, "INVALID_PLAYLIST");
+  let found;
+  try {
+    found = await playlistTracks(playlist, { id, secret });
+  } catch (error) {
+    // 무엇이 잘못됐는지 한 코드로 뭉치면 사람이 할 일을 알 수 없다 — 열쇠를 고칠 일과
+    // 플레이리스트를 공개로 바꿀 일은 다르다. 다만 위쪽이 보낸 글자를 그대로 싣지는 않는다.
+    // 그 안에 토큰이 실려 올 수 있고, 이 서버는 잡은 값을 남기지 않기로 되어 있다.
+    const said = error instanceof Error ? error.message : "";
+    if (said.startsWith("SPOTIFY_TOKEN")) throw new ServiceError(502, "SPOTIFY_AUTH_FAILED");
+    throw new ServiceError(502, "PLAYLIST_UNAVAILABLE");
+  }
+  const kept = await keepInBasket(
+    env,
+    actor,
+    found.tracks.map((track) => ({ ...track, providers: ["spotify"] })),
+  );
+  await audit(env, actor, "basket.import", "song_basket", playlist, { kept, total: found.total, name: found.name ?? null });
+  return json({ kept, total: found.total, name: found.name ?? null, skipped: found.total - kept }, 201);
 }
 
 async function readBasket(env: WorkerEnv, actor: Actor): Promise<Response> {
@@ -1509,7 +1576,6 @@ function qualityScore(quality: Record<string, number>): number {
   return keys.reduce((sum, key) => sum + Math.max(0, Math.min(1, quality[key] ?? 0)), 0) / keys.length;
 }
 
-
 async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "generator.candidates.write");
   const submission = value as unknown as GeneratorCandidateSubmission;
@@ -2198,6 +2264,7 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "GET" && url.pathname === "/admin/api/basket") return readBasket(env, actor);
   if (request.method === "POST" && url.pathname === "/admin/api/basket") return addToBasket(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/basket/process") return processBasket(env, actor);
+  if (request.method === "POST" && url.pathname === "/admin/api/basket/import") return importPlaylist(env, actor, await body(request));
   if (request.method === "DELETE" && url.pathname.startsWith("/admin/api/basket/"))
     return removeFromBasket(env, actor, decodeURIComponent(url.pathname.slice("/admin/api/basket/".length)));
   if (request.method === "POST" && url.pathname === "/admin/api/collector/basket/claim") return claimBasketSong(env, actor);

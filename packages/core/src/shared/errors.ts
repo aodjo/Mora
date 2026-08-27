@@ -23,6 +23,14 @@ export type ErrorCode =
   | "BAD_ARTIFACT"
   | "ARTIFACT_AUTH_FAILED"
   | "INVALID_RANGE"
+  /** 플레이리스트를 읽을 자격이 설정되지 않았다. */
+  | "SPOTIFY_NOT_CONFIGURED"
+  /** 준 주소에서 플레이리스트를 알아볼 수 없다. */
+  | "INVALID_PLAYLIST"
+  /** 자격이 거절당했다 — 사람이 할 일은 열쇠를 다시 넣는 것이다. */
+  | "SPOTIFY_AUTH_FAILED"
+  /** 플레이리스트에 닿지 못했다 — 비공개이거나 지워졌거나 그 지역에 없다. */
+  | "PLAYLIST_UNAVAILABLE"
   | "UNSUPPORTED_ARTIFACT"
   | "SETTING_NOT_FOUND"
   | "INVALID_SETTING_VALUE"

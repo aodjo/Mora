@@ -83,6 +83,8 @@ export function AddSongsView() {
   const [searching, setSearching] = useState(false);
   const [failure, setFailure] = useState("");
   const [basket, setBasket] = useState<BasketRow[]>([]);
+  const [playlist, setPlaylist] = useState("");
+  const [importing, setImporting] = useState(false);
   const [releasing, setReleasing] = useState(false);
   const abort = useRef<AbortController | null>(null);
   // 무엇을 마지막으로 물었는지. 같은 것을 두 번 묻지 않게 한다.
@@ -199,6 +201,37 @@ export function AddSongsView() {
     }
   }
 
+  async function importPlaylist(): Promise<void> {
+    const url = playlist.trim();
+    if (url.length === 0) return;
+    setImporting(true);
+    try {
+      const result = await api<{ kept: number; total: number; name: string | null; skipped: number }>("/basket/import", {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      });
+      // 지나친 곡이 있으면 말해 준다 — 팟캐스트나 올린 파일은 맞출 가사가 없다.
+      const passed = result.skipped > 0 ? ` (${result.skipped}곡은 타이밍을 만들 수 없어 지나침)` : "";
+      showToast(`${result.name ?? "플레이리스트"}에서 ${result.kept}곡을 담았습니다${passed}.`);
+      setPlaylist("");
+      await loadBasket();
+    } catch (reason) {
+      const code = reason instanceof Error ? reason.message : "";
+      const said = code.includes("SPOTIFY_NOT_CONFIGURED")
+        ? "Spotify 자격이 설정되지 않았습니다."
+        : code.includes("SPOTIFY_AUTH_FAILED")
+          ? "Spotify가 자격을 거절했습니다."
+          : code.includes("INVALID_PLAYLIST")
+            ? "플레이리스트 주소가 아닙니다."
+            : code.includes("PLAYLIST_UNAVAILABLE")
+              ? "플레이리스트를 읽을 수 없습니다 — 공개인지 확인하세요."
+              : "가져오기에 실패했습니다.";
+      showToast(said, { variant: "error" });
+    } finally {
+      setImporting(false);
+    }
+  }
+
   const held = basket.filter((row) => row.state === "held").length;
   const kept = new Set(basket.map((row) => `${row.artist}\0${row.title}`));
 
@@ -291,6 +324,27 @@ export function AddSongsView() {
           <ShoppingBasket size={15} />
           장바구니 <b>{basket.length}</b>
         </h3>
+        {/*
+          한 곡씩 검색해 담는 것과 같은 자리에 둔다. 차트는 인기순으로 줄 뿐이지만 플레이리스트는
+          사람이 이미 골라 둔 것이고, Spotify는 곡마다 ISRC를 들고 있어 어느 녹음인지가 처음부터
+          정해진다.
+        */}
+        <div className="yt-search playlist-import">
+          <input
+            className="form-control"
+            value={playlist}
+            placeholder="Spotify 플레이리스트 주소를 붙여넣으세요"
+            onChange={(event) => setPlaylist(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void importPlaylist();
+            }}
+            disabled={importing}
+            aria-label="Spotify 플레이리스트 주소"
+          />
+          <button className="btn" onClick={() => void importPlaylist()} disabled={importing || playlist.trim().length === 0}>
+            {importing ? "가져오는 중…" : "가져오기"}
+          </button>
+        </div>
         {basket.length === 0 ? (
           <p className="filter-empty">담은 곡이 없습니다. 검색해서 추가하세요.</p>
         ) : (
