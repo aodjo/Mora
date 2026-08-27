@@ -26,8 +26,17 @@ import sys
 import time
 from pathlib import Path
 
-MORA = Path(__file__).resolve().parents[2]
-spec = importlib.util.spec_from_file_location("daemon", MORA / "Generator/python/mora_ml_daemon.py")
+def find_daemon() -> Path:
+    """이 파일이 저장소 밖으로 복사되어 돌 때가 있다. 상대 경로를 박아 두면 그때 깨진다."""
+    here = Path(__file__).resolve()
+    for parent in [*here.parents, Path("/workspace/Mora"), Path.cwd()]:
+        candidate = parent / "Generator/python/mora_ml_daemon.py"
+        if candidate.exists():
+            return candidate
+    raise SystemExit("mora_ml_daemon.py 를 못 찾았다")
+
+
+spec = importlib.util.spec_from_file_location("daemon", find_daemon())
 daemon = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(daemon)
 
@@ -36,7 +45,11 @@ LANGUAGE = {"English": "en", "German": "de", "Spanish": "es", "French": "fr"}
 
 def tokenized(text: str, language: str) -> list[dict]:
     """워커가 쓰는 그 토크나이저로 가른다 — 여기서 달리 가르면 재는 의미가 없다."""
-    got = subprocess.run(["node", str(Path(__file__).with_name("tokenize.mjs"))],
+    bridge = next((p for p in (Path(__file__).with_name("tokenize.mjs"),
+                               find_daemon().parents[1] / "eval/tokenize.mjs") if p.exists()), None)
+    if bridge is None:
+        raise SystemExit("tokenize.mjs 를 못 찾았다")
+    got = subprocess.run(["node", str(bridge)],
                          input=json.dumps({"text": text, "language": language}),
                          capture_output=True, text=True, timeout=120)
     if got.returncode != 0:
