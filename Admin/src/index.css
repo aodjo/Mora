@@ -3891,3 +3891,48 @@ textarea:focus-visible {
   font-size: 13px;
   color: var(--muted);
 }
+
+/* 곡을 열면 줄이 펼쳐진다. 숫자만으로는 맞는지 알 수 없으니, 어느 줄을 어디에 놓았고 정답이
+   어디였는지를 나란히 둔다. */
+.accuracy-row {
+  cursor: pointer;
+}
+.accuracy-row:hover {
+  background: var(--hover, rgba(127, 127, 127, 0.06));
+}
+.accuracy-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.accuracy-detail {
+  padding: 0 10px 14px !important;
+  background: var(--panel-soft, rgba(127, 127, 127, 0.04));
+}
+.accuracy-lines {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.accuracy-lines th {
+  text-align: right;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 6px 8px;
+}
+.accuracy-lines th:nth-child(2) {
+  text-align: left;
+}
+.accuracy-lines td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line-soft, var(--line));
+}
+.accuracy-lines td.figure {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.accuracy-lines td.lyric {
+  width: 100%;
+  color: var(--text);
+}

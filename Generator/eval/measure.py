@@ -140,6 +140,12 @@ def main() -> None:
             "within300": sum(1 for v in fixed if abs(v) <= 300) / len(fixed),
             "density": quality.get("anchor_density", 0.0),
             "breath": quality.get("breath_gaps", 0.0),
+            # 줄마다의 견줌. 숫자가 맞는지는 사람이 이걸 보고 판단한다 — "146ms" 만으로는
+            # 믿을 근거가 없고, 어디에 놓았고 정답이 어디였는지가 나란히 보여야 한다.
+            "lines_detail": [
+                {"text": rows[i]["text"], "ours_ms": int(ours[i]), "truth_ms": int(want[i])}
+                for i in range(len(pairs))
+            ],
             "lrclib_seconds": song.get("duration"), "our_seconds": length_ms / 1000,
         })
         print(f"  ✔ {name[:34]:<36}{len(rows):>3}줄  치우침 {shift / 1000:>+6.1f}s  "

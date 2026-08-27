@@ -72,6 +72,8 @@ def main() -> None:
                 "within_300_share": float(row["within300"]),
                 "anchor_density": float(row["density"]),
                 "breath_gaps": float(row.get("breath", 1.0)),
+                # 옛 판의 결과 파일에는 없다. 없으면 없는 대로 보낸다.
+                "lines_detail": row.get("lines_detail", []),
             }
             for row in songs.values()
         ],

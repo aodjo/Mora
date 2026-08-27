@@ -1,4 +1,4 @@
-import { Ruler, TrendingDown, TrendingUp } from "lucide-react";
+import { ChevronDown, ChevronRight, Ruler, TrendingDown, TrendingUp } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { relativeTime } from "./utils";
@@ -28,6 +28,13 @@ interface EvalRun {
   created_at: number;
 }
 
+interface EvalLine {
+  line_index: number;
+  text: string;
+  ours_ms: number;
+  truth_ms: number;
+}
+
 interface Accuracy {
   run: EvalRun | null;
   songs: EvalSong[];
@@ -44,8 +51,75 @@ function tone(errorMs: number): "good" | "warn" | "bad" {
   return "bad";
 }
 
+function clock(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/**
+ * 한 곡의 줄을 펼쳐 놓고 우리 자리와 정답을 나란히 보여 준다.
+ *
+ * "오차 가운뎃값 146ms" 만으로는 맞는지 알 수 없다. 어느 줄을 어디에 놓았고 정답은 어디였는지가
+ * 보여야 사람이 판단할 수 있고, 유튜브 링크가 그 자리에서 열려야 귀로도 확인할 수 있다.
+ *
+ * 곡 전체가 일정하게 밀린 양(치우침)은 빼고 보여 준다. 그것은 유튜브 음원과 공식 음원의 인트로
+ * 차이라 정렬의 잘못이 아니고, 빼지 않으면 모든 줄이 똑같이 틀린 것처럼 보인다.
+ */
+function Lines({ videoId, shiftMs }: { videoId: string; shiftMs: number }) {
+  const [lines, setLines] = useState<EvalLine[] | null>(null);
+  const [failure, setFailure] = useState("");
+  useEffect(() => {
+    api<{ lines: EvalLine[] }>(`/eval/${encodeURIComponent(videoId)}/lines`)
+      .then((got) => setLines(got.lines))
+      .catch((reason) => setFailure(reason instanceof Error ? reason.message : "줄을 불러오지 못했습니다"));
+  }, [videoId]);
+  if (failure !== "") return <p className="detail-note warn">{failure}</p>;
+  if (lines === null) return <p className="detail-empty">불러오는 중…</p>;
+  if (lines.length === 0) return <p className="detail-note">이 곡은 줄별 기록이 없습니다. 다시 재면 함께 쌓입니다.</p>;
+  return (
+    <table className="accuracy-lines">
+      <thead>
+        <tr>
+          <th>줄</th>
+          <th>가사</th>
+          <th>우리</th>
+          <th>정답</th>
+          <th>차이</th>
+        </tr>
+      </thead>
+      <tbody>
+        {lines.map((line) => {
+          const gap = Math.round(line.ours_ms - line.truth_ms - shiftMs);
+          return (
+            <tr key={line.line_index}>
+              <td className="figure">{line.line_index + 1}</td>
+              <td className="lyric">{line.text}</td>
+              <td className="figure">
+                <a
+                  href={`https://music.youtube.com/watch?v=${encodeURIComponent(videoId)}&t=${Math.max(0, Math.floor(line.truth_ms / 1000) - 1)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="이 자리에서 듣기"
+                >
+                  {clock(line.ours_ms)}
+                </a>
+              </td>
+              <td className="figure">{clock(line.truth_ms)}</td>
+              <td className={`figure ${tone(Math.abs(gap))}`}>
+                {gap > 0 ? "+" : ""}
+                {gap}ms
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
 export function AccuracyView() {
   const [data, setData] = useState<Accuracy | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
   const [failure, setFailure] = useState("");
 
   useEffect(() => {
@@ -122,12 +196,13 @@ export function AccuracyView() {
           </tr>
         </thead>
         <tbody>
-          {data.songs.map((song) => (
-            <tr key={song.video_id}>
+          {data.songs.flatMap((song) => [
+            <tr key={song.video_id} className="accuracy-row" onClick={() => setOpen(open === song.video_id ? null : song.video_id)}>
               <td>
-                <a href={`https://music.youtube.com/watch?v=${encodeURIComponent(song.video_id)}`} target="_blank" rel="noreferrer">
+                <span className="accuracy-open">
+                  {open === song.video_id ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                   {song.artist} — {song.title}
-                </a>
+                </span>
               </td>
               <td>{song.language}</td>
               <td className="figure">{song.lines}</td>
@@ -141,8 +216,17 @@ export function AccuracyView() {
                 {song.shift_ms > 0 ? "+" : ""}
                 {(song.shift_ms / 1000).toFixed(1)}s
               </td>
-            </tr>
-          ))}
+            </tr>,
+            ...(open === song.video_id
+              ? [
+                  <tr key={`${song.video_id}-lines`}>
+                    <td colSpan={9} className="accuracy-detail">
+                      <Lines videoId={song.video_id} shiftMs={song.shift_ms} />
+                    </td>
+                  </tr>,
+                ]
+              : []),
+          ])}
         </tbody>
       </table>
 

@@ -2185,8 +2185,32 @@ async function recordEval(env: WorkerEnv, actor: Actor, value: Record<string, un
       ),
     ),
   );
-  await audit(env, actor, "eval.record", "eval", id, { songs: songs.length });
-  return json({ id }, 201);
+  // 줄별 견줌. 없이 보내도 받아 준다 — 옛 판의 결과 파일에는 이것이 없다.
+  const lines: Array<[string, number, string, number, number]> = [];
+  for (const song of songs) {
+    const rows = Array.isArray(song.lines_detail) ? (song.lines_detail as Array<Record<string, unknown>>) : [];
+    for (const [index, line] of rows.entries()) {
+      lines.push([
+        requiredString(song.video_id, 64),
+        index,
+        typeof line.text === "string" ? line.text.slice(0, 500) : "",
+        Math.round(numberValue(line.ours_ms, 0, 3_600_000)),
+        Math.round(numberValue(line.truth_ms, 0, 3_600_000)),
+      ]);
+    }
+  }
+  // D1 은 한 번에 보낼 수 있는 문장 수가 제한된다. 곡 하나가 백 줄을 넘기도 하므로 나눠 보낸다.
+  for (let at = 0; at < lines.length; at += 200) {
+    await env.ADMIN_DB.batch(
+      lines.slice(at, at + 200).map(([video, index, text, ours, truth]) =>
+        env.ADMIN_DB.prepare(
+          "INSERT INTO eval_lines (run_id,video_id,line_index,text,ours_ms,truth_ms) VALUES (?1,?2,?3,?4,?5,?6)",
+        ).bind(id, video, index, text, ours, truth),
+      ),
+    );
+  }
+  await audit(env, actor, "eval.record", "eval", id, { songs: songs.length, lines: lines.length });
+  return json({ id, lines: lines.length }, 201);
 }
 
 export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Response> {
@@ -2262,6 +2286,20 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "GET" && url.pathname === "/admin/api/eval") {
     requirePermission(actor, "dashboard.read");
     return latestEval(env);
+  }
+  const evalLines = url.pathname.match(/^\/admin\/api\/eval\/([^/]+)\/lines$/u);
+  if (request.method === "GET" && evalLines) {
+    // 숫자가 맞는지는 줄을 봐야 안다. 곡을 열 때에만 부른다 — 목록에 다 실으면 무겁다.
+    requirePermission(actor, "dashboard.read");
+    const run = await env.ADMIN_DB.prepare("SELECT id FROM eval_runs ORDER BY created_at DESC LIMIT 1").first<{ id: string }>();
+    if (run === null) return json({ lines: [] });
+    return json({
+      lines: await list(
+        env.ADMIN_DB,
+        "SELECT line_index,text,ours_ms,truth_ms FROM eval_lines WHERE run_id=?1 AND video_id=?2 ORDER BY line_index",
+        [run.id, evalLines[1]],
+      ),
+    });
   }
   if (request.method === "POST" && url.pathname === "/admin/api/eval") {
     // 정답셋을 돌리는 것은 워커가 아니라 사람이 손으로 하는 일이라, 작업 권한에 붙인다.
