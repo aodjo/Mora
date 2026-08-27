@@ -87,6 +87,9 @@ def main() -> None:
             continue
         truth.append({
             "video_id": song["video_id"], "artist": song["artist"], "title": song["title"],
+            # 언어를 실어 보낸다. 재는 쪽이 ko 로 못박아 두었던 판이 있었다 — 일본어 곡이
+            # 한국어로 선언되어 정렬기 선택부터 어긋났다.
+            "language": song["language"],
             "duration": (result or {}).get("duration"), "lines": lines,
         })
         gap = [lines[i + 1]["at"] - lines[i]["at"] for i in range(len(lines) - 1)]

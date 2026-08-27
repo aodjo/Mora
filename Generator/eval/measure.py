@@ -65,6 +65,21 @@ def audio_for(video: str) -> Path | None:
     return vocals if vocals.exists() else None
 
 
+def tokenized(text: str, language: str) -> list[dict]:
+    """워커가 쓰는 그 토크나이저로 가른다.
+
+    line.split() 으로 갈랐던 판이 있었다. 일본어는 띄어쓰기가 없어 한 줄이 낱말 하나가 되고,
+    「怪獣」46 줄이 낱말 46 개가 되어 앵커가 붙을 자리 자체가 없었다 — 밀도 0.00 이 나왔고
+    그것을 일본어의 성질로 읽을 뻔했다. worker.ts 의 주석이 바로 그것을 경고하고 있었다.
+    """
+    got = subprocess.run(["node", str(Path(__file__).with_name("tokenize.mjs"))],
+                         input=json.dumps({"text": text, "language": language}),
+                         capture_output=True, text=True, timeout=120)
+    if got.returncode != 0:
+        raise RuntimeError(f"tokenize.mjs: {got.stderr.strip()[:200]}")
+    return json.loads(got.stdout)
+
+
 def seconds_of(path: Path) -> float:
     got = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                           "-of", "csv=p=0", str(path)], capture_output=True, text=True)
@@ -90,9 +105,15 @@ def main() -> None:
 
         rows = song["lines"]
         text = "\n".join(row["text"] for row in rows)
-        variant = {"id": "truth", "language": "ko", "text": text,
-                   "token_lines": [{"text": r["text"], "words": r["text"].split(), "spans": []} for r in rows]}
-        heard, detected = daemon.coarse_asr(vocals, "ko", "cuda")
+        language = str(song.get("language", "und"))
+        token_lines = tokenized(text, language)
+        if len(token_lines) != len(rows):
+            # 줄 수가 어긋나면 우리 시각과 정답 시각을 줄 번호로 짝지을 수 없다. 억지로
+            # 이으면 그 어긋남이 정렬 오차로 둔갑한다.
+            print(f"  ✖ {name[:40]} — 토크나이저가 {len(token_lines)}줄, 정답은 {len(rows)}줄", flush=True)
+            continue
+        variant = {"id": "truth", "language": language, "text": text, "token_lines": token_lines}
+        heard, detected = daemon.coarse_asr(vocals, language, "cuda")
         length_ms = int(seconds_of(vocals) * 1000)
         got = daemon.align_variant(vocals, variant, heard, length_ms, "cuda", detected)
 
