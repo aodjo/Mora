@@ -8,6 +8,18 @@ on:
   release:
     types: [published]
   push:
+    # 이미지가 낡으면 그것으로 띄운 기계가 옛 코드로 돈다. 실제로 등록 토큰을 붙인 다음 판에서
+    # 그 일이 났다 — 이미지는 그 전 판이라 PIN 을 물었다. 이미지를 짓게 하는 것이 바뀔 때마다
+    # 다시 짓는다. 문서나 평가만 바뀐 판까지 9 GB 를 다시 밀 이유는 없다.
+    branches: [main]
+    paths:
+      - "Generator/**"
+      - "packages/**"
+      - "Server/src/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig.json"
+      - ".github/workflows/generator-image.yml"
     tags: ["v*"]
   workflow_dispatch:
     inputs:
