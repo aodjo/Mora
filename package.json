@@ -37,7 +37,12 @@
     "local:setup": "node Server/scripts/setup-local.mjs && corepack pnpm d1:migrate:local",
     "d1:migrate:local": "wrangler d1 migrations apply mora-public --local --config Server/wrangler.jsonc && wrangler d1 migrations apply mora-admin --local --config Server/wrangler.jsonc",
     "d1:migrate:remote": "wrangler d1 migrations apply mora-public --remote --config Server/wrangler.jsonc && wrangler d1 migrations apply mora-admin --remote --config Server/wrangler.jsonc",
-    "dump:publish": "node Server/scripts/publish-dump.mjs"
+    "dump:publish": "node Server/scripts/publish-dump.mjs",
+    "collector:image": "docker compose -f Collector/docker-compose.yml build",
+    "collector:pair": "docker compose -f Collector/docker-compose.yml run --rm collector",
+    "collector:up": "docker compose -f Collector/docker-compose.yml up -d",
+    "collector:logs": "docker compose -f Collector/docker-compose.yml logs -f",
+    "collector:down": "docker compose -f Collector/docker-compose.yml down"
   },
   "dependencies": {
     "@mora/songtitle": "workspace:*"

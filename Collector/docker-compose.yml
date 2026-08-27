@@ -1,0 +1,40 @@
+# Collector 를 그릇에 담아 돌린다.
+#
+#   처음 한 번 (PIN 짝짓기):  docker compose run --rm collector
+#   그 뒤로:                  docker compose up -d
+#
+# 첫 실행은 10자리 PIN 을 띄우고 사람이 Admin 에 넣어 주기를 기다린다. 그래서 처음만
+# `run --rm` 으로 화면을 보며 돌린다. 받은 키는 아래 볼륨에 남으므로 그 뒤로는 자동이다.
+services:
+  collector:
+    build:
+      # Collector 혼자로는 지을 수 없다 — pnpm 워크스페이스라 뿌리부터 필요하다.
+      context: ..
+      dockerfile: Collector/Dockerfile
+      args:
+        # 브라우저 없이 가볍게 지으려면 0. Admin 의 SongTitle 브라우저 옵션과 함께 꺼야 한다.
+        WITH_BROWSER: "1"
+    image: mora-collector:latest
+    # 좀비 거두기는 이미지 안의 tini 가 한다 — 수집 한 번에 yt-dlp 를 여러 번 부른다.
+    environment:
+      MORA_ADMIN_URL: ${MORA_ADMIN_URL:-https://mora.junx.dev}
+      # 수집 국가·주기·한도와 Genius/LyricFind 키는 여기가 아니라 Admin 런타임 설정에 있다.
+      # 여기 두면 두 곳을 고쳐야 하고, 비밀값이 파일로 남는다.
+      TZ: ${TZ:-Asia/Seoul}
+      # 유튜브가 이 기계의 IP 를 받아 주지 않을 때만 채운다. yt-dlp 가 이 값을 읽는다.
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    volumes:
+      # 짝지어 받은 서비스 키가 여기 있다. 지우면 다시 PIN 을 넣어야 한다.
+      - collector-data:/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  collector-data:

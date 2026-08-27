@@ -8,3 +8,18 @@ data
 .wrangler
 .wrangler-dist
 .DS_Store
+
+# 파이썬 가상환경. 1.9 GB 이고 이미지 안에서 다시 만든다.
+**/.venv
+
+# 짝지어 받은 서비스 키. 이미지에 구우면 그 이미지를 가진 누구나 Admin 에 붙는다.
+# 자격증명은 볼륨에만 있어야 한다.
+Collector/.mora-collector.json
+Collector/.env
+Generator/.mora-generator.json
+Generator/.env
+
+# 손으로 떨어뜨려 둔 것들
+*.wav
+*.png
+clients
