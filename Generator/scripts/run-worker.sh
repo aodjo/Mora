@@ -32,7 +32,11 @@ fresh() {
 
 update() {
   say "새 판이 있다 — 갈아탄다"
+  # install.sh 가 Admin·test 를 지워 두었다. 지운 채로는 pull 이 걸리므로 되돌린 뒤 받고,
+  # 받은 뒤 다시 지운다 — 두면 pnpm 이 react·playwright·workerd 를 다시 받는다.
+  git -C "$HERE" checkout -q -- Admin test 2>/dev/null || true
   git -C "$HERE" pull -q --ff-only origin "$BRANCH" || { say "  pull 실패 — 그대로 간다"; return 1; }
+  rm -rf "$HERE/Admin" "$HERE/test"
   # 파이썬 쪽이 바뀌었으면 의존도 다시 맞춘다. 대개는 안 바뀌므로 값이 거의 들지 않는다.
   if ! git -C "$HERE" diff --quiet "HEAD@{1}" HEAD -- Generator/python/pyproject.toml 2>/dev/null; then
     say "  파이썬 의존이 바뀌었다"

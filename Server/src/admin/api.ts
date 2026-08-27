@@ -213,14 +213,26 @@ async function revokeServiceKey(env: WorkerEnv, actor: Actor, keyId: string): Pr
   return json({ id: keyId, revoked: true });
 }
 
-async function createEnrollment(env: WorkerEnv, actor: Actor): Promise<Response> {
+/**
+ * 한 번 쓰고 마는 등록표.
+ *
+ * 사람이 화면 앞에 앉아 PIN 을 넣는 자리에는 십 분이 넉넉하다. 빈 기계를 세워 두고 스스로
+ * 붙게 하는 자리에서는 모자란다 — apt·node·저장소·빌드에 torch 까지 받으면 십 분을 넘기고,
+ * 그러면 도착하기도 전에 표가 죽는다. 실제로 그렇게 네 대가 붙지 못했다.
+ *
+ * 지키는 것은 만료가 아니라 한 번뿐이라는 것이다. 그러니 부르는 쪽이 얼마나 걸릴지 말하게
+ * 두고, 두 시간을 넘기지는 않는다.
+ */
+async function createEnrollment(env: WorkerEnv, actor: Actor, value: Record<string, unknown> = {}): Promise<Response> {
   requirePermission(actor, "workers.manage");
+  const minutes = value.minutes === undefined ? 10 : numberValue(value.minutes, 1, 120);
   const token = randomSecret();
+  const expires = Date.now() + minutes * 60_000;
   await env.ADMIN_DB.prepare("INSERT INTO enrollment_tokens (token_hash, expires_at, created_by, created_at) VALUES (?1, ?2, ?3, ?4)")
-    .bind(await sha256(token), Date.now() + 10 * 60_000, actor.id, Date.now())
+    .bind(await sha256(token), expires, actor.id, Date.now())
     .run();
-  await audit(env, actor, "worker.enrollment.create", "worker", null);
-  return json({ token, expires_at: Date.now() + 10 * 60_000 }, 201);
+  await audit(env, actor, "worker.enrollment.create", "worker", null, { minutes });
+  return json({ token, expires_at: expires }, 201);
 }
 
 async function enrollWorker(env: WorkerEnv, value: Record<string, unknown>): Promise<Response> {
@@ -2342,7 +2354,8 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "POST" && url.pathname === "/admin/api/service-keys") return createServiceKey(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/roles") return upsertRole(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/notifications") return addNotification(env, actor, await body(request));
-  if (request.method === "POST" && url.pathname === "/admin/api/workers/enrollment") return createEnrollment(env, actor);
+  if (request.method === "POST" && url.pathname === "/admin/api/workers/enrollment")
+    return createEnrollment(env, actor, await body(request));
   if (request.method === "POST" && url.pathname === "/admin/api/collector/work/claim") return claimCollectionWork(env, actor);
   if (request.method === "POST" && url.pathname === "/admin/api/collector/work/fill")
     return fillCollectionQueue(env, actor, await body(request));

@@ -50,10 +50,16 @@ if [ ! -d "$ROOT/Mora/.git" ]; then
 fi
 git -C "$ROOT/Mora" fetch -q origin "$BRANCH" >>"$LOG" 2>&1
 git -C "$ROOT/Mora" checkout -q "$BRANCH" >>"$LOG" 2>&1
+# Admin·test 를 지운 채로 pull 하면 지저분해진다. 지운 것을 되돌린 뒤 받는다.
+git -C "$ROOT/Mora" checkout -q -- Admin test 2>/dev/null || true
 git -C "$ROOT/Mora" pull -q --ff-only origin "$BRANCH" >>"$LOG" 2>&1
 say "  $(git -C "$ROOT/Mora" log --oneline -1)"
 
 say "노드 의존 + 빌드"
+# Admin 은 워커에 필요 없는데, 두면 pnpm 이 react·vite·playwright·workerd 까지 받는다. 느린
+# 회선에서는 그것만으로 몇 분이 나가고 npm 레지스트리가 자꾸 되물린다 — 실제로 그 사이에
+# 등록표가 만료됐다. 워크스페이스에서 빼고 세운다. test 도 마찬가지로 Admin 을 참조한다.
+rm -rf "$ROOT/Mora/Admin" "$ROOT/Mora/test"
 ( cd "$ROOT/Mora" && CI=true corepack pnpm install --frozen-lockfile >>"$LOG" 2>&1 \
   && CI=true corepack pnpm build:services >>"$LOG" 2>&1 ) || die "빌드가 실패했다 — $LOG"
 [ -f "$ROOT/Mora/dist/Generator/src/worker-cli.js" ] || die "worker-cli 가 만들어지지 않았다"

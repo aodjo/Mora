@@ -96,7 +96,8 @@ def offers(limit: int) -> None:
 def enrollment(admin_token: str) -> str:
     """한 번 쓰고 마는 등록 토큰. 기계마다 새로 받는다."""
     request = urllib.request.Request(
-        f"{ADMIN.rstrip('/')}/admin/api/workers/enrollment", data=b"{}", method="POST",
+        # 빈 기계가 스스로 세우고 붙기까지 십 분으로는 모자란다 — torch 만 받아도 그만큼이다.
+        f"{ADMIN.rstrip('/')}/admin/api/workers/enrollment", data=b'{"minutes": 60}', method="POST",
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {admin_token}",
                  # Cloudflare 는 urllib 의 기본 User-Agent 를 보고 1010 으로 막는다.
                  "User-Agent": AGENT})
