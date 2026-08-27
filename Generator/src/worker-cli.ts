@@ -17,6 +17,21 @@ interface WorkerCredentials {
 const credentialFile = process.env.MORA_CREDENTIAL_FILE ?? resolve(process.cwd(), "Generator/.mora-worker.json");
 const daemon = new MlDaemon();
 
+/**
+ * 지금 곡을 잡고 있는가를 바깥에서 읽을 수 있게 남긴다.
+ *
+ * 새 판이 나오면 워커를 갈아타야 하는데, worker.stop() 은 데몬을 곧바로 닫으므로 작업 중에
+ * 끊으면 그 곡을 잃는다. 감독하는 쪽은 "지금 한가한가"를 알아야 하고, 그것을 로그 꼬리로
+ * 짐작하면 형식이 바뀔 때마다 조용히 틀린다. 파일 하나로 말해 준다.
+ */
+const busyFile = process.env.MORA_BUSY_FILE ?? resolve(process.cwd(), "Generator/.mora-worker.busy");
+let busy: boolean | null = null;
+function markBusy(next: boolean): void {
+  if (busy === next) return;
+  busy = next;
+  void writeFile(busyFile, next ? "busy" : "idle", "utf8").catch(() => {});
+}
+
 try {
   process.stdout.write("Generator 환경을 확인하는 중…\n");
   const selfTest = await daemon.selfTest();
@@ -110,6 +125,11 @@ try {
     daemon,
     artifactPublicKey: await readArtifactPublicKey(),
     onStatus: (status) => {
+      // 지금 곡을 잡고 있는지를 파일로 남긴다. worker.stop() 은 데몬을 곧바로 닫으므로 작업
+      // 중에 끊으면 그 곡을 잃는다 — 새 판이 나왔을 때 감독 스크립트가 언제 갈아탈지 알려면
+      // 바깥에서 읽을 수 있는 표시가 있어야 한다. 로그 꼬리를 훑어 짐작하는 것보다 낫다.
+      if (status.state === "idle" || status.state === "done") markBusy(false);
+      else if (status.state === "processing" || status.state === "stage") markBusy(true);
       if (status.state === "connected") {
         const suffix = status.desiredState === "active" ? "" : ` (서버 상태: ${status.desiredState})`;
         process.stdout.write(`Admin 연결 완료: ${adminUrl}${suffix}\n`);
