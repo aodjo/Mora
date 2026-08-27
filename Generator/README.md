@@ -106,3 +106,18 @@ Generator/scripts/run-worker.sh 0    # GPU 여러 장이면 번호를 달리해 
 | `MORA_BRANCH` | 따라갈 가지 (기본 `main`) |
 | `MORA_CHECK_EVERY` | 새 판을 묻는 주기, 초 (기본 300) |
 | `MORA_NO_UPDATE=1` | 갱신하지 않고 지키기만 |
+
+## 빌린 기계를 이미지로 띄우기
+
+```bash
+python3 Generator/scripts/rent.py offers                  # 빌릴 만한 것
+MORA_ADMIN_TOKEN=... python3 Generator/scripts/rent.py up 41626507 47981125
+python3 Generator/scripts/rent.py list
+python3 Generator/scripts/rent.py down 48891542
+```
+
+vast.ai 는 우리가 고른 이미지를 컨테이너로 돌려 줍니다. 그러니 `image` 를 지어 둔 것으로 지정하면 그 자체가 컨테이너 실행이고, apt·pip·git·build 가 사라집니다. 새 판이 나오면 이미지를 다시 짓고 기계를 새로 빌리면 됩니다.
+
+**오래 사는 키를 기계에 심지 않습니다.** 빌린 기계의 환경변수는 그 기계 주인이 읽을 수 있고 vast.ai 의 API 응답에도 그대로 나옵니다. 대신 기계마다 **한 번 쓰고 마는 등록 토큰**(`MORA_ENROLL_TOKEN`)을 주면, 워커가 그것으로 제 키를 받아 옵니다. 토큰은 10 분이면 만료되고 한 번 쓰면 끝나므로 나중에 주워도 쓸 데가 없고, 한 대가 새더라도 그 워커의 키만 폐기하면 됩니다.
+
+`ghcr.io/aodjo/mora-generator` 는 기본이 비공개입니다. 이 방식을 쓰려면 GitHub 패키지 설정에서 공개로 바꾸거나, vast.ai 쪽에 레지스트리 자격을 넣어야 합니다.

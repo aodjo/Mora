@@ -61,24 +61,39 @@ try {
   if (credentials !== undefined && credentials.admin_url !== adminUrl)
     throw new Error(`saved Generator credential belongs to ${credentials.admin_url}`);
 
+  // 사람이 없는 기계는 PIN 을 넣어 줄 사람도 없다. 한 번 쓰고 마는 등록 토큰을 주면 스스로
+  // 제 키를 받아 온다 — 오래 사는 키를 기계마다 심는 것보다 낫다. 빌린 기계의 환경변수는 그
+  // 기계 주인이 읽을 수 있고 vast.ai 의 API 응답에도 그대로 나오는데, 다 쓴 등록 토큰은
+  // 주워도 쓸 데가 없다. 한 대가 새더라도 그 워커의 키만 폐기하면 된다.
+  if (credentials === undefined && (process.env.MORA_ENROLL_TOKEN ?? "").length > 0) {
+    const workerId = process.env.MORA_WORKER_ID ?? crypto.randomUUID();
+    process.stdout.write("등록 토큰으로 자격을 받는 중…\n");
+    const response = await fetch(`${adminUrl.replace(/\/$/u, "")}/admin/api/generator/enroll`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        token: process.env.MORA_ENROLL_TOKEN,
+        name: process.env.MORA_WORKER_NAME ?? `Generator on ${hostname()}`,
+        capabilities: workerCapabilities(workerId, selfTest),
+      }),
+    });
+    // 토큰은 열 분이면 만료되고 한 번 쓰면 끝난다. 무엇이 틀렸는지는 말하되 토큰은 적지 않는다.
+    if (!response.ok) throw new Error(`Generator 등록 실패 (HTTP ${response.status}) — 토큰이 만료되었거나 이미 쓰였습니다`);
+    const enrolled = (await response.json()) as { worker_id: string; api_key: string };
+    credentials = { admin_url: adminUrl, worker_id: enrolled.worker_id, api_key: enrolled.api_key, created_at: Date.now() };
+    await mkdir(dirname(credentialFile), { recursive: true });
+    await writeFile(credentialFile, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 });
+    await chmod(credentialFile, 0o600);
+    process.stdout.write(`Generator 등록 완료: ${credentials.worker_id}\n`);
+  }
+
   if (credentials === undefined) {
     const workerId = process.env.MORA_WORKER_ID ?? crypto.randomUUID();
-    const pairing = await startGeneratorPairing(adminUrl, process.env.MORA_WORKER_NAME ?? `Generator on ${hostname()}`, {
-      worker_id: workerId,
-      version: "0.1.0",
-      backend: selfTest.backend as "mps" | "cuda" | "xpu" | "rocm",
-      hardware: selfTest.hardware,
-      capabilities: Object.entries(selfTest.checks)
-        .filter(([, value]) => value === "passed")
-        .map(([key]) => key),
-      production_ready: selfTest.production_ready,
-      self_test: Object.fromEntries(
-        Object.entries(selfTest.checks).map(([key, value]) => [
-          key,
-          value === "passed" ? "passed" : value === "skipped" ? "skipped" : "failed",
-        ]),
-      ) as Record<string, "passed" | "failed" | "skipped">,
-    });
+    const pairing = await startGeneratorPairing(
+      adminUrl,
+      process.env.MORA_WORKER_NAME ?? `Generator on ${hostname()}`,
+      workerCapabilities(workerId, selfTest),
+    );
     const formattedPin = `${pairing.pin.slice(0, 3)} ${pairing.pin.slice(3, 6)} ${pairing.pin.slice(6)}`;
     process.stdout.write("\nGenerator 인증이 필요합니다.\n");
     process.stdout.write(`Admin → 권한·설정 → Generator 연결에 PIN을 입력하세요: ${formattedPin}\n`);
@@ -153,6 +168,26 @@ try {
 } catch (error) {
   daemon.close();
   throw error;
+}
+
+/** 등록과 짝짓기가 똑같이 보내는 것. 두 곳에 적어 두면 한쪽만 고치는 날이 온다. */
+function workerCapabilities(workerId: string, selfTest: Awaited<ReturnType<MlDaemon["selfTest"]>>) {
+  return {
+    worker_id: workerId,
+    version: "0.1.0",
+    backend: selfTest.backend as "mps" | "cuda" | "xpu" | "rocm",
+    hardware: selfTest.hardware,
+    capabilities: Object.entries(selfTest.checks)
+      .filter(([, value]) => value === "passed")
+      .map(([key]) => key),
+    production_ready: selfTest.production_ready,
+    self_test: Object.fromEntries(
+      Object.entries(selfTest.checks).map(([key, value]) => [
+        key,
+        value === "passed" ? "passed" : value === "skipped" ? "skipped" : "failed",
+      ]),
+    ) as Record<string, "passed" | "failed" | "skipped">,
+  };
 }
 
 async function readCredentials(path: string): Promise<WorkerCredentials | undefined> {
