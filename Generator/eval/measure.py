@@ -105,7 +105,9 @@ def main() -> None:
 
         rows = song["lines"]
         text = "\n".join(row["text"] for row in rows)
-        language = str(song.get("language", "und"))
+        # 파이프라인이 하는 보정을 여기서도 한다. songs.json 은 일본어 세 곡을 한국어로
+        # 분류하고 있었고, 그것을 그대로 넘기면 고친 것이 고쳐졌는지 알 수 없다.
+        language = daemon.sung_language(text, str(song.get("language", "und")))
         token_lines = tokenized(text, language)
         if len(token_lines) != len(rows):
             # 줄 수가 어긋나면 우리 시각과 정답 시각을 줄 번호로 짝지을 수 없다. 억지로
