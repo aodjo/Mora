@@ -188,3 +188,80 @@ LRCLIB 은 줄 단위 싱크 가사를 무인증 공개 API 로 준다. `songs.j
 
 다음에 이 평가셋을 쓸 때는 로마자 여덟 곡을 빼고 재야 한다. truth.py 는 아직 그것을 가려내지
 않는다 — 한글·가나 비율로 거를 수 있고, 그 전까지는 이 표의 아래 절반을 근거로 삼지 말 것.
+
+## 낱말 단위 — JamendoLyrics (2026-08-27, 파이프라인 3534fa7)
+
+`words.py` 로 잰 것이다. 79 곡을 아홉 대에 나눠 돌리다 환불을 위해 기계를 내려야 해서
+**55 곡에서 멈췄다.** 멈춘 자리까지가 아래다.
+
+- 곡 **55** · 낱말 **14,076**
+- **시작 오차 가운뎃값 49ms**
+- **0.1 초 안에 든 낱말 평균 69%**
+- 곡별 오차 범위 30~274ms
+
+여태 `word_spans` 는 한 번도 재어진 적이 없었다. 앵커 밀도가 그 자리를 대신 지키고 있었는데,
+밀도는 몇 낱말이 들렸는지를 말할 뿐 그 자리가 맞는지는 말하지 않는다. 이것이 첫 실측이다.
+
+곡 전체가 일정하게 밀린 양은 빼고 잰 값이다. 치우침이 전 곡 ±0.1 초 안이라 음원이 정확히
+같았고, 그만큼 이 숫자는 온전히 정렬의 것이다.
+
+한국어가 없다는 것을 잊지 말 것. 이 자로 알 수 있는 것은 정렬기가 낱말을 제자리에 놓는가이지
+한국 노래에서 잘 되는가가 아니다.
+
+| 시작 오차 | 0.1초내 | 낱말 | 밀도 | 곡 |
+|---|---|---|---|---|
+| 30ms | 71% | 282 | 0.80 | ALFONSO LUGO - Baila |
+| 31ms | 81% | 334 | 0.97 | NANDOMALO - Esencia |
+| 32ms | 83% | 175 | 0.97 | Quentin Hannappe - Keep On |
+| 33ms | 82% | 581 | 0.79 | Wordsmith - The statement |
+| 33ms | 91% | 521 | 0.97 | Jason Miller - Crowdpleaser |
+| 34ms | 78% | 336 | 0.84 | Quesabe - Confession |
+| 36ms | 78% | 498 | 0.91 | Tom Orlando - The One (feat Tina G |
+| 36ms | 82% | 82 | 0.98 | Zeugen der Leere - Intro [Pulsschl |
+| 37ms | 74% | 367 | 0.95 | Automatisch Gekommen - 1 Freak |
+| 37ms | 77% | 211 | 0.96 | VAGOS PERMANENTES - Caralibro |
+| 37ms | 89% | 519 | 0.99 | Patrouille - Drei Nüsse |
+| 38ms | 79% | 245 | 0.98 | EL MANU - Capotes à un Franc |
+| 39ms | 77% | 266 | 0.97 | LE NEZ TORDU - de bonne humeur |
+| 40ms | 75% | 330 | 0.97 | Abendblau - Burn Out Man |
+| 41ms | 77% | 92 | 0.99 | KANGAROO MUSIQUE - Cafe Jenseitz B |
+| 42ms | 81% | 183 | 0.96 | The.Madpix.Project - One Way Stree |
+| 42ms | 67% | 154 | 0.99 | Andreas Jachmann - Fußabdrücke |
+| 43ms | 80% | 272 | 0.83 | Moon I mean - Wrong Concept |
+| 43ms | 75% | 288 | 0.98 | LUNABLIND - Vision |
+| 43ms | 86% | 265 | 0.99 | Explosive ear candy - Like The Sun |
+| 43ms | 72% | 224 | 0.80 | SUNDAYERS - Intentando Destacar |
+| 44ms | 72% | 181 | 0.99 | Frank Wingenbach - dich gehen zu s |
+| 47ms | 80% | 354 | 0.92 | D. - Der Musiker |
+| 47ms | 69% | 211 | 0.91 | Doromusis - Veränderung |
+| 48ms | 76% | 237 | 1.00 | Heiko Sunfyah - Musik |
+| 49ms | 69% | 238 | 0.95 | Songwriterz - Back In Time |
+| 49ms | 68% | 304 | 0.75 | Ridgway - Fire Inside |
+| 49ms | 68% | 528 | 0.86 | Jonny M - Keine Lust |
+| 50ms | 60% | 340 | 0.70 | JhoyKing - Guayateo |
+| 51ms | 70% | 322 | 0.90 | HILA - Give Me The Same |
+| 51ms | 70% | 204 | 0.98 | CLUB DESTINO - Pensando en ti |
+| 53ms | 67% | 148 | 0.99 | Alice Tlustlos - Da wurdest du geb |
+| 53ms | 74% | 222 | 0.99 | Dienstag ist Damensauna - Der Baum |
+| 54ms | 72% | 162 | 0.95 | Slingshot miracle - Whistler |
+| 54ms | 66% | 353 | 0.96 | Bukto - Bitte beweg dich nicht |
+| 55ms | 71% | 147 | 0.89 | KINEMATIC - Peyote |
+| 55ms | 64% | 224 | 0.84 | RICH DON JERI - La rumba del coron |
+| 56ms | 70% | 228 | 0.95 | DREAM TABÙ - Besando Sapos |
+| 57ms | 66% | 203 | 0.93 | The RINN - Voices |
+| 58ms | 69% | 198 | 0.99 | Frank Wingenbach - Ich kann dich n |
+| 59ms | 73% | 212 | 0.94 | Lower Loveday - Is It Right? |
+| 59ms | 66% | 201 | 0.95 | BRUNELA CROCHENCI - Diosa de la no |
+| 61ms | 61% | 106 | 0.92 | BRUNELA CROCHENCI - Háblame - (Tal |
+| 67ms | 65% | 224 | 0.95 | Colour Out - Falling Star |
+| 71ms | 60% | 440 | 0.76 | Rxbyn - Bad Side |
+| 73ms | 63% | 151 | 0.87 | REH-TORTE - Sehnsucht-Unplugged |
+| 79ms | 59% | 135 | 0.97 | Durch Dick und Dünn - Freifliegen |
+| 81ms | 57% | 355 | 0.96 | Cortez - Feel (Stripped) |
+| 87ms | 51% | 88 | 0.81 | LOS ROMBOS - Fantasma |
+| 89ms | 55% | 194 | 0.90 | CRIATURA - Disparan |
+| 125ms | 43% | 189 | 0.65 | Avercage - Embers |
+| 127ms | 48% | 114 | 0.69 | Pure Mids - The Leader |
+| 144ms | 43% | 350 | 0.66 | I'M FRESH! YOU'RE PRETTY! - CHRIST |
+| 202ms | 42% | 132 | 0.58 | COOL CAVEMEN - Culture & Co. |
+| 274ms | 29% | 156 | 0.66 | Die Partysahnen - Die Revolution g |
