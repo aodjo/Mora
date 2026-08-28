@@ -68,8 +68,77 @@ def separate(mp3: Path, work: Path) -> Path | None:
                         "-vn", "-ac", "2", "-ar", "44100", "-c:a", "pcm_s24le", str(mixture)],
                        capture_output=True, timeout=600)
     subprocess.run([sys.executable, "-m", "demucs", "-n", "htdemucs_ft", "--device", "cuda",
-                    "--out", str(work / "demucs"), str(mixture)], capture_output=True, timeout=1800)
+                    "--out", str(work / "demucs"), str(mixture)], capture_output=True, timeout=5400)
     return vocals if vocals.exists() else None
+
+
+def measure_one(row: dict, root: Path, args, results: list) -> None:
+    """한 곡을 재어 results 에 더한다. 터지면 부르는 쪽이 그 곡만 건너뛴다."""
+    stem = Path(row["Filepath"]).stem
+    began = time.time()
+    mp3 = root / "mp3" / row["Filepath"]
+    truth_file = root / "annotations" / "words" / f"{stem}.csv"
+    lyric_file = root / "lyrics" / f"{stem}.txt"
+    if not (mp3.exists() and truth_file.exists() and lyric_file.exists()):
+        print(f"  ✖ {stem[:40]} — 자료가 모자람", flush=True)
+        return
+
+    truth = [(float(w["word_start"]), float(w["word_end"]))
+             for w in csv.DictReader(truth_file.open(encoding="utf-8"))]
+    language = LANGUAGE.get(row["Language"], "en")
+    text = lyric_file.read_text(encoding="utf-8")
+    token_lines = tokenized(text, language)
+    ours_count = sum(len(line["words"]) for line in token_lines)
+    if ours_count != len(truth):
+        # 낱말 수가 다르면 번호로 짝지을 수 없다. 억지로 이으면 그 어긋남이 정렬 오차로
+        # 둔갑한다 — 줄 단위를 잴 때 같은 자리에서 한 번 속았다.
+        print(f"  ✖ {stem[:40]} — 낱말 {ours_count} vs 정답 {len(truth)}", flush=True)
+        return
+
+    vocals = separate(mp3, Path(args.work) / stem)
+    if vocals is None:
+        print(f"  ✖ {stem[:40]} — 목소리를 못 갈랐다", flush=True)
+        return
+
+    heard, detected = daemon.coarse_asr(vocals, language, "cuda")
+    length_ms = int(truth[-1][1] * 1000) + 5000
+    variant = {"id": stem, "language": language, "text": text, "token_lines": token_lines}
+    got = daemon.align_variant(vocals, variant, heard, length_ms, "cuda", detected)
+
+    # word_spans 는 [토큰번호, 시작ms, 끝ms, 확신]. 번호로 정답과 짝짓는다.
+    ours = {int(w[0]): (float(w[1]), float(w[2])) for w in got["word_spans"]}
+    starts, ends = [], []
+    for index, (want_start, want_end) in enumerate(truth):
+        if index not in ours:
+            continue
+        starts.append(ours[index][0] - want_start * 1000)
+        ends.append(ours[index][1] - want_end * 1000)
+    if not starts:
+        print(f"  ✖ {stem[:40]} — 짝지을 낱말이 없다", flush=True)
+        return
+
+    shift = statistics.median(starts)
+    fixed = [abs(v - shift) for v in starts]
+    results.append({
+        "song": f"{row['Artist']} - {row['Title']}", "language": language,
+        "words": len(starts), "shift_ms": shift,
+        "start_median_ms": statistics.median(fixed),
+        "start_p90_ms": sorted(fixed)[int(len(fixed) * 0.9)],
+        "within_100": sum(1 for v in fixed if v <= 100) / len(fixed),
+        "within_300": sum(1 for v in fixed if v <= 300) / len(fixed),
+        "end_median_ms": statistics.median(abs(v - shift) for v in ends),
+        "density": got["quality"].get("anchor_density", 0.0),
+    })
+    # 곡마다 남긴다. 끝나고 한 번에 쓰면 기계가 사라질 때 그 판이 통째로 날아간다 —
+    # 실제로 쉰다섯 곡을 그렇게 잃을 뻔했고, 로그를 긁어 겨우 복구했다.
+    out = Path(args.work)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "words-partial.json").write_text(json.dumps(results, ensure_ascii=False), encoding="utf-8")
+    last = results[-1]
+    print(f"  ✔ {last['song'][:34]:<36}{last['words']:>5}낱말  치우침 {shift / 1000:>+5.1f}s  "
+          f"시작오차 {last['start_median_ms']:>5.0f}ms  0.1초내 {last['within_100']:>4.0%}  "
+          f"밀도 {last['density']:.2f}  ({time.time() - began:.0f}초)", flush=True)
+
 
 
 def main() -> None:
@@ -92,71 +161,13 @@ def main() -> None:
 
     results = []
     for row in rows:
-        stem = Path(row["Filepath"]).stem
-        began = time.time()
-        mp3 = root / "mp3" / row["Filepath"]
-        truth_file = root / "annotations" / "words" / f"{stem}.csv"
-        lyric_file = root / "lyrics" / f"{stem}.txt"
-        if not (mp3.exists() and truth_file.exists() and lyric_file.exists()):
-            print(f"  ✖ {stem[:40]} — 자료가 모자람", flush=True)
-            continue
-
-        truth = [(float(w["word_start"]), float(w["word_end"]))
-                 for w in csv.DictReader(truth_file.open(encoding="utf-8"))]
-        language = LANGUAGE.get(row["Language"], "en")
-        text = lyric_file.read_text(encoding="utf-8")
-        token_lines = tokenized(text, language)
-        ours_count = sum(len(line["words"]) for line in token_lines)
-        if ours_count != len(truth):
-            # 낱말 수가 다르면 번호로 짝지을 수 없다. 억지로 이으면 그 어긋남이 정렬 오차로
-            # 둔갑한다 — 줄 단위를 잴 때 같은 자리에서 한 번 속았다.
-            print(f"  ✖ {stem[:40]} — 낱말 {ours_count} vs 정답 {len(truth)}", flush=True)
-            continue
-
-        vocals = separate(mp3, Path(args.work) / stem)
-        if vocals is None:
-            print(f"  ✖ {stem[:40]} — 목소리를 못 갈랐다", flush=True)
-            continue
-
-        heard, detected = daemon.coarse_asr(vocals, language, "cuda")
-        length_ms = int(truth[-1][1] * 1000) + 5000
-        variant = {"id": stem, "language": language, "text": text, "token_lines": token_lines}
-        got = daemon.align_variant(vocals, variant, heard, length_ms, "cuda", detected)
-
-        # word_spans 는 [토큰번호, 시작ms, 끝ms, 확신]. 번호로 정답과 짝짓는다.
-        ours = {int(w[0]): (float(w[1]), float(w[2])) for w in got["word_spans"]}
-        starts, ends = [], []
-        for index, (want_start, want_end) in enumerate(truth):
-            if index not in ours:
-                continue
-            starts.append(ours[index][0] - want_start * 1000)
-            ends.append(ours[index][1] - want_end * 1000)
-        if not starts:
-            print(f"  ✖ {stem[:40]} — 짝지을 낱말이 없다", flush=True)
-            continue
-
-        shift = statistics.median(starts)
-        fixed = [abs(v - shift) for v in starts]
-        results.append({
-            "song": f"{row['Artist']} - {row['Title']}", "language": language,
-            "words": len(starts), "shift_ms": shift,
-            "start_median_ms": statistics.median(fixed),
-            "start_p90_ms": sorted(fixed)[int(len(fixed) * 0.9)],
-            "within_100": sum(1 for v in fixed if v <= 100) / len(fixed),
-            "within_300": sum(1 for v in fixed if v <= 300) / len(fixed),
-            "end_median_ms": statistics.median(abs(v - shift) for v in ends),
-            "density": got["quality"].get("anchor_density", 0.0),
-        })
-        # 곡마다 남긴다. 끝나고 한 번에 쓰면 기계가 사라질 때 그 판이 통째로 날아간다 —
-        # 실제로 쉰다섯 곡을 그렇게 잃을 뻔했고, 로그를 긁어 겨우 복구했다.
-        out = Path(args.work)
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "words-partial.json").write_text(json.dumps(results, ensure_ascii=False), encoding="utf-8")
-        last = results[-1]
-        print(f"  ✔ {last['song'][:34]:<36}{last['words']:>5}낱말  치우침 {shift / 1000:>+5.1f}s  "
-              f"시작오차 {last['start_median_ms']:>5.0f}ms  0.1초내 {last['within_100']:>4.0%}  "
-              f"밀도 {last['density']:.2f}  ({time.time() - began:.0f}초)", flush=True)
-
+        # 한 곡이 넘어져도 나머지는 간다. 앞선 판은 demucs 가 제한에 걸리자 그 자리에서
+        # 통째로 죽었고, 그 기계가 맡은 열두 곡을 다 잃었다.
+        try:
+            measure_one(row, root, args, results)
+        except Exception as error:
+            print(f"  ✖ {Path(row['Filepath']).stem[:40]} — "
+                  f"{type(error).__name__}: {str(error)[:70]}", flush=True)
     if not results:
         return
     print("\n  ── 전체 ──")
