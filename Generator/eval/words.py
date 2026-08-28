@@ -77,12 +77,18 @@ def main() -> None:
     parser.add_argument("--dataset", default="/workspace/jamendo")
     parser.add_argument("--work", default="/workspace/words")
     parser.add_argument("songs", nargs="*", help="Filepath 의 앞부분. 비우면 전부")
+    # 곡 이름에는 괄호와 따옴표가 섞인다. 쉘 인자로 넘기면 그 자리에서 깨지므로 파일로 받는다 —
+    # 실제로 한 판이 "syntax error near unexpected token `('" 로 통째로 죽었다.
+    parser.add_argument("--songs-file", default="")
     args = parser.parse_args()
 
     root = Path(args.dataset)
     rows = list(csv.DictReader((root / "JamendoLyrics.csv").open(encoding="utf-8")))
-    if args.songs:
-        rows = [r for r in rows if any(r["Filepath"].startswith(s) for s in args.songs)]
+    wanted = list(args.songs)
+    if args.songs_file:
+        wanted += [line.strip() for line in Path(args.songs_file).read_text(encoding="utf-8").splitlines() if line.strip()]
+    if wanted:
+        rows = [r for r in rows if any(r["Filepath"].startswith(s) for s in wanted)]
 
     results = []
     for row in rows:

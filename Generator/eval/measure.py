@@ -91,7 +91,10 @@ def seconds_of(path: Path) -> float:
 
 def main() -> None:
     truth = json.loads(Path(os.getenv("MORA_TRUTH", "/workspace/truth.json")).read_text(encoding="utf-8"))
+    # 영상 번호는 쉘에 안전하지만, 곡 목록을 파일로 받는 길을 같이 열어 둔다.
     only = sys.argv[1:] or None
+    if only and len(only) == 1 and only[0].startswith("@"):
+        only = [line.strip() for line in Path(only[0][1:]).read_text(encoding="utf-8").splitlines() if line.strip()]
     results = []
     for song in truth:
         if only and song["video_id"] not in only:
