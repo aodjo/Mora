@@ -1,0 +1,498 @@
+<!-- 한국어 정답 검수 도구. 갤북에서만 돈다. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>정답 검수</title>
+<style>
+  :root {
+    --ink: #f4f2ef;
+    --dim: rgba(244, 242, 239, .34);
+    --dimmer: rgba(244, 242, 239, .16);
+    --ground: #0b0b0d;
+    --panel: #141416;
+    --edge: rgba(255, 255, 255, .09);
+    --accent: #ff4f6d;
+    --good: #4fd6a0;
+    --warn: #ffb340;
+    --sans: -apple-system, "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+    --lyric-size: clamp(26px, 3.6vw, 44px);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--ground); color: var(--ink); font-family: var(--sans);
+    display: grid; grid-template-columns: 340px 1fr; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; border: 0; background: none; }
+
+  /* ── 왼쪽: 곡 목록 ─────────────────────────────────────────── */
+  aside {
+    border-right: 1px solid var(--edge); display: flex; flex-direction: column;
+    background: var(--panel); min-height: 0;
+  }
+  .top { padding: 18px 18px 12px; border-bottom: 1px solid var(--edge); }
+  .brand { font-size: 13px; letter-spacing: .16em; text-transform: uppercase; color: var(--dim); }
+  .tally { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+  .chip {
+    padding: 3px 9px; border-radius: 999px; border: 1px solid var(--edge);
+    color: var(--dim); transition: all .25s cubic-bezier(.2,.8,.2,1);
+  }
+  .chip.on { color: var(--ground); background: var(--ink); border-color: transparent; }
+  .search { padding: 12px 18px; border-bottom: 1px solid var(--edge); }
+  .search input {
+    width: 100%; padding: 9px 12px; border-radius: 9px; border: 1px solid var(--edge);
+    background: rgba(255,255,255,.04); outline: none; transition: border-color .2s, background .2s;
+  }
+  .search input:focus { border-color: rgba(255,255,255,.28); background: rgba(255,255,255,.07); }
+  .list { overflow-y: auto; flex: 1; padding: 6px 0 40px; scrollbar-width: thin; }
+  .item {
+    display: block; width: 100%; text-align: left; padding: 10px 18px; position: relative;
+    transition: background .18s ease;
+  }
+  .item:hover { background: rgba(255,255,255,.045); }
+  .item.on { background: rgba(255,255,255,.08); }
+  .item.on::before {
+    content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
+    background: var(--accent); border-radius: 0 3px 3px 0;
+    animation: slideIn .3s cubic-bezier(.2,.8,.2,1);
+  }
+  @keyframes slideIn { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+  .item .t { font-size: 14px; font-weight: 600; }
+  .item .a { font-size: 12px; color: var(--dim); margin-top: 2px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dot.good { background: var(--good); }
+  .dot.off { background: var(--warn); }
+  .dot.wrong, .dot.drop { background: var(--accent); }
+  .dot.none { background: var(--dimmer); }
+
+  /* ── 오른쪽: 재생기 ─────────────────────────────────────────── */
+  main { display: flex; flex-direction: column; min-height: 0; position: relative; }
+  .glow {
+    position: absolute; inset: 0; pointer-events: none; opacity: .5;
+    background: radial-gradient(70% 50% at 50% 0%, rgba(255,79,109,.16), transparent 70%);
+    transition: opacity 1.2s ease;
+  }
+  .glow.playing { opacity: 1; animation: breathe 7s ease-in-out infinite; }
+  @keyframes breathe { 0%,100% { opacity: .75; } 50% { opacity: 1; } }
+
+  header {
+    padding: 20px 32px 14px; display: flex; align-items: flex-start; gap: 16px;
+    border-bottom: 1px solid var(--edge); z-index: 2;
+  }
+  .meta { flex: 1; min-width: 0; }
+  .meta h1 {
+    margin: 0; font-size: 21px; font-weight: 700; letter-spacing: -.01em;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .meta h1 input, .meta .who input {
+    background: transparent; border: 0; border-bottom: 1px dashed transparent;
+    padding: 1px 2px; width: 100%; transition: border-color .2s;
+  }
+  .meta h1 input { font-size: 21px; font-weight: 700; }
+  .meta h1 input:hover, .meta .who input:hover { border-bottom-color: var(--dimmer); }
+  .meta h1 input:focus, .meta .who input:focus { outline: none; border-bottom-color: var(--accent); }
+  .meta .who { font-size: 13px; color: var(--dim); margin-top: 3px; }
+  .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .act {
+    padding: 6px 12px; border-radius: 8px; border: 1px solid var(--edge); font-size: 12.5px;
+    color: var(--dim); transition: all .2s cubic-bezier(.2,.8,.2,1);
+  }
+  .act:hover { color: var(--ink); border-color: rgba(255,255,255,.3); transform: translateY(-1px); }
+  .act.on { color: var(--ground); background: var(--ink); border-color: transparent; }
+  .act.good.on { background: var(--good); }
+  .act.off.on { background: var(--warn); }
+  .act.wrong.on { background: var(--accent); color: var(--ink); }
+
+  /* ── 가사 ──────────────────────────────────────────────────── */
+  .stage { flex: 1; overflow: hidden; position: relative; z-index: 1; }
+  .scroll { height: 100%; overflow-y: auto; scrollbar-width: none; }
+  .scroll::-webkit-scrollbar { display: none; }
+  .lyrics { padding: 38vh 8vw 52vh; display: flex; flex-direction: column; gap: 6px; }
+  .line {
+    font-size: var(--lyric-size); font-weight: 700; letter-spacing: -.02em; line-height: 1.24;
+    color: var(--dimmer); text-align: left; padding: 7px 14px; border-radius: 14px;
+    transform-origin: left center; cursor: pointer; width: fit-content; max-width: 100%;
+    transition: color .45s ease, transform .55s cubic-bezier(.2,.9,.25,1),
+                filter .45s ease, opacity .45s ease;
+    filter: blur(1.4px); opacity: .62;
+  }
+  .line:hover { color: var(--dim); filter: none; opacity: 1; }
+  .line.past { color: var(--dimmer); filter: blur(.6px); opacity: .5; }
+  .line.now {
+    color: var(--ink); transform: scale(1.045); filter: none; opacity: 1;
+    text-shadow: 0 0 32px rgba(255,255,255,.18);
+    animation: pop .55s cubic-bezier(.2,.9,.25,1);
+  }
+  .line.next { color: var(--dim); filter: blur(.5px); opacity: .8; }
+  @keyframes pop {
+    0% { transform: scale(1) translateY(3px); }
+    58% { transform: scale(1.07) translateY(-1px); }
+    100% { transform: scale(1.045) translateY(0); }
+  }
+  .line .at {
+    font-size: 11px; font-weight: 500; color: var(--dim); margin-left: 10px;
+    opacity: 0; transition: opacity .2s; vertical-align: middle; font-variant-numeric: tabular-nums;
+  }
+  .line:hover .at, .line.now .at { opacity: .7; }
+
+  /* ── 아래: 조작 ────────────────────────────────────────────── */
+  footer {
+    border-top: 1px solid var(--edge); padding: 12px 32px 16px; background: rgba(11,11,13,.86);
+    backdrop-filter: blur(20px); z-index: 3; display: flex; flex-direction: column; gap: 9px;
+  }
+  .bar { display: flex; align-items: center; gap: 14px; }
+  .play {
+    width: 46px; height: 46px; border-radius: 50%; background: var(--ink); color: var(--ground);
+    display: grid; place-items: center; font-size: 17px; flex: none;
+    transition: transform .22s cubic-bezier(.2,.9,.25,1), box-shadow .22s;
+  }
+  .play:hover { transform: scale(1.08); box-shadow: 0 6px 24px rgba(255,255,255,.18); }
+  .play:active { transform: scale(.95); }
+  .seek { flex: 1; height: 26px; position: relative; cursor: pointer; }
+  .seek .track {
+    position: absolute; top: 11px; left: 0; right: 0; height: 4px; border-radius: 4px;
+    background: rgba(255,255,255,.13);
+  }
+  .seek .fill {
+    position: absolute; top: 11px; left: 0; height: 4px; border-radius: 4px;
+    background: var(--ink); width: 0;
+  }
+  .seek .knob {
+    position: absolute; top: 7px; width: 12px; height: 12px; border-radius: 50%;
+    background: var(--ink); left: 0; margin-left: -6px; opacity: 0;
+    transition: opacity .2s, transform .2s;
+  }
+  .seek:hover .knob { opacity: 1; transform: scale(1.15); }
+  .time { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; flex: none; }
+  .nudge { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--dim); }
+  .nudge button {
+    padding: 4px 9px; border-radius: 7px; border: 1px solid var(--edge);
+    transition: all .18s; font-variant-numeric: tabular-nums;
+  }
+  .nudge button:hover { border-color: rgba(255,255,255,.3); color: var(--ink); }
+  .off-val { color: var(--ink); font-variant-numeric: tabular-nums; min-width: 62px; text-align: center; }
+
+  /* ── 덮개(검색) ────────────────────────────────────────────── */
+  .veil {
+    position: fixed; inset: 0; background: rgba(6,6,8,.72); backdrop-filter: blur(14px);
+    display: grid; place-items: start center; padding: 9vh 20px; z-index: 50;
+    opacity: 0; pointer-events: none; transition: opacity .28s ease;
+  }
+  .veil.on { opacity: 1; pointer-events: auto; }
+  .sheet {
+    width: min(760px, 100%); background: var(--panel); border: 1px solid var(--edge);
+    border-radius: 18px; overflow: hidden; transform: translateY(14px) scale(.985);
+    transition: transform .34s cubic-bezier(.2,.9,.25,1); max-height: 82vh; display: flex; flex-direction: column;
+  }
+  .veil.on .sheet { transform: none; }
+  .sheet header { border: 0; padding: 16px 20px 10px; display: block; }
+  .sheet header h2 { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
+  .sheet input.q {
+    width: 100%; padding: 11px 14px; border-radius: 10px; border: 1px solid var(--edge);
+    background: rgba(255,255,255,.05); outline: none;
+  }
+  .sheet input.q:focus { border-color: rgba(255,255,255,.3); }
+  .hits { overflow-y: auto; padding: 6px 10px 14px; }
+  .hit {
+    display: flex; gap: 12px; align-items: center; width: 100%; text-align: left;
+    padding: 10px 12px; border-radius: 11px; transition: background .16s;
+  }
+  .hit:hover { background: rgba(255,255,255,.06); }
+  .hit .g { flex: 1; min-width: 0; }
+  .hit .n { font-size: 14px; font-weight: 600; }
+  .hit .s { font-size: 12px; color: var(--dim); margin-top: 2px; }
+  .hit .r { font-size: 11.5px; color: var(--dim); flex: none; font-variant-numeric: tabular-nums; }
+  .empty { padding: 26px; text-align: center; color: var(--dim); font-size: 13px; }
+  .spin {
+    width: 15px; height: 15px; border: 2px solid var(--dimmer); border-top-color: var(--ink);
+    border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .toast {
+    position: fixed; bottom: 22px; left: 50%; transform: translate(-50%, 18px);
+    background: var(--ink); color: var(--ground); padding: 9px 18px; border-radius: 999px;
+    font-size: 13px; font-weight: 600; opacity: 0; pointer-events: none; z-index: 90;
+    transition: opacity .25s, transform .32s cubic-bezier(.2,.9,.25,1);
+  }
+  .toast.on { opacity: 1; transform: translate(-50%, 0); }
+</style>
+
+<aside>
+  <div class="top">
+    <div class="brand">정답 검수</div>
+    <div class="tally" id="tally"></div>
+  </div>
+  <div class="search">
+    <input id="filter" placeholder="목록에서 거르기">
+  </div>
+  <div class="list" id="list"></div>
+</aside>
+
+<main>
+  <div class="glow" id="glow"></div>
+  <header>
+    <div class="meta">
+      <h1><input id="title" placeholder="제목"></h1>
+      <div class="who"><input id="artist" placeholder="아티스트"></div>
+    </div>
+    <div class="acts">
+      <button class="act good" data-verdict="good">맞음</button>
+      <button class="act off" data-verdict="off">밀림</button>
+      <button class="act wrong" data-verdict="wrong">틀림</button>
+      <button class="act" id="btn-yt">음원 바꾸기</button>
+      <button class="act" id="btn-add">곡 추가</button>
+      <button class="act" id="btn-export">내보내기</button>
+    </div>
+  </header>
+
+  <div class="stage"><div class="scroll" id="scroll"><div class="lyrics" id="lyrics"></div></div></div>
+
+  <footer>
+    <div class="bar">
+      <button class="play" id="play">▶</button>
+      <span class="time" id="now">0:00</span>
+      <div class="seek" id="seek">
+        <div class="track"></div><div class="fill" id="fill"></div><div class="knob" id="knob"></div>
+      </div>
+      <span class="time" id="total">0:00</span>
+    </div>
+    <div class="nudge">
+      <span>치우침 보정</span>
+      <button data-nudge="-500">−0.5초</button>
+      <button data-nudge="-100">−0.1초</button>
+      <span class="off-val" id="offv">0 ms</span>
+      <button data-nudge="100">+0.1초</button>
+      <button data-nudge="500">+0.5초</button>
+      <button data-nudge="0">되돌리기</button>
+      <span id="state" style="margin-left:auto"></span>
+    </div>
+  </footer>
+</main>
+
+<div class="veil" id="veil">
+  <div class="sheet">
+    <header><h2 id="sheet-title">곡 찾기</h2><input class="q" id="q" placeholder="가수나 곡 이름"></header>
+    <div class="hits" id="hits"><div class="empty">검색어를 넣으세요</div></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<audio id="audio" preload="metadata"></audio>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const audio = $("audio");
+let songs = [], current = null, mode = "lrclib", lineNodes = [], activeIndex = -1;
+
+const clock = (s) => {
+  if (!isFinite(s)) return "0:00";
+  const m = Math.floor(s / 60), r = Math.floor(s % 60);
+  return `${m}:${String(r).padStart(2, "0")}`;
+};
+const say = (text) => {
+  const el = $("toast"); el.textContent = text; el.classList.add("on");
+  clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("on"), 2200);
+};
+
+// ── 목록 ────────────────────────────────────────────────────────────────
+async function loadSongs() {
+  songs = await (await fetch("/api/songs")).json();
+  drawList();
+  drawTally();
+}
+
+function drawTally() {
+  const count = (v) => songs.filter((s) => s.verdict === v).length;
+  $("tally").innerHTML = [
+    ["모두", songs.length], ["맞음", count("good")], ["밀림", count("off")],
+    ["틀림", count("wrong")], ["안 들음", songs.filter((s) => !s.verdict).length],
+  ].map(([k, n]) => `<span class="chip">${k} ${n}</span>`).join("");
+}
+
+function drawList() {
+  const needle = $("filter").value.trim().toLowerCase();
+  const shown = songs.filter((s) => !needle ||
+    (s.artist + " " + s.title).toLowerCase().includes(needle));
+  $("list").innerHTML = shown.map((s) => `
+    <button class="item ${current && current.id === s.id ? "on" : ""}" data-id="${s.id}">
+      <div class="t"><span class="dot ${s.verdict || "none"}"></span>${esc(s.title)}</div>
+      <div class="a">${esc(s.artist)} · ${s.line_count}줄</div>
+    </button>`).join("") || `<div class="empty">없음</div>`;
+}
+const esc = (t) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+$("list").addEventListener("click", (event) => {
+  const button = event.target.closest(".item");
+  if (button) open(Number(button.dataset.id));
+});
+$("filter").addEventListener("input", drawList);
+
+// ── 한 곡 열기 ──────────────────────────────────────────────────────────
+async function open(id) {
+  current = await (await fetch(`/api/songs/${id}`)).json();
+  $("title").value = current.title;
+  $("artist").value = current.artist;
+  $("offv").textContent = `${current.offset_ms} ms`;
+  document.querySelectorAll(".act[data-verdict]").forEach((b) =>
+    b.classList.toggle("on", b.dataset.verdict === current.verdict));
+  drawLyrics();
+  drawList();
+  audio.pause(); $("play").textContent = "▶"; $("glow").classList.remove("playing");
+  audio.src = `/audio/${current.video_id}`;
+  if (!current.has_audio) fetchAudio(current.video_id);
+  else $("state").textContent = "";
+}
+
+function drawLyrics() {
+  activeIndex = -1;
+  $("lyrics").innerHTML = current.lines.map((line, index) => `
+    <div class="line" data-i="${index}">${esc(line.text)}<span class="at">${clock((line.at + current.offset_ms) / 1000)}</span></div>
+  `).join("");
+  lineNodes = [...document.querySelectorAll(".line")];
+  lineNodes.forEach((node) => node.addEventListener("click", () => {
+    audio.currentTime = (current.lines[+node.dataset.i].at + current.offset_ms) / 1000;
+    if (audio.paused) toggle();
+  }));
+}
+
+// ── 음원 ────────────────────────────────────────────────────────────────
+async function fetchAudio(videoId) {
+  $("state").innerHTML = `<span class="spin"></span> 음원 받는 중`;
+  await fetch(`/api/audio/${videoId}`, { method: "POST" });
+  const tick = setInterval(async () => {
+    const got = await (await fetch(`/api/audio/${videoId}`)).json();
+    if (got.state === "done") {
+      clearInterval(tick); $("state").textContent = "";
+      audio.src = `/audio/${videoId}?t=${Date.now()}`;
+      say("음원 준비됨");
+    } else if (got.state.startsWith("실패")) {
+      clearInterval(tick); $("state").textContent = got.state;
+    }
+  }, 2000);
+}
+
+function toggle() {
+  if (audio.paused) { audio.play(); $("play").textContent = "❚❚"; $("glow").classList.add("playing"); }
+  else { audio.pause(); $("play").textContent = "▶"; $("glow").classList.remove("playing"); }
+}
+$("play").addEventListener("click", toggle);
+
+audio.addEventListener("timeupdate", () => {
+  const at = audio.currentTime * 1000 - (current ? current.offset_ms : 0);
+  $("now").textContent = clock(audio.currentTime);
+  const share = audio.duration ? audio.currentTime / audio.duration : 0;
+  $("fill").style.width = $("knob").style.left = `${share * 100}%`;
+  if (!current) return;
+  let index = -1;
+  for (let i = 0; i < current.lines.length; i++) if (current.lines[i].at <= at) index = i; else break;
+  if (index === activeIndex) return;
+  activeIndex = index;
+  lineNodes.forEach((node, i) => {
+    node.classList.toggle("now", i === index);
+    node.classList.toggle("past", i < index);
+    node.classList.toggle("next", i === index + 1);
+  });
+  if (index >= 0 && lineNodes[index]) {
+    const scroll = $("scroll"), node = lineNodes[index];
+    scroll.scrollTo({ top: node.offsetTop - scroll.clientHeight * 0.38, behavior: "smooth" });
+  }
+});
+audio.addEventListener("loadedmetadata", () => $("total").textContent = clock(audio.duration));
+$("seek").addEventListener("click", (event) => {
+  const box = $("seek").getBoundingClientRect();
+  if (audio.duration) audio.currentTime = ((event.clientX - box.left) / box.width) * audio.duration;
+});
+
+// ── 고치기 ──────────────────────────────────────────────────────────────
+async function save(patch) {
+  current = await (await fetch(`/api/songs/${current.id}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
+  })).json();
+  const at = songs.findIndex((s) => s.id === current.id);
+  if (at >= 0) songs[at] = { ...songs[at], ...current };
+  drawList(); drawTally();
+}
+$("title").addEventListener("change", () => save({ title: $("title").value }).then(() => say("제목 저장")));
+$("artist").addEventListener("change", () => save({ artist: $("artist").value }).then(() => say("아티스트 저장")));
+document.querySelectorAll(".act[data-verdict]").forEach((button) =>
+  button.addEventListener("click", async () => {
+    const next = current.verdict === button.dataset.verdict ? null : button.dataset.verdict;
+    await save({ verdict: next });
+    document.querySelectorAll(".act[data-verdict]").forEach((b) =>
+      b.classList.toggle("on", b.dataset.verdict === next));
+    say(next ? `${button.textContent}으로 표시` : "표시 지움");
+  }));
+document.querySelectorAll("[data-nudge]").forEach((button) =>
+  button.addEventListener("click", async () => {
+    const step = Number(button.dataset.nudge);
+    const value = step === 0 ? 0 : current.offset_ms + step;
+    await save({ offset_ms: value });
+    $("offv").textContent = `${value} ms`;
+    drawLyrics();
+  }));
+
+// ── 찾기 덮개 ───────────────────────────────────────────────────────────
+function openSheet(which) {
+  mode = which;
+  $("sheet-title").textContent = which === "lrclib" ? "곡 추가 — LRCLIB 에서 가사 찾기" : "음원 바꾸기 — 유튜브에서 찾기";
+  $("q").value = which === "youtube" && current ? `${current.artist} ${current.title}` : "";
+  $("hits").innerHTML = `<div class="empty">검색어를 넣으세요</div>`;
+  $("veil").classList.add("on"); $("q").focus();
+  if ($("q").value) runSearch();
+}
+$("btn-add").addEventListener("click", () => openSheet("lrclib"));
+$("btn-yt").addEventListener("click", () => current ? openSheet("youtube") : say("곡을 먼저 고르세요"));
+$("veil").addEventListener("click", (event) => { if (event.target === $("veil")) $("veil").classList.remove("on"); });
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") $("veil").classList.remove("on");
+  if (event.key === " " && event.target.tagName !== "INPUT") { event.preventDefault(); toggle(); }
+});
+
+let timer = null;
+$("q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(runSearch, 380); });
+
+async function runSearch() {
+  const q = $("q").value.trim();
+  if (!q) return;
+  $("hits").innerHTML = `<div class="empty"><span class="spin"></span> 찾는 중</div>`;
+  const hits = await (await fetch(`/api/${mode}?q=${encodeURIComponent(q)}`)).json();
+  if (!hits.length) { $("hits").innerHTML = `<div class="empty">없음</div>`; return; }
+  $("hits").innerHTML = hits.map((h, i) => mode === "lrclib" ? `
+    <button class="hit" data-i="${i}">
+      <div class="g"><div class="n">${esc(h.title)}</div>
+        <div class="s">${esc(h.artist)}${h.album ? " · " + esc(h.album) : ""}${h.instrumental ? " · 반주" : ""}</div></div>
+      <div class="r">${h.lines.length}줄<br>${clock(h.duration)}</div>
+    </button>` : `
+    <button class="hit" data-i="${i}">
+      <div class="g"><div class="n">${esc(h.title)}</div><div class="s">${esc(h.uploader)}</div></div>
+      <div class="r">${clock(h.duration)}<br>${current ? (Math.abs(h.duration - current.duration)).toFixed(0) + "초 차이" : ""}</div>
+    </button>`).join("");
+  $("hits").querySelectorAll(".hit").forEach((button) =>
+    button.addEventListener("click", () => choose(hits[+button.dataset.i])));
+}
+
+async function choose(hit) {
+  $("veil").classList.remove("on");
+  if (mode === "youtube") {
+    await save({ video_id: hit.video_id });
+    say("음원 바꿈"); await open(current.id);
+    return;
+  }
+  // LRCLIB 결과는 음원이 없다. 이름으로 유튜브에서 한 건 찾아 붙인다.
+  say("음원 찾는 중");
+  const found = await (await fetch(`/api/youtube?q=${encodeURIComponent(hit.artist + " " + hit.title)}&want=5`)).json();
+  const best = found.filter((f) => f.duration).sort((a, b) =>
+    Math.abs(a.duration - hit.duration) - Math.abs(b.duration - hit.duration))[0];
+  if (!best) { say("음원을 못 찾음"); return; }
+  const made = await (await fetch("/api/songs", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...hit, video_id: best.video_id, language: "ko" }),
+  })).json();
+  await loadSongs(); await open(made.id);
+  say(`추가됨 · 길이 ${Math.abs(best.duration - hit.duration).toFixed(0)}초 차이`);
+}
+
+$("btn-export").addEventListener("click", () => location.href = "/api/export");
+loadSongs();
+</script>

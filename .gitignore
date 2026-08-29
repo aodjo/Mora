@@ -30,3 +30,18 @@ DESIGN.md
 HAR.jsonl
 # 듣기 캐시 — 가사 본문이 들어 있고 18MB 다. 만드는 데 곡당 139초.
 Generator/eval/hearing/
+
+# 열쇠. 한 번 커밋되면 저장소 역사에 영원히 남으므로 **이름부터 막는다.**
+privatekey
+publickey
+*.key
+*.pem
+
+# 검수 도구가 만드는 것들 — 음원과 갈래는 곡당 50MB 가 넘고, 검수 데이터베이스는
+# 사람이 손으로 고친 것이라 기계마다 다르다. 코드만 남긴다.
+Generator/eval/review/audio/
+Generator/eval/review/review.db*
+Generator/eval/review/models/
+Generator/eval/review/.venv/
+Generator/eval/review/ui/dist/
+Generator/eval/review/*.log

@@ -19,7 +19,18 @@ interface VibeLyricResp {
     result?: {
       lyric?: {
         normalLyric?: { text?: string };
-        syncLyric?: { lyricLine?: Array<{ startTimeMillis?: number; text?: string }> };
+        /**
+         * 나란한 두 배열이다 — `startTimeIndex[i]`(초, 실수)가 `contents[0].text[i]`와 짝이다.
+         *
+         * 앞서 이 자리는 `lyricLine: [{ startTimeMillis, text }]` 로 적혀 있었는데 그 모양은
+         * 이제 오지 않는다. `hasSyncLyric` 은 여전히 true 로 오므로 깃발만 보아서는 알 수
+         * 없었고, 싱크가 조용히 사라진 채로 돌고 있었다. 여덟 곡을 쳐 보니 여덟 곡 모두
+         * 새 모양으로 왔고 두 배열의 길이도 모두 맞았다.
+         */
+        syncLyric?: {
+          startTimeIndex?: number[];
+          contents?: Array<{ languageType?: string; text?: string[] }>;
+        };
       };
     };
   };
@@ -60,12 +71,17 @@ export const vibe: Provider = {
     const lyric = lyr.response?.result?.lyric ?? {};
 
     let synced: LyricLine[] | undefined;
-    const syncLines = lyric.syncLyric?.lyricLine;
-    if (Array.isArray(syncLines) && syncLines.length) {
-      synced = syncLines.map((l) => ({
-        timeMs: Number(l.startTimeMillis ?? 0),
-        text: l.text ?? "",
-      }));
+    const times = lyric.syncLyric?.startTimeIndex;
+    // 언어가 여럿일 수 있다. 원문(default)을 쓰고, 그것이 없으면 첫 번째를 쓴다.
+    const contents = lyric.syncLyric?.contents ?? [];
+    const body = (contents.find((one) => one.languageType === "default") ?? contents[0])?.text;
+    if (Array.isArray(times) && Array.isArray(body) && times.length > 0) {
+      // 길이가 어긋나면 짧은 쪽까지만 쓴다. 짝이 없는 시각은 붙일 글자가 없다.
+      const upto = Math.min(times.length, body.length);
+      synced = Array.from({ length: upto }, (_, index) => ({
+        timeMs: Math.round(Number(times[index] ?? 0) * 1000),
+        text: body[index] ?? "",
+      })).filter((line) => line.text.trim().length > 0);
     }
 
     const lyrics = plainFrom(lyric.normalLyric?.text, synced);
