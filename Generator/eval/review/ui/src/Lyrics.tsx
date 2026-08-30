@@ -141,6 +141,14 @@ export function Lyrics({ lines, offsetMs, anchor, singing, nowMs, onSeek }: Prop
   /** Where in the window the focused line sits, in pixels. */
   const restAt = height * ANCHOR;
   const base = tops[focused] ?? 0;
+  /**
+   * Whether this line is a second voice sounding alongside the focused one.
+   *
+   * Such a line is drawn smaller in its own place rather than copied beneath the focused
+   * line. Copying it put the same words on screen twice — once small under the lead and
+   * once full-size in the list — which read as the view breaking.
+   */
+  const alongside = (index: number) => live.has(index) && index !== focused;
 
   /**
    * How far the reader has pushed the lyrics away from the playing line, in pixels.
@@ -207,17 +215,23 @@ export function Lyrics({ lines, offsetMs, anchor, singing, nowMs, onSeek }: Prop
             <motion.button
               key={index}
               ref={(element) => { nodes.current[index] = element; }}
-              className={`lyric ${now ? "now" : ""}`}
+              className={`lyric ${now ? "now" : ""} ${alongside(index) ? "second" : ""}`}
               // 줄을 누르면 **그 줄의 첫 글자**로 간다. 밖에서 온 줄 시각으로 가면 1 초 넘게
               // 어긋나 「눌렀는데 딴 데서 시작한다」가 된다.
-              onClick={() => onSeek((line.words?.find((one) => one?.at != null)?.at ?? line.at) + offsetMs)}
+              onClick={() => {
+                // 밀어 둔 것을 **먼저** 되돌린다. 안 그러면 화면이 두 번 움직인다 — 누른
+                // 줄로 한 번, 2.6 초 뒤 밀기가 풀리며 또 한 번. 두 번째가 스프링과 겹쳐
+                // 줄이 통째로 화면 밖으로 나갔다 오는 것이 「빈 페이지가 되었다 돌아온다」다.
+                setDrift(0);
+                onSeek((line.words?.find((one) => one?.at != null)?.at ?? line.at) + offsetMs);
+              }}
               initial={false}
               animate={{
                 y: (tops[index] ?? 0) - base + restAt,
                 // 지금 줄은 낱말이 제 색을 칠하므로 흐리게 하지 않는다.
                 opacity: now ? 1 : away < 0 ? 0.6 : 0.72 - far * 0.05,
                 filter: now ? "blur(0px)" : `blur(${0.4 + far * 0.45}px)`,
-                scale: now ? 1.03 : 1,
+                scale: alongside(index) ? 0.72 : now ? 1.03 : 1,
               }}
               transition={{
                 y: {

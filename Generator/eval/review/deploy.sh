@@ -88,7 +88,10 @@ fresh=$(ssh "$HOST" '
   pid=$(pgrep -f "server[.]py" | tail -1)
   [ -n "$pid" ] || { echo no-pid; exit; }
   up=$(date -d "$(ps -o lstart= -p "$pid")" +%s 2>/dev/null) || { echo no-date; exit; }
-  code=$(stat -c %Y ~/mora-review/align.py 2>/dev/null || echo 0)
+  # **올린 파일을 다 본다.** align.py 하나만 보다가 server.py 만 고친 판을 「새것」으로
+  # 통과시켰다 — 낡은 서버가 그대로 돌며 옛 오류를 계속 냈다.
+  code=$(stat -c %Y ~/mora-review/align.py ~/mora-review/server.py 2>/dev/null | sort -n | tail -1)
+  code=${code:-0}
   [ "$up" -ge "$code" ] && echo fresh || echo stale')
 case "$fresh" in
   fresh) echo "  떴다 · 새 코드로 · http://${HOST#*@}.tail277268.ts.net:8787" ;;

@@ -35,6 +35,23 @@ YTDLP = HERE.parent / "yt-dlp"  # 단일 실행파일이 없으면 venv 것을 �
 SEED = HERE / "korean-truth.json"
 AGENT = "Mora/0.1 (https://mora.junx.dev)"
 
+def yt_dlp() -> str:
+    """어디에 깔렸든 `yt-dlp` 를 찾는다.
+
+    기계마다 세운 방식이 다르다 — 갤북·msi 는 venv 를, 빌린 GPU 기계는 conda 를 쓴다.
+    `.venv/bin/yt-dlp` 하나만 보다가 「yt-dlp 가 없다」로 곡을 못 넣었다. 있는 자리를
+    차례로 보고 없으면 PATH 에 묻는다.
+    """
+    import shutil
+    for one in (YTDLP, HERE / ".venv/bin/yt-dlp"):
+        if one.exists():
+            return str(one)
+    found = shutil.which("yt-dlp")
+    if found:
+        return found
+    raise RuntimeError("yt-dlp 를 못 찾는다 — venv 에도 PATH 에도 없다")
+
+
 AUDIO.mkdir(exist_ok=True)
 app = FastAPI(title="Mora 정답 검수")
 
@@ -241,12 +258,19 @@ def run_align(song_id: int, fresh: bool = False) -> None:
         with db() as conn:
             conn.execute("UPDATE songs SET lines=? WHERE id=?",
                          (json.dumps(next_lines, ensure_ascii=False), song_id))
+        # **부를 줄만 센다.** 간주 자리의 `♫` 같은 줄은 맞출 것이 없으니 분모에서 뺀다 —
+        # `28/31` 로 적으면 세 줄을 못 맞춘 것처럼 읽히는데, 사람이 손으로 고칠 길이 없는
+        # 지금은 그 오해가 「큰일」이 된다. 실제로 그 셋은 전부 `♫` 였다.
+        singable = sum(1 for line in lines if align_words(line.get("text", "")))
         done = sum(1 for one in got if one)
+        skipped = len(lines) - singable
         chars = sum(len(word.get("chars") or []) for line in got for word in line)
         stuck = sum(1 for line in got if line and line[0].get("stuck"))
         voices = max(lanes.values(), default=0) + 1
         note(song_id, f"글자 {chars} · 목소리 {voices}갈래 · 무너진 줄 {stuck}")
-        note(song_id, f"done {done}/{len(lines)} · 통틀어 {time.time() - began:.0f}초", "done")
+        note(song_id,
+             f"done {done}/{singable} · 통틀어 {time.time() - began:.0f}초"
+             + (f" · 부를 것 없는 줄 {skipped}" if skipped else ""), "done")
     except Exception as error:
         print(f"[align] {song_id} 실패: {type(error).__name__}: {error}", file=sys.stderr, flush=True)
         note(song_id, f"실패: {type(error).__name__}: {error}", "bad")
@@ -534,9 +558,12 @@ def search_vibe(q: str = "", artist: str = "", title: str = "") -> list[dict]:
 @app.get("/api/youtube")
 def search_youtube(q: str, want: int = 8) -> list[dict]:
     """유튜브에서 음원 후보를 찾는다. 내려받지 않고 정보만 본다."""
-    binary = str(YTDLP) if YTDLP.exists() else str(HERE / ".venv/bin/yt-dlp")
-    if not Path(binary).exists():
-        raise HTTPException(503, f"yt-dlp 가 없다: {binary}")
+    # 찾는 일은 `yt_dlp()` 한 곳에서만 한다. 같은 줄이 여기와 내려받기 쪽에 두 벌로 있었고,
+    # 내려받기만 고쳤더니 검색이 계속 「yt-dlp 가 없다」를 냈다.
+    try:
+        binary = yt_dlp()
+    except RuntimeError as error:
+        raise HTTPException(503, str(error)) from None
     try:
         got = subprocess.run(
             [binary, "--no-playlist", "--flat-playlist", "--skip-download", "--dump-json",
@@ -579,7 +606,7 @@ def audio_path(video_id: str) -> Path | None:
 
 
 def download(video_id: str) -> None:
-    binary = str(YTDLP) if YTDLP.exists() else str(HERE / ".venv/bin/yt-dlp")
+    binary = yt_dlp()
     try:
         got = subprocess.run(
             [binary, "--no-playlist", "--retries", "5", "-f", "bestaudio/best",

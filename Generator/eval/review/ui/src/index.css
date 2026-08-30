@@ -315,6 +315,10 @@ input { border: 0; background: none; outline: none; }
 }
 @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
 
+/* 함께 울리는 다른 목소리. 제자리에 그대로 두되 작게 그려 리드가 눈을 잡게 한다.
+   초점 줄 아래로 복사해 그렸더니 같은 글월이 화면에 두 번 나와 무너져 보였다. */
+.lyric.second { transform-origin: left center; font-weight: 650; }
+
 .empty-note { color: var(--dim); font-size: 14px; padding: 32px 30px; }
 
 /* ── 아래 ─────────────────────────────────────────────────────────── */
@@ -689,4 +693,4 @@ input { border: 0; background: none; outline: none; }
 .picked-bad { font-size: 12px; color: var(--accent); }
 .hit-check { color: var(--good); font-size: 14px; font-weight: 700; width: 12px; flex: none; }
 
-.build-17deb6b3 { color: red; }
+.build-c2b9e16c { color: red; }

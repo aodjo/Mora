@@ -908,18 +908,25 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -
 
 
 def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
-    """보컬을 리드/서브로 가른 뒤 **갈래마다 따로** 맞춘다. `(줄마다의 낱말, 줄마다의 갈래)`.
+    """Align a song against every separated stem and keep the best placement per line.
 
-    왜 이렇게 하나. 강제 정렬은 차례를 지키므로 **동시에 불리는 두 목소리를 한 갈래 소리
-    위에서는 표현할 수 없다.** 가사에 앞뒤로 적힌 두 줄이 소리에서 겹치면, 정렬은 둘을
-    차례로 놓으려다 한쪽을 짓뭉갠다.
+    Forced alignment is monotonic, so a single stem cannot hold two voices singing at
+    once. The lead stem carries the base pass; the backing, vocals and original stems each
+    get their own pass, and a line adopts another stem's timing only when that stem scores
+    clearly better, lands near either the base placement or the outside line time, and does
+    not stretch past twice the base span. Those three gates are what keep a repeated phrase
+    from flying tens of seconds away, which it did before they existed.
 
-    갈래를 갈라 놓으면 그 다툼이 없어진다 — 리드 줄은 리드 소리 위에서, 서브 줄은 서브
-    소리 위에서 **각각 차례를 지키면** 되고, 둘 사이에는 차례를 지킬 까닭이 없다.
+    Only lines adopted from the backing stem record their source. Speaker embeddings taken
+    from whichever stem happened to win group lines by stem timbre rather than by singer —
+    a solo song split 16/8/3 that way — while the backing stem genuinely holds a different
+    voice and is safe to trust.
 
-    `align_song` 을 두 번 부른다. 다른 갈래의 줄은 글월을 비워 넘긴다 — 맞출 토큰이 없어
-    건너뛰어지므로, 손댈 것 없이 그 갈래의 줄만 이어진 하나의 차례가 된다. 오래 다듬은
-    `align_song` 을 그대로 두려고 이렇게 한다.
+    @param {Path} path - The original audio file.
+    @param {list[dict]} lines - Lyric lines, each with text and an outside start time.
+    @param {callable} tokenize - Splits a line's text into alignable words.
+    @param {str} [title=""] - Song title, used as a weak hint that several singers exist.
+    @returns {tuple[list[list[dict]], dict[int, int]]} Per-line words, and per-line lane.
     """
     lead, back = voices_of(path)
 
@@ -950,6 +957,9 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     lanes: dict[int, int] = {index: 0 for index in range(len(lines))}
     tries = [("리드", lead), ("서브", back), ("보컬", vocals_of(path)), ("원본", path)]
     out = align_song(lead, lines, tokenize, separate=False)
+    # 줄마다 **어느 갈래에서 맞췄나.** 아래에서 목소리 자국을 뜰 때 이 갈래를 쓴다 —
+    # 백보컬 줄의 자국을 리드 갈래에서 뜨면 새어 든 잡음을 뜨는 셈이라 메인처럼 읽힌다.
+    from_stem: dict[int, Path] = {index: lead for index in range(len(lines))}
 
     # 곡 전체의 치우침. 리드가 못 맞춘 줄은 리드 자리로 담을 세울 수 없으므로, 밖에서 온
     # 줄 시각을 또 하나의 기준으로 쓴다.
@@ -997,16 +1007,56 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             if after - before <= VOICE_EDGE:
                 continue
             out[index] = got
+            if stem == back:
+                from_stem[index] = stem
 
     # 누가 부르는가. 제목에 `Feat.` 이 있는 곡만 가른다.
     #
     # 위의 서브 갈래 구제와는 **다른 것**을 잰다. 그것은 「화음이냐」이고 이것은 「누구냐」다.
     # 피처링 가수는 저 혼자 리드로 부르므로 카라오케 모델이 못 가른다 — 목소리가 확 바뀌는데
     # 안 갈라진다던 지적이 그 자리다.
-    who = who_sings(lead, lines, out, title)
+    who = who_sings(from_stem, lines, out, title)
     for index, one in enumerate(who):
         if one:
             lanes[index] = one
+
+    # 4. 딴 사람의 줄은 **그 사람의 줄끼리만** 차례를 지키게 다시 맞춘다.
+    #
+    #    강제 정렬은 차례를 지키므로 한 갈래 위에 모든 줄을 한 줄로 세우면 **두 줄이 같은 때에
+    #    놓일 수가 없다.** 시간축을 훑어 보니 울리는 시간의 97~100% 가 한 줄뿐이었다 —
+    #    이중창을 못 잡는 것이 아니라 **표현할 수가 없었다.**
+    #
+    #    사람이 다르면 서로 차례를 지킬 까닭이 없다. 한 사람의 줄끼리만 이어진 하나의 차례로
+    #    놓으면 그 사람의 줄들은 여전히 앞뒤가 맞고, 다른 사람의 줄과는 자유로이 겹친다.
+    #
+    #    앞서 「갈래마다 제 줄만 남기고 따로 맞추기」로 크게 헛디뎠다(무너진 줄 2 → 20).
+    #    그때와 다른 점은 둘이다 — 바탕은 그대로 두고 **딴 사람의 줄에만** 손대며, 자리가
+    #    바탕이나 밖에서 온 시각에서 멀면 버린다. 못 미더우면 아무것도 안 바꾼다.
+    for lane in sorted({one for one in lanes.values() if one}):
+        mine = [index for index, one in lanes.items() if one == lane]
+        if len(mine) < 2:
+            continue
+        only = [lines[index] if index in set(mine) else {**line, "text": ""}
+                for index, line in enumerate(lines)]
+        apart = align_song(back, only, tokenize, separate=False)
+        for index in mine:
+            got = apart[index]
+            if not got or got[0].get("stuck"):
+                continue
+            now = [one for word in got for one in (word.get("chars") or [])]
+            was = [one for word in out[index] for one in (word.get("chars") or [])]
+            if not now:
+                continue
+            near = [abs(now[0]["at"] - was[0]["at"])] if was else []
+            if lines[index].get("at") is not None:
+                near.append(abs(now[0]["at"] - (lines[index]["at"] + bias)))
+            if not near or min(near) > RESCUE_REACH_MS:
+                continue
+            span = now[-1]["at"] - now[0]["at"]
+            held = (was[-1]["at"] - was[0]["at"]) if len(was) > 1 else span
+            if len(now) > 1 and held > 0 and span > held * STRETCH:
+                continue
+            out[index] = got
 
     # 무너짐 표시를 **합친 뒤에 다시** 매긴다.
     #
@@ -1016,11 +1066,48 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #
     # 다시 매기면 구제가 옆줄에 남긴 자국도 드러난다. 18 번을 서브로 보내면 19 번이 그
     # 자리를 메우려 늘어나는 일이 있는데, 그것도 사람에게 보여야 한다.
+    settle_lanes(out, lanes)
+
     for words in out:
         for word in words:
             word.pop("stuck", None)
     flag_stuck(lines, out)
     return out, lanes
+
+
+def settle_lanes(out: list[list[dict]], lanes: dict[int, int]) -> None:
+    """같은 목소리의 줄끼리 겹치지 않게 끝을 깎는다. `out` 을 그 자리에서 고친다.
+
+    **한 사람이 두 줄을 동시에 부를 수는 없다.** 그런데 정렬은 줄 끝을 다음 글자까지 늘리고,
+    갈래를 넘나들며 고르다 보면 같은 레인의 두 줄이 겹친 채 남는다 — Small girl 의 18 번
+    (48.56~54.20)과 19 번(51.74~58.74)이 2.46 초 겹쳤고, 화면은 그것을 「둘이 동시에 부른다」로
+    읽어 같은 글월을 두 번 켰다. 사람이 「엉뚱한 곳을 같이 불렀다 한다」고 한 자리다.
+
+    레인이 **다른** 줄끼리는 손대지 않는다. 그 겹침은 진짜 이중창이고, 이 도구가 보여 주려는
+    바로 그것이다.
+    """
+    per: dict[int, list[int]] = {}
+    for index, words in enumerate(out):
+        if words:
+            per.setdefault(lanes.get(index, 0), []).append(index)
+
+    for mine in per.values():
+        ordered = sorted(mine, key=lambda one: out[one][0]["at"])
+        for here, after in zip(ordered, ordered[1:]):
+            starts = out[after][0]["at"]
+            chars = [one for word in out[here] for one in (word.get("chars") or [])]
+            for grain in chars:
+                if grain["at"] >= starts:
+                    # 다음 줄이 이미 시작한 뒤에 놓인 글자는 시각을 못 믿는다. 그래도
+                    # 지우지는 않는다 — 화면에 글자가 사라지면 가사가 빈 것으로 보인다.
+                    grain["at"] = min(grain["at"], max(0, starts - LEAST_MS))
+                grain["end"] = min(grain.get("end") or grain["at"], starts)
+                grain["end"] = max(grain["end"], grain["at"] + 20)
+            for word in out[here]:
+                got = word.get("chars") or []
+                if got:
+                    word["at"] = got[0]["at"]
+                    word["end"] = max(one["end"] for one in got)
 
 
 # 제목이 여럿이 부른다고 말해 주는 꼴들. 있으면 문턱을 낮춘다 — 없다고 솔로인 것은 아니다.
@@ -1054,7 +1141,8 @@ VOCALS_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 KARAOKE_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
 
 
-def who_sings(stem: Path, lines: list[dict], out: list[list[dict]], title: str) -> list[int | None]:
+def who_sings(from_stem: dict[int, Path], lines: list[dict], out: list[list[dict]],
+              title: str) -> list[int | None]:
     """줄마다 **누가 부르는가.** 0 = 가장 많이 부른 사람, 1·2 = 그다음. 못 정하면 None.
 
     카라오케 모델이 가르는 것은 「리드 대 화음」이지 **누구냐**가 아니다. 피처링 가수는
@@ -1092,7 +1180,11 @@ def who_sings(stem: Path, lines: list[dict], out: list[list[dict]], title: str) 
             run_opts={"device": device()})
     model = _bundle["voice"]
 
-    audio = read_audio(stem)[0]
+    # 갈래마다 한 번만 읽는다. 줄마다 읽으면 같은 파일을 수십 번 푼다.
+    heard: dict[Path, object] = {}
+    for one in set(from_stem.values()):
+        heard[one] = read_audio(one)[0]
+
     least = VOICE_LEAST_MS / 1000 * SAMPLE_RATE
     where, marks = [], []
     with torch.inference_mode():
@@ -1100,6 +1192,7 @@ def who_sings(stem: Path, lines: list[dict], out: list[list[dict]], title: str) 
             chars = [one for word in words for one in (word.get("chars") or [])]
             if not chars:
                 continue
+            audio = heard[from_stem.get(index, next(iter(heard)))]
             since = int(chars[0]["at"] / 1000 * SAMPLE_RATE)
             until = int((chars[-1]["end"] or chars[-1]["at"]) / 1000 * SAMPLE_RATE)
             if until - since < least or since < 0 or until > audio.shape[-1]:
@@ -1149,6 +1242,10 @@ def who_sings(stem: Path, lines: list[dict], out: list[list[dict]], title: str) 
         left, here, right = who[index - 1], who[index], who[index + 1]
         if here is not None and left is not None and left == right and here != left:
             who[index] = left
+
+    # 「같은 글월은 같은 사람」으로 다수결을 해 봤다가 되돌렸다. 되풀이의 다수가 레인 0 이라
+    # **맞게 갈린 소수를 도로 끌어왔고**(정답 3/6 → 2/6), 솔로 곡까지 15/9/3 으로 쪼갰다.
+    # 글월이 같다는 것은 참인 단서이지만, 그것으로 다수를 따르면 틀린 다수를 따르게 된다.
     return who
 
 
