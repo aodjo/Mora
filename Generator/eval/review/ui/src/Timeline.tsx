@@ -11,7 +11,7 @@
  * editing parts" harder than rewriting the whole thing.
  */
 import { motion } from "motion/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Line } from "./api";
 import { clock } from "./api";
 
@@ -21,9 +21,18 @@ import { clock } from "./api";
  */
 const LANE_NAMES = ["메인", "두 번째 목소리", "세 번째"];
 /** Height in pixels of a single voice lane. */
-const LANE_H = 38;
-/** Height in pixels of the strip holding the ruler and the line numbers. Bars start below it. */
-const RULER_H = 20;
+const LANE_H = 42;
+/**
+ * Height in pixels of the strip above the lanes. Bars start below it.
+ *
+ * Tall enough for two rows, because the clock and the line numbers used to be written on the same
+ * one and read as a single row of nonsense — `22.0s 7 8 28.5s 9 10 35.0s 11`.
+ */
+const RULER_H = 30;
+/** Narrowest a bar may be (px) and still have its character drawn inside it. */
+const READABLE_PX = 17;
+/** Closest two line numbers may be drawn (px). Any nearer and only the marker line is kept. */
+const MARKER_PX = 30;
 
 /** One drawn grain: a single character whose times already sit on the audio clock. */
 interface Bar {
@@ -72,12 +81,28 @@ interface Props {
  * ear: play the song and watch which character lights up. The line markers sit on the first timed
  * word of each line, so it is clear which passage is on screen.
  *
+ * The track's pixel width is measured rather than assumed. A bar's width is known as a percentage
+ * of the window, which says nothing about whether a character fits inside it: at 8x on a
+ * three-minute song a bar is about two pixels, and drawing a letter in it left only the padding,
+ * so nine hundred bars read as one solid block. Both the characters and the line numbers are
+ * dropped once there is no room for them, leaving the bars themselves to be read.
+ *
  * @param {Props} props - Lines to draw, the playback position and offset, the song length, and the seek callback.
  * @returns {JSX.Element} The zoom controls, the ruler, the voice lanes and the character bars.
  */
 export function Timeline({ lines, nowMs, offsetMs, durationMs, onSeek }: Props) {
   const [zoom, setZoom] = useState(8);
   const track = useRef<HTMLDivElement>(null);
+  /** Width of the track in pixels. Percentages alone cannot say whether a bar has room for text. */
+  const [wide, setWide] = useState(900);
+
+  useEffect(() => {
+    const box = track.current;
+    if (!box || typeof ResizeObserver === "undefined") return;
+    const watch = new ResizeObserver(([one]) => setWide(one.contentRect.width));
+    watch.observe(box);
+    return () => watch.disconnect();
+  }, []);
 
   const bars = useMemo<Bar[]>(() => {
     const out: Bar[] = [];
@@ -159,18 +184,25 @@ export function Timeline({ lines, nowMs, offsetMs, durationMs, onSeek }: Props) 
             </span>
           ))}
 
-          {lines.map((line, index) => {
-            const first = line.words?.find((one) => one?.at != null)?.at;
-            if (first == null) return null;
-            const left = place(first + offsetMs);
-            if (left < -1 || left > 101) return null;
-            return (
-              <span key={`l${index}`} className="bars-line read" style={{ left: `${left}%` }}
-                title={`${index + 1}번째 줄 · ${line.text.slice(0, 30)}`}>
-                <b>{index + 1}</b>
-              </span>
-            );
-          })}
+          {(() => {
+            // The number is dropped when the line before it is too close to read, but the marker
+            // line stays. Drawing every number packed the strip solid at anything past 4x.
+            let told = -Infinity;
+            return lines.map((line, index) => {
+              const first = line.words?.find((one) => one?.at != null)?.at;
+              if (first == null) return null;
+              const left = place(first + offsetMs);
+              if (left < -1 || left > 101) return null;
+              const room = left * wide / 100 - told >= MARKER_PX;
+              if (room) told = left * wide / 100;
+              return (
+                <span key={`l${index}`} className="bars-line read" style={{ left: `${left}%` }}
+                  title={`${index + 1}번째 줄 · ${line.text.slice(0, 30)}`}>
+                  {room && <b>{index + 1}</b>}
+                </span>
+              );
+            });
+          })()}
 
           {bars.map((one, index) => {
             const left = place(one.at);
@@ -185,7 +217,7 @@ export function Timeline({ lines, nowMs, offsetMs, durationMs, onSeek }: Props) 
                 }}
                 title={`${one.text} · ${(one.at / 1000).toFixed(2)}s ~ ${(one.end / 1000).toFixed(2)}s`}
               >
-                <span className="bar-text">{one.text}</span>
+                {width * wide / 100 >= READABLE_PX && <span className="bar-text">{one.text}</span>}
               </div>
             );
           })}

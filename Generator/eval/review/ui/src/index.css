@@ -482,7 +482,7 @@ input { border: 0; background: none; outline: none; }
 /* ── 낱말 찍기 ───────────────────────────────────────────────────── */
 /* 화면을 꽉 채운다. 가사가 늘어나고 타임라인은 아래에 붙는다 — 앞선 판은 아래 절반이
    통째로 빈 검정이었다. */
-.tap-wrap { flex: 1; min-height: 0; display: flex; z-index: 1; }
+.tap-wrap { flex: 1; min-height: 0; display: flex; z-index: 1; padding: 14px 30px 18px; }
 .tap { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 14px 30px 20px; }
 .tap-head {
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
@@ -567,7 +567,9 @@ input { border: 0; background: none; outline: none; }
   background: var(--ink); color: #0a0a0c; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
 }
 
-.bars-wrap { display: flex; flex-direction: column; gap: 7px; flex: none; padding-top: 10px; border-top: 1px solid var(--edge); }
+/* 화면 폭을 다 쓴다. `flex: none` 이던 동안은 내용만큼만 벌어져, 1100px 짜리 창에서 타임라인이
+   왼쪽 430px 에 몰려 있었다 — 막대가 다닥다닥 붙어 초록 울타리로 보이던 것의 절반은 이것이다. */
+.bars-wrap { display: flex; flex-direction: column; gap: 9px; flex: 1; min-width: 0; }
 .bars-tools {
   display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--dim);
   font-variant-numeric: tabular-nums;
@@ -588,9 +590,14 @@ input { border: 0; background: none; outline: none; }
 /* 목소리마다의 칸. 영상 편집기의 트랙처럼 가로로 길게 눕는다. */
 .lane { position: absolute; left: 0; right: 0; pointer-events: none; }
 .lane.odd { background: rgba(255, 255, 255, 0.022); }
-/* 막대 색도 칸을 따른다. 듣기 화면의 색과 같은 것을 써야 두 화면이 한 곡으로 읽힌다. */
-.bar.voice-1 { background: rgba(143, 216, 255, 0.2); border-color: rgba(143, 216, 255, 0.45); }
-.bar.voice-2 { background: rgba(255, 196, 138, 0.2); border-color: rgba(255, 196, 138, 0.45); }
+/* 막대 색은 듣기 화면의 `VOICES` 와 같은 세 가지다. 초록이던 동안은 두 화면이 서로 다른 곡처럼
+   읽혔다 — 가사에서 주황인 줄이 타임라인에서는 초록이었다. */
+.bar.voice-0 { background: rgba(244, 242, 239, 0.17); border-color: rgba(244, 242, 239, 0.42); }
+.bar.voice-1 { background: rgba(143, 216, 255, 0.2); border-color: rgba(143, 216, 255, 0.5); }
+.bar.voice-2 { background: rgba(255, 196, 138, 0.2); border-color: rgba(255, 196, 138, 0.5); }
+.bar.voice-0:hover { background: rgba(244, 242, 239, 0.3); }
+.bar.voice-1:hover { background: rgba(143, 216, 255, 0.34); }
+.bar.voice-2:hover { background: rgba(255, 196, 138, 0.34); }
 .lane + .lane { border-top: 1px solid rgba(255, 255, 255, 0.05); }
 .lane-name {
   position: sticky; left: 0; float: left; margin: 5px 0 0 7px;
@@ -598,7 +605,7 @@ input { border: 0; background: none; outline: none; }
 }
 .bars-tick {
   position: absolute; top: 0; bottom: 0; font-size: 9.5px; color: var(--dimmer);
-  padding-left: 4px; padding-top: 3px; font-variant-numeric: tabular-nums; pointer-events: none;
+  padding-left: 5px; padding-top: 4px; font-variant-numeric: tabular-nums; pointer-events: none;
 }
 .bars-tick i { position: absolute; left: 0; top: 0; bottom: 0; width: 1px; background: rgba(255, 255, 255, 0.06); }
 /* 잡을 것이 1px 이면 못 잡는다. 선은 가늘게 보이되 집는 자리는 넉넉히 둔다. */
@@ -615,7 +622,7 @@ input { border: 0; background: none; outline: none; }
   background: var(--warn); box-shadow: 0 0 12px rgba(255, 179, 64, 0.7);
 }
 .bars-line b {
-  position: absolute; top: 2px; left: 8px; font-size: 9px; font-weight: 600;
+  position: absolute; top: 15px; left: 8px; font-size: 9px; font-weight: 600;
   color: rgba(255, 179, 64, 0.6); font-variant-numeric: tabular-nums;
   transition: color 0.15s;
 }
@@ -630,17 +637,18 @@ input { border: 0; background: none; outline: none; }
 
 /* top·height 는 제 목소리의 칸에 맞춰 인라인으로 준다 — 여기서 bottom 을 잡으면 그걸 덮는다. */
 .bar {
-  position: absolute; border-radius: 7px; cursor: grab;
-  background: rgba(79, 214, 160, 0.2); border: 1px solid rgba(79, 214, 160, 0.42);
-  display: flex; align-items: center; padding: 0 8px; overflow: hidden;
+  position: absolute; border-radius: 4px; cursor: pointer;
+  background: rgba(244, 242, 239, 0.17); border: 1px solid rgba(244, 242, 239, 0.42);
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
   transition: background 0.15s, border-color 0.15s;
 }
-.bar:hover { background: rgba(79, 214, 160, 0.3); }
 .bar:active { cursor: grabbing; }
 .bar.here { background: rgba(255, 79, 109, 0.24); border-color: rgba(255, 79, 109, 0.55); }
+/* 막대가 좁으면 글자를 아예 안 그린다. 2px 짜리 막대에 글자를 넣으면 읽히지도 않으면서
+   안쪽 여백만 남아, 막대가 전부 같은 덩어리로 보인다. */
 .bar-text {
-  font-size: 11.5px; font-weight: 700; white-space: nowrap; overflow: hidden;
-  text-overflow: ellipsis; pointer-events: none;
+  font-size: 11px; font-weight: 700; white-space: nowrap; overflow: hidden;
+  padding: 0 5px; pointer-events: none;
 }
 .bar-grip {
   position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize;
@@ -693,4 +701,4 @@ input { border: 0; background: none; outline: none; }
 .picked-bad { font-size: 12px; color: var(--accent); }
 .hit-check { color: var(--good); font-size: 14px; font-weight: 700; width: 12px; flex: none; }
 
-.build-2be34aa7 { color: red; }
+.build-6a5bf9d6 { color: red; }

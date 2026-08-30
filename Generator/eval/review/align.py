@@ -27,6 +27,7 @@ against that ground truth. A human has to actually fix it.
 """
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import unicodedata
@@ -1456,6 +1457,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     for index, one in enumerate(who):
         if one:
             lanes[index] = one
+    split_runs(voices_apart(path), lines, out, who, tokenize)
 
     for lane in sorted({one for one in lanes.values() if one}):
         mine = [index for index, one in lanes.items() if one == lane]
@@ -1602,10 +1604,187 @@ VOCALS_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 KARAOKE_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
 
 
+#: Where the diarizer lives. It needs torch 2.8 and the aligner is pinned to 2.7 by `torchaudio`
+#: and MMS_FA, so it gets a home of its own; putting them together made pip pull torch 2.13 and
+#: break `torchvision` outright.
+DIARIZE_PY = Path.home() / "dia/bin/python"
+#: How much of a line one voice must hold before it counts as singing it.
+#:
+#: A breath caught at the edge of a neighbouring line would otherwise make every line a duet.
+VOICE_SHARE = 0.2
+
+
+def voices_apart(path: Path) -> dict:
+    """Ask the diarizer who sings when, cached beside the audio.
+
+    Runs `diarize.py` in its own environment and keeps the answer in a `.dia.json` next to the
+    stem, so a song is only ever diarized once.
+
+    @param {Path} path - The original audio; the vocals stem is what actually gets read.
+    @returns {dict} The diarizer's answer, or an empty dict when it could not be run.
+    """
+    stem = vocals_of(path)
+    into = stem.with_suffix(".dia.json")
+    if into.exists():
+        try:
+            return json.loads(into.read_text(encoding="utf-8"))
+        except Exception:
+            into.unlink(missing_ok=True)
+    if not DIARIZE_PY.exists():
+        return {}
+    subprocess.run([str(DIARIZE_PY), str(Path(__file__).parent / "diarize.py"),
+                    str(stem), str(into)], check=False, capture_output=True)
+    if not into.exists():
+        return {}
+    try:
+        return json.loads(into.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def held_by(said: dict, since: float, until: float) -> dict[int, float]:
+    """Measure how much of a stretch each voice holds.
+
+    @param {dict} said - The diarizer's answer.
+    @param {float} since - Start of the stretch, in seconds.
+    @param {float} until - End of the stretch, in seconds.
+    @returns {dict[int, float]} Share of the stretch held, per voice.
+    """
+    room = max(0.001, until - since)
+    held: dict[int, float] = {}
+    for one in said.get("쪽", []):
+        for a, b in one["토막"]:
+            over = min(until, b) - max(since, a)
+            if over > 0:
+                held[one["누구"]] = held.get(one["누구"], 0.0) + over / room
+    return held
+
+
+def split_runs(said: dict, lines: list[dict], out: list[list[dict]],
+               who: list[int | None], tokenize) -> None:
+    """Give a bracketed run inside a line its own voice, when the diarizer hears a different one.
+
+    Lyric sheets write `(If, if I got a, if I got a) would you guarantee?` as one line, where the
+    bracketed run is the backing singer and the tail is the lead. A lane per line paints the whole
+    thing one colour, which is the thing a person kept pointing at.
+
+    Brackets decide **where to cut**, never **who it is** — sheets bracket the same singer's own
+    doubling just as often, so reading a bracket as "this is the backing singer" would be a guess.
+    The diarizer is asked about each run on its own, and a line is only repainted when its runs come
+    back as different voices.
+
+    This replaces matching a voice print of the run against cluster centres. A run is around a
+    second long and a print that short wobbled badly — the same words on lines 18 and 19 came out
+    as mirror images of each other, so one of them had to be wrong. Nothing is being compared here;
+    the diarizer already says who is on at that moment.
+
+    @param {dict} said - The diarizer's answer for this song.
+    @param {list[dict]} lines - Lyric lines, read for their brackets.
+    @param {list[list[dict]]} out - Per-line word dicts, marked in place with `word["lane"]`.
+    @param {list[int | None]} who - Voice per line, used to number the runs the same way.
+    @param {callable} tokenize - Splits a line into the words the aligner used.
+    @returns {None}
+    """
+    if not said.get("쪽"):
+        return
+    rank = {}
+    for index, one in enumerate(who):
+        chars = [two for word in out[index] for two in (word.get("chars") or [])]
+        if one is None or not chars:
+            continue
+        held = held_by(said, chars[0]["at"] / 1000, chars[-1]["end"] / 1000)
+        if held:
+            rank[max(held, key=lambda two: held[two])] = one
+
+    for index, words in enumerate(out):
+        if not words or not any(word.get("back") for word in words):
+            continue
+        runs, mine = [], []
+        for word in words:
+            if mine and bool(word.get("back")) != bool(mine[0].get("back")):
+                runs.append(mine)
+                mine = []
+            mine.append(word)
+        if mine:
+            runs.append(mine)
+        if len(runs) < 2:
+            continue
+
+        said_as = []
+        for run in runs:
+            chars = [one for word in run for one in (word.get("chars") or [])]
+            held = held_by(said, chars[0]["at"] / 1000, chars[-1]["end"] / 1000) if chars else {}
+            said_as.append(rank.get(max(held, key=lambda one: held[one])) if held else None)
+        if len({one for one in said_as if one is not None}) < 2:
+            continue
+        for run, lane in zip(runs, said_as):
+            if lane is None:
+                continue
+            for word in run:
+                word["lane"] = lane
+
+
+def told_apart(said: dict, out: list[list[dict]]) -> list[int | None]:
+    """Read a line's singer straight off the diarizer, and mark where two of them sound at once.
+
+    Sortformer answers a different question from the embedding clustering below, and a better one.
+    Clustering asks "which of these voice prints look alike", and on singing that is a weak
+    question — ECAPA is trained on speech and one person's print moves a great deal with pitch and
+    delivery, so **three of the five solo songs were split into two singers**. Sortformer is trained
+    to say, frame by frame, whether each person is singing, so nothing is being compared: four of
+    the five solo songs come back as one voice.
+
+    It also answers something the old measurement could not express at all. A print per line means
+    one singer per line, so a passage sung by two people **at the same time** had nowhere to go.
+    Here two voices are simply on together, and Small girl's lines 19 and 60 — the
+    `(If, if I got a, if I got a) would you guarantee?` a person pointed at — come back as
+    overlapping, which is exactly what they sound like.
+
+    Voices are renumbered so the one holding the most lines is 0; if the numbering moved from song
+    to song the screen would be unreadable. A line where a second voice holds at least
+    `VOICE_SHARE` of it carries that voice in `words[0]["with"]`.
+
+    @param {dict} said - The diarizer's answer for this song.
+    @param {list[list[dict]]} out - Per-line word dicts, marked in place with any second voice.
+    @returns {list[int | None]} Singer index per line, or None where nobody was heard.
+    """
+    who: list[int | None] = [None] * len(out)
+    seconds: list[dict[int, float]] = []
+    for words in out:
+        chars = [one for word in words for one in (word.get("chars") or [])]
+        seconds.append(held_by(said, chars[0]["at"] / 1000, chars[-1]["end"] / 1000)
+                       if chars else {})
+
+    tally: dict[int, int] = {}
+    for held in seconds:
+        best = max(held, key=lambda one: held[one]) if held else None
+        if best is not None:
+            tally[best] = tally.get(best, 0) + 1
+    order = {one: rank for rank, one in
+             enumerate(sorted(tally, key=lambda one: -tally[one]))}
+    if len(order) < 2:
+        return [0 if held else None for held in seconds]
+
+    for index, held in enumerate(seconds):
+        if not held:
+            continue
+        best = max(held, key=lambda one: held[one])
+        who[index] = order.get(best, 0)
+        beside = [one for one in held
+                  if one != best and held[one] >= VOICE_SHARE and one in order]
+        if beside and out[index]:
+            out[index][0]["with"] = order[max(beside, key=lambda one: held[one])]
+    return who
+
+
 def who_sings(stem: Path, path: Path, lines: list[dict], out: list[list[dict]],
               title: str) -> list[int | None]:
     """Decide **who sings** each line: 0 = the singer with the most lines, 1·2 = the rest, None
     when it cannot be decided.
+
+    Sortformer answers this now — see `told_apart`. Everything below is the fallback for a machine
+    without the diarizer's environment, and is kept because the reasoning in it was expensive to
+    reach and still explains what does and does not work on singing.
 
     What the karaoke model separates is "lead against harmony", not **who**. A featured singer sings
     lead alone, so they land in the lead stem untouched and no split happens even though the voice
@@ -1703,6 +1882,10 @@ def who_sings(stem: Path, path: Path, lines: list[dict], out: list[list[dict]],
     @param {str} title - Song title, used as a weak hint that several singers exist.
     @returns {list[int | None]} Singer index per line, or None where undecided.
     """
+    said = voices_apart(path)
+    if said.get("쪽"):
+        return told_apart(said, out)
+
     import torch
     from sklearn.cluster import AgglomerativeClustering
 
