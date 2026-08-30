@@ -350,6 +350,157 @@ def fill_gaps(chars: list[dict]) -> None:
         chars[one]["end"] = chars[one + 1]["at"]
 
 
+#: How close together (ms) characters count as packed, for finding a run to spread.
+#:
+#: Deliberately wider than `CRAMP_MS`, the floor `loosen_chars` pushes characters to. Testing for
+#: the floor exactly looked right and failed quietly: Bigbang's line 14 held eight syllables at 80
+#: ms and then one at **81**, so the run ended there, the room measured 641 ms instead of the 4 s
+#: that stood empty after the line, and nothing was spread. What is being looked for is not the
+#: floor itself but a stretch nobody could sing, and the room test below is what keeps genuinely
+#: fast singing safe — its next character arrives immediately, so there is nothing to spread into.
+PACKED_MS = 120
+#: How many characters in a row must sit packed together before the run is spread out.
+CRAMP_RUN = 6
+#: How many times its own width a crammed run must have free before it is spread into it.
+CRAMP_ROOM = 2.0
+#: The longest a single character may be given when a crammed run is spread (ms).
+#:
+#: Without it, a crammed line followed by an instrumental break would stretch across the whole
+#: break — thirteen characters over twenty seconds. The room is only evidence that the singing
+#: happened somewhere in it, not that it filled it.
+SPREAD_MOST_MS = 500
+
+
+def spread_crammed(chars: list[dict]) -> None:
+    """Spread a run of characters stuck at the minimum spacing across the room it actually has.
+
+    Characters sitting exactly `CRAMP_MS` apart are not a measurement. They are what is left after
+    `loosen_chars` pushed them off each other: the aligner wanted to put them closer still, which
+    only happens when it found no peak for any of them and dropped the whole run onto one instant.
+
+    Two songs show the same shape. Bigbang's line 14 packed 30 characters into 1.12 s — 27 a second,
+    which nobody sings — and then left 2.9 s empty before the next line. Small girl's line 18 ran
+    `If, if I got a, if I got a` through in 0.78 s and held the last character for the 1.5 s cap,
+    so on screen the whole phrase flashed by and then sat still. A person watching it said the
+    backing singer should rest between the two takes and instead goes straight through.
+
+    The room is real even where the placement is not: it reaches to wherever the next character
+    starts, which the surrounding alignment does have evidence for. Cramming is known to be wrong,
+    so an even spread across that room is taken instead — not because the singing is even, but
+    because nothing here says otherwise.
+
+    A genuinely fast line is left alone without needing a rule of its own: its next character
+    arrives immediately, so there is no room to spread into and the ratio test fails.
+
+    Scored at their own placement these passages read −12 to −16 per character against −9.5 for a
+    healthy line, on the lead, backing and vocals stems alike. There is no stem where this run can
+    be heard, so no better placement is available to find.
+
+    @param {list[dict]} chars - Character dicts carrying "at"/"end", modified in place.
+    @returns {None}
+    """
+    if any(one["at"] is None for one in chars):
+        return
+    total = len(chars)
+    spot = 0
+    while spot < total:
+        last = spot
+        while last + 1 < total and chars[last + 1]["at"] - chars[last]["at"] <= PACKED_MS:
+            last += 1
+        count = last - spot + 1
+        if count >= CRAMP_RUN:
+            # The room reaches to where the next character starts. The crammed run's own end is
+            # not a bound — it was derived from the cramming, so taking the smaller of the two
+            # would always hand back the very number being corrected.
+            roof = (chars[last + 1]["at"] if last + 1 < total
+                    else (chars[last]["end"] or chars[last]["at"]))
+            base = chars[spot]["at"]
+            room = min(roof - base, count * SPREAD_MOST_MS)
+            if room > max(count * CRAMP_MS, chars[last]["at"] - base) * CRAMP_ROOM:
+                step = room / count
+                for at in range(count):
+                    chars[spot + at]["at"] = int(base + step * at)
+                    chars[spot + at]["end"] = int(base + step * (at + 1))
+        spot = last + 1
+
+
+def packed_run(chars: list[dict]) -> bool:
+    """Say whether a line still holds a stretch of characters nobody could sing.
+
+    @param {list[dict]} chars - One line's characters, in order.
+    @returns {bool} True when `CRAMP_RUN` or more of them sit within `PACKED_MS` of each other.
+    """
+    run = 1
+    for before, now in zip(chars, chars[1:]):
+        run = run + 1 if now["at"] - before["at"] <= PACKED_MS else 1
+        if run >= CRAMP_RUN:
+            return True
+    return False
+
+
+def unpack_song(out: list[list[dict]]) -> None:
+    """Spread every crammed run in a song, reading the whole song as one stream of characters.
+
+    Doing this a line at a time was not enough. When the **whole** line is crammed there is no
+    later character inside it to mark where the room ends, so the run looked as though it had none
+    and was left alone — Bigbang's `이 세상은 너뿐이야 (uh-huh, all in the world)` stayed at 27
+    characters a second with 2.9 s standing empty after it. Read across lines, the room reaches to
+    where the next line's first character starts, which is exactly the room that was empty.
+
+    Characters that were never placed are dropped before the pass rather than stopping it.
+    `spread_crammed` refuses a list holding one, which is right for a single line — a hole in the
+    middle means the spacing says nothing — but across a whole song a single unplaced character
+    anywhere silenced the correction for every line, and that is how it first appeared to do
+    nothing at all.
+
+    **A line still holding a packed stretch afterwards is redistributed whole.** Bigbang's line 14
+    packs `이 세상은 너뿐이야` into 0.64 s and then lets `(uh-huh, all in the world)` spread over
+    three seconds. Run by run there is nowhere to go — the packed stretch runs into the next
+    character 861 ms later — but the line as a whole uses 1.04 s of the 4 s standing before the next
+    line. A packed stretch means the model found no peaks there, and a line where part of the
+    reading is that empty cannot have the rest of it trusted either, so the whole line is spread
+    evenly across the room it holds.
+
+    Only lines that still show a packed stretch are touched, which is what keeps this from undoing
+    the run pass above: Small girl's line 18 has its bracketed run spread out by then and its
+    `would you guarantee?` keeps the placement it earned.
+
+    **This runs last, after everything that trims.** `settle_clock` cuts a tail that reaches over
+    the line it slid back, and `settle_lanes` cuts one that reaches over the next line of the same
+    voice, and both do it by pulling characters onto a single instant. Spreading before them left
+    Bigbang's chorus packed again on the screen while every measurement taken inside `align_song`
+    said it had been fixed — the correction was real and then quietly undone downstream.
+
+    @param {list[list[dict]]} out - Per-line word dicts, modified in place.
+    @returns {None}
+    """
+    mine = [[one for word in words for one in (word.get("chars") or []) if one["at"] is not None]
+            for words in out]
+    spread_crammed([one for chars in mine for one in chars])
+
+    after = [chars[0]["at"] for chars in mine if chars]
+    for chars in mine:
+        if len(chars) < CRAMP_RUN or not packed_run(chars):
+            continue
+        base = chars[0]["at"]
+        later = [one for one in after if one > base]
+        roof = min([one for one in later] + [chars[-1]["end"] or chars[-1]["at"]])
+        room = min(roof - base, len(chars) * SPREAD_MOST_MS)
+        if room <= 0:
+            continue
+        step = room / len(chars)
+        for at, one in enumerate(chars):
+            one["at"] = int(base + step * at)
+            one["end"] = int(base + step * (at + 1))
+
+    for words in out:
+        for word in words:
+            got = [one for one in (word.get("chars") or []) if one["at"] is not None]
+            if got:
+                word["at"] = got[0]["at"]
+                word["end"] = max(max(one["end"] for one in got), got[0]["at"] + LEAST_MS)
+
+
 def loosen_chars(chars: list[dict]) -> None:
     """Spread out spots packed tighter than a human can sing. Run **after every character has a
     time**. Edits in place.
@@ -1178,6 +1329,7 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -
             })
         out.append(words_out)
     settle_clock(lines, out)
+    unpack_song(out)
     flag_stuck(lines, out)
     return out
 
@@ -1332,6 +1484,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             out[index] = got
 
     settle_lanes(out, lanes)
+    unpack_song(out)
 
     for words in out:
         for word in words:
