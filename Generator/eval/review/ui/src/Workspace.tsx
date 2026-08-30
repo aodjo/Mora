@@ -37,6 +37,13 @@ interface Props {
   onStem: (key: string, url: string) => void;
   nowMs: number;
   totalMs: number;
+  /**
+   * 맞추는 중인가. **끝나는 순간 다시 읽어야 한다.**
+   *
+   * 곡이 바뀔 때만 읽었더니, 갈래를 새로 만들고 나서도 옛 크기와 옛 시각이 그대로 보였다 —
+   * 「다시 만들었는데 아직 옛것이 남아 있다」로 읽힌다.
+   */
+  busy: boolean;
 }
 
 /** 사람이 읽는 크기. 바이트 그대로 두면 큰지 작은지 안 읽힌다. */
@@ -57,15 +64,14 @@ function when(stamp: number | null): string {
   return sameDay ? `${hh}:${mm}` : `${at.getMonth() + 1}/${at.getDate()} ${hh}:${mm}`;
 }
 
-export function Workspace({ songId, stem, onStem, nowMs, totalMs }: Props) {
+export function Workspace({ songId, stem, onStem, nowMs, totalMs, busy }: Props) {
   const [files, setFiles] = useState<Made[]>([]);
   const [steps, setSteps] = useState<Step[]>([]);
   const [failed, setFailed] = useState("");
 
+  // `busy` 가 참에서 거짓으로 바뀔 때, 곧 맞추기가 끝날 때 다시 읽는다.
   useEffect(() => {
     let alive = true;
-    setFiles([]);
-    setSteps([]);
     setFailed("");
     fetch(`/api/songs/${songId}/workspace`)
       .then((got) => (got.ok ? got.json() : Promise.reject(new Error(`HTTP ${got.status}`))))
@@ -76,7 +82,7 @@ export function Workspace({ songId, stem, onStem, nowMs, totalMs }: Props) {
       })
       .catch((error) => alive && setFailed(String(error.message ?? error)));
     return () => { alive = false; };
-  }, [songId]);
+  }, [songId, busy]);
 
   return (
     <div className="shop">

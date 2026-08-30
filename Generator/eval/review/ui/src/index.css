@@ -92,7 +92,11 @@ input { border: 0; background: none; outline: none; }
   background: radial-gradient(66% 46% at 50% 0%, rgba(255, 79, 109, 0.17), transparent 72%);
 }
 .head {
-  display: flex; gap: 16px; align-items: flex-start; z-index: 2;
+  display: flex; gap: 16px; align-items: flex-start;
+  /* `.tabs` 와 `.foot` 보다 위여야 한다. 셋 다 2 로 두었더니 나중에 오는 `.tabs` 가 위로
+     올라가, 여기서 펼친 메뉴가 그 아래로 깔렸다 — 메뉴의 z-index 를 아무리 올려도 소용없다.
+     부모가 쌓임 맥락을 만들면 자식은 그 안에서만 겨룬다. */
+  z-index: 4;
   padding: 20px 30px 15px; border-bottom: 1px solid var(--edge);
 }
 .head-meta { flex: 1; min-width: 0; }
@@ -106,7 +110,38 @@ input { border: 0; background: none; outline: none; }
 }
 .head-meta input:hover { border-bottom-color: var(--dimmer); }
 .head-meta input:focus { border-bottom-color: var(--accent); }
-.acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; max-width: 55%; }
+.acts { display: flex; gap: 10px; align-items: center; justify-content: flex-end; flex: none; }
+/* 판정 셋은 한 덩이로 묶는다 — 서로 배타이므로 따로 떨어져 있으면 그렇게 안 읽힌다. */
+.verdicts {
+  display: flex; border: 1px solid var(--edge); border-radius: 9px; overflow: hidden;
+}
+.verdict {
+  font-size: 12.5px; font-weight: 600; padding: 7px 15px; color: var(--dim);
+  transition: background 0.15s, color 0.15s;
+}
+.verdict + .verdict { border-left: 1px solid var(--edge); }
+.verdict:hover:not(:disabled) { color: var(--ink); background: rgba(255, 255, 255, 0.05); }
+.verdict:disabled { opacity: 0.4; cursor: default; }
+.verdict.good.on { background: var(--good); color: #0a0a0c; }
+.verdict.off.on { background: var(--warn); color: #0a0a0c; }
+.verdict.wrong.on { background: var(--accent); color: var(--ink); }
+.act-busy { font-size: 11.5px; color: var(--dim); display: flex; align-items: center; gap: 7px; }
+/* 드물게 쓰는 일들. 접어 두어야 판정이 이 화면의 일로 읽힌다. */
+.more { position: relative; }
+.act.ghost { padding: 6px 11px; font-size: 15px; line-height: 1; }
+.more-list {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+  display: flex; flex-direction: column; min-width: 150px; padding: 5px;
+  border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.14);
+  /* 불투명하게 둔다. 반투명이면 아래 글자가 비쳐 메뉴가 안 읽힌다. */
+  background: #1a1a1e;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.66);
+}
+.more-list button {
+  text-align: left; font-size: 12.5px; padding: 8px 11px; border-radius: 7px; color: var(--dim);
+}
+.more-list button:hover:not(:disabled) { color: var(--ink); background: rgba(255, 255, 255, 0.07); }
+.more-list button:disabled { opacity: 0.4; cursor: default; }
 .act {
   font-size: 12.5px; padding: 6px 12px; border-radius: 8px;
   border: 1px solid var(--edge); color: var(--dim); white-space: nowrap;
@@ -654,4 +689,4 @@ input { border: 0; background: none; outline: none; }
 .picked-bad { font-size: 12px; color: var(--accent); }
 .hit-check { color: var(--good); font-size: 14px; font-weight: 700; width: 12px; flex: none; }
 
-.build-cb9ac7fa { color: red; }
+.build-17deb6b3 { color: red; }

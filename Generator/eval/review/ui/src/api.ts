@@ -114,9 +114,14 @@ export const findLyrics = (source: LyricSource, query: { q?: string; artist?: st
 export const findAudio = (q: string, want = 8) =>
   ask<AudioHit[]>(`/api/youtube?${new URLSearchParams({ q, want: String(want) })}`);
 
-/** 우리 모델로 한 번 맞춘다. 나온 것은 정답이 아니라 사람이 고칠 출발점이다. */
-export const startAlign = (id: number) =>
-  ask<{ state: string }>(`/api/songs/${id}/align`, { method: "POST" });
+/**
+ * 우리 모델로 맞춘다. 나온 것을 사람이 듣고 판정한다.
+ *
+ * `fresh` 면 **갈래부터 다시 만든다.** 캐시를 쓰면 「보컬 뽑음 · 0초」가 찍히는데,
+ * 사람이 「다시 맞추기」를 누른 것이라면 그건 「지금 코드로 처음부터」라는 뜻이다.
+ */
+export const startAlign = (id: number, fresh = false) =>
+  ask<{ state: string }>(`/api/songs/${id}/align${fresh ? "?fresh=1" : ""}`, { method: "POST" });
 /** 맞추기 자취 한 줄. 서버가 단계마다 쌓는다 — 화면은 이것을 터미널처럼 보인다. */
 export interface Beat { at: number; text: string; kind: "step" | "done" | "bad" }
 

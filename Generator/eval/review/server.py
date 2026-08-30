@@ -185,7 +185,13 @@ def align_words(text: str) -> list[str]:
     return [one for one in text.split() if one and not NOT_A_WORD.match(one)]
 
 
-def run_align(song_id: int) -> None:
+def run_align(song_id: int, fresh: bool = False) -> None:
+    """모델로 맞춘다. `fresh` 면 **갈래부터 다시 만든다.**
+
+    캐시된 갈래를 그대로 쓰면 「보컬 뽑음 · 0초」가 찍힌다. 처음 거는 것이라면 맞지만,
+    사람이 **「다시 맞추기」를 누른 것이라면 틀렸다** — 그건 「지금 코드로 처음부터」라는 뜻이다.
+    가르는 쪽을 고쳐 놓고 옛 갈래로 맞추면 무엇을 고쳤는지 알 수가 없다.
+    """
     import align as aligner
     began = time.time()
     try:
@@ -203,8 +209,17 @@ def run_align(song_id: int) -> None:
         note(song_id, f"{row['artist']} — {row['title']} · {len(lines)}줄")
         note(song_id, f"음원 {path.name} · {path.stat().st_size / 1048576:.1f}MB")
 
+        if fresh:
+            gone = []
+            for tail in MADE_FROM:
+                one = AUDIO / f"{row['video_id']}{tail}"
+                if one.exists():
+                    one.unlink()
+                    gone.append(one.name)
+            note(song_id, f"옛 갈래 지움 · {len(gone)}개" if gone else "지울 옛 갈래 없음")
+
         step = time.time()
-        note(song_id, "반주 걷는 중 (demucs htdemucs_ft)")
+        note(song_id, "반주 걷는 중 (BS-Roformer)")
         voice = aligner.vocals_of(path)
         note(song_id, f"보컬 뽑음 · {time.time() - step:.0f}초 · {voice.name}")
 
@@ -238,17 +253,20 @@ def run_align(song_id: int) -> None:
 
 
 @app.post("/api/songs/{song_id}/align")
-def start_align(song_id: int) -> dict:
-    """우리 모델로 한 번 맞춰 둔다.
+def start_align(song_id: int, fresh: bool = False) -> dict:
+    """우리 모델로 맞춘다. `?fresh=1` 이면 **갈래부터 다시 만든다.**
 
-    나온 것은 **정답이 아니라 출발점**이다. 사람이 듣고 고쳐야 의미가 있다 — 이대로 두고
+    나온 것은 **정답이 아니라 출발점**이다. 사람이 듣고 판정해야 의미가 있다 — 이대로 두고
     「맞음」을 누르면 우리 모델의 실수가 정답이 되어 그 정답으로 우리 모델을 재게 된다.
     """
     with align_lock:
-        if aligning.get(song_id) in ("보컬 뽑는 중", "소리에 맞추는 중"):
-            return {"state": aligning[song_id]}
+        # 「하는 중」인지 보는 데 문자열을 나열하면, 단계 이름을 하나 늘릴 때마다 여기도
+        # 고쳐야 한다. 끝났음(`done`)과 실패만 아니면 도는 중이다.
+        now = aligning.get(song_id, "")
+        if now and not now.startswith(("done", "실패")):
+            return {"state": now}
         aligning[song_id] = "보컬 뽑는 중"
-    threading.Thread(target=run_align, args=(song_id,), daemon=True).start()
+    threading.Thread(target=run_align, args=(song_id, fresh), daemon=True).start()
     return {"state": "보컬 뽑는 중"}
 
 
@@ -619,7 +637,9 @@ def serve_audio(video_id: str):
 # 이름은 화면에 그대로 나가므로 여기서 정한다. `MADE_FROM` 과 짝이 맞아야 한다 —
 # 갈래를 더하면 두 곳을 같이 고쳐야 한다.
 STEMS = {
-    "vocals": (".vocals.wav", "보컬", "demucs htdemucs_ft 가 반주를 걷어 낸 것", "원본"),
+    # demucs 를 버리고 BS-Roformer 로 갈아탔다. 사람이 둘을 나란히 듣고 정했다 —
+    # demucs 판은 「반주 걷어낸 게 별로」였고, 맞추기 성적은 같았으니 차이는 소리뿐이었다.
+    "vocals": (".vocals.wav", "보컬", "BS-Roformer 가 반주를 걷어 낸 것 (SDR 12.98)", "원본"),
     "lead": (".lead.wav", "리드", "카라오케 모델이 가른 주 목소리 · 정렬의 바탕", "보컬"),
     "back": (".back.wav", "서브", "백보컬·애드리브 · 무너진 줄을 구제하는 데 쓴다", "보컬"),
 }

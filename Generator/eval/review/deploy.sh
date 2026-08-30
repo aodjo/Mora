@@ -11,12 +11,14 @@
 #     그래서 죽이기와 띄우기를 **다른 ssh 로** 가른다.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# 기본은 msi 다. RTX 3060 이 붙어 있어 갤북(Intel Arc)보다 보컬 가르기 2.3 배, 정렬 추론
-# 2.6 배 빠르다. 갤북에 올리려면 `./deploy.sh galbook`.
-HOST=${1:-msi}
-# msi 에는 sudo 없이 깔았다 — node 는 ~/.local/node, ffmpeg 는 ~/.local/bin 의 심볼릭 링크다.
-# 비대화형 ssh 는 그 자리를 PATH 에 안 넣으므로 여기서 넣어 준다.
-REMOTE_PATH='export PATH="$HOME/.local/bin:$HOME/.local/node/bin:$PATH";'
+# 기본은 mora-gpu 다 — vast.ai 에서 빌린 RTX 5090(한국). msi(RTX 3060)와 갤북(Intel Arc)에도
+# 올릴 수 있다: `./deploy.sh msi` · `./deploy.sh galbook`.
+# 사용자까지 적는다. 빌린 기계는 컨테이너라 `root` 뿐인데, 안 적으면 ssh 가 이쪽 사용자
+# 이름으로 붙으려 해 `tailnet policy does not permit you to SSH as user "aodjo"` 로 막힌다.
+HOST=${1:-root@mora-gpu}
+# 기계마다 파이썬과 node 가 있는 자리가 다르다. 비대화형 ssh 는 프로필을 안 읽으므로 여기서
+# 셋을 다 넣어 준다 — 없는 자리는 그냥 무시된다.
+REMOTE_PATH='export PATH="/opt/conda/bin:$HOME/.local/bin:$HOME/.local/node/bin:$PATH";'
 # 새 판인지 어떻게 아는가.
 #
 # 처음엔 「모델로 맞추기」 같은 화면 글자를 찾았는데, 그 글자는 옛 번들에도 있어서 **옛것을
@@ -37,8 +39,15 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 printf '.build-%s { color: red; }\n' "$STAMP" >> "$HERE"/ui/src/index.css
 
 say "1/4  올리기"
-scp -q "$HERE"/server.py "$HERE"/align.py "$HOST":~/mora-review/ || exit 1
-scp -q "$HERE"/ui/src/*.ts "$HERE"/ui/src/*.tsx "$HERE"/ui/src/*.css "$HOST":~/mora-review/ui/src/ || exit 1
+# `scp` 를 안 쓴다. Tailscale SSH 의 sftp 가 **간헐적으로 끊긴다** — 같은 명령이 한 번은
+# 되고 한 번은 `Connection closed` 였다. 파이프로 보내면 그냥 exec 이라 그 문제가 없다.
+#
+# `COPYFILE_DISABLE` 는 맥의 tar 가 확장 속성을 끼워 넣는 것을 막는다. 안 막으면 받는 쪽이
+# `Ignoring unknown extended header keyword` 를 줄줄이 뱉는다.
+COPYFILE_DISABLE=1 tar cf - -C "$HERE" server.py align.py \
+  | ssh "$HOST" 'cd ~/mora-review && tar xf -' || exit 1
+COPYFILE_DISABLE=1 tar cf - -C "$HERE"/ui/src . \
+  | ssh "$HOST" 'mkdir -p ~/mora-review/ui/src && cd ~/mora-review/ui/src && tar xf -' || exit 1
 echo "  올림"
 
 say "2/4  짓기"
@@ -58,13 +67,31 @@ fi
 
 say "4/4  다시 띄우기"
 # 죽이기와 띄우기를 갈라야 한다. 한 셸에서 하면 pkill 이 그 셸을 잡는다.
-ssh "$HOST" 'for p in $(pgrep -f "python server"); do kill "$p" 2>/dev/null; done' || true
-sleep 1
-ssh "$HOST" "$REMOTE_PATH"' cd ~/mora-review && setsid nohup env PATH="$HOME/.local/bin:$PATH" .venv/bin/python server.py > server.log 2>&1 < /dev/null &' || true
+#
+# 찾는 말은 `server[.]py` 다. `python server` 로 찾다가 **조용히 실패했다** — 기계마다
+# 실행 이름이 `python`·`python3`·`.venv/bin/python` 으로 달라 그 말이 안 들어 있는 일이 있다.
+# 옛 서버가 그대로 살아서 새 코드가 안 물렸는데, HTTP 200 이라 겉으로는 멀쩡해 보였다.
+# 대괄호는 이 명령줄 자신이 안 걸리게 하는 것이다 — 그것 없이는 제 셸을 죽인다.
+ssh "$HOST" 'for p in $(pgrep -f "server[.]py"); do kill "$p" 2>/dev/null; done' || true
+sleep 2
+# venv 가 있으면 그것을, 없으면 PATH 의 python 을 쓴다. 기계마다 세운 방식이 다르다.
+ssh "$HOST" "$REMOTE_PATH"' cd ~/mora-review && PY=$([ -x .venv/bin/python ] && echo .venv/bin/python || command -v python3 || command -v python) && setsid nohup env PATH="$PATH" "$PY" server.py > server.log 2>&1 < /dev/null &' || true
 sleep 4
 code=$(ssh "$HOST" 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/')
-if [ "$code" = "200" ]; then
-  echo "  떴다 · http://$HOST.tail277268.ts.net:8787"
-else
+if [ "$code" != "200" ]; then
   echo "  ✗ HTTP $code"; ssh "$HOST" 'tail -20 ~/mora-review/server.log'; exit 1
 fi
+
+# **200 만으로는 못 믿는다.** 죽이기가 실패해 옛 서버가 그대로 살아 있어도 200 이 나온다 —
+# 실제로 그렇게 당했다. 서버가 뜬 때가 코드를 고친 때보다 **뒤인지** 본다.
+fresh=$(ssh "$HOST" '
+  pid=$(pgrep -f "server[.]py" | tail -1)
+  [ -n "$pid" ] || { echo no-pid; exit; }
+  up=$(date -d "$(ps -o lstart= -p "$pid")" +%s 2>/dev/null) || { echo no-date; exit; }
+  code=$(stat -c %Y ~/mora-review/align.py 2>/dev/null || echo 0)
+  [ "$up" -ge "$code" ] && echo fresh || echo stale')
+case "$fresh" in
+  fresh) echo "  떴다 · 새 코드로 · http://${HOST#*@}.tail277268.ts.net:8787" ;;
+  stale) echo "  ✗ 옛 서버가 그대로 살아 있다 — 죽이기가 실패했다"; exit 1 ;;
+  *)     echo "  떴다 (서버 뜬 때를 못 읽음: $fresh) · http://${HOST#*@}.tail277268.ts.net:8787" ;;
+esac

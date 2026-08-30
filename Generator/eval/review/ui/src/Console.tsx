@@ -64,6 +64,11 @@ export function Console({ log, running, onClose }: Props) {
             </motion.div>
           ))}
         </AnimatePresence>
+        {/* 아직 아무것도 안 왔을 때. 빈 상자를 띄우면 「멈췄나」로 읽힌다. */}
+        {!log.length && (
+          <div className="tty-line"><span className="tty-at">00:00</span>
+            <span className="tty-text">서버에 거는 중…</span></div>
+        )}
         {running && <div className="tty-line"><span className="tty-at" /><span className="tty-cursor" /></div>}
       </div>
     </motion.div>

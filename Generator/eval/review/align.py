@@ -361,41 +361,73 @@ def write_audio(wave, path: Path, rate: int) -> None:
         raise RuntimeError(f"소리를 못 남긴다: {got.stderr.decode()[-200:]}")
 
 
+def cut_apart(source: Path, model: str, want: str, into: Path) -> Path | None:
+    """`audio-separator` 로 한 갈래를 뽑아 `into` 에 원음질로 남긴다.
+
+    두 자리(보컬 뽑기·리드 가르기)가 같은 일을 하므로 한 곳에 모은다. 이 저장소에서 같은
+    일을 두 벌로 적어 두었다가 갈린 적이 여러 번 있다.
+
+    `want` 는 결과 이름에서 찾을 조각(`(Vocals)` · `(Instrumental)`).
+    **XPU/CUDA 로 돌려야 한다** — audio-separator 는 cuda·mps·directml 만 보고 Arc 를 못 찾아
+    CPU 로 떨어지는데, 그러면 4 분 곡에 20 분이 걸려 못 쓴다.
+    """
+    import torch
+    from audio_separator.separator import Separator
+
+    into.parent.mkdir(exist_ok=True, parents=True)
+    work = into.parent / "split"
+    work.mkdir(exist_ok=True)
+
+    # audio-separator 는 soundfile 로 읽어 **m4a 를 못 연다.** wav 로 풀어 넘긴다.
+    fed = source
+    raw = None
+    if source.suffix.lower() != ".wav":
+        raw = work / f"{source.stem}.src.wav"
+        # **있어도 다시 쓴다.** 앞선 판이 중간에 죽으면 끊긴 파일이 남는데, 그것을 캐시로
+        # 믿고 넘기면 `LibsndfileError: System error` 로 여기가 아닌 데서 터진다.
+        # 다시 푸는 데 몇 초라 아낄 값이 아니다.
+        write_audio(read_audio(source, rate=44100, channels=2), raw, 44100)
+        fed = raw
+
+    apart = Separator(output_dir=str(work), output_format="WAV", log_level=40)
+    apart.torch_device = torch.device(device())
+    apart.load_model(model_filename=model)
+    made = apart.separate(str(fed))
+
+    got = None
+    for name in made:
+        one = work / name
+        if not one.exists():
+            continue
+        if want in name:
+            subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(one),
+                            "-c:a", "pcm_s24le", str(into)], check=True, timeout=900)
+            got = into
+        one.unlink(missing_ok=True)
+    if raw is not None:
+        raw.unlink(missing_ok=True)
+    return got
+
+
 def vocals_of(path: Path) -> Path:
     """반주를 걷어 낸 보컬. 한 번 뽑아 두고 다시 쓴다.
 
     원곡을 그대로 맞추면 노래가 멎은 자리에도 모델이 반주를 듣고 아무 글자나 내놓는다.
-    그래서 「여긴 빈칸」이 성립하지 않고, 줄 끝 낱말이 다음 줄 직전까지 늘어난다. Mora
-    파이프라인이 demucs 를 먼저 돌리는 것도 같은 이유다.
+    그래서 「여긴 빈칸」이 성립하지 않고, 줄 끝 낱말이 다음 줄 직전까지 늘어난다.
 
-    `htdemucs_ft` 를 쓴다. 네 모델을 겹쳐 돌려 네 배(4 분 곡에 2.5 분쯤) 걸리지만 **한 번만**
-    하고 캐시된다. 처음엔 빠른 `htdemucs` 로 두었는데, 새어 든 반주가 그대로 맞추기의
-    흔들림이 된다 — 곡당 2 분을 아끼자고 정확도를 내줄 자리가 아니다. Mora 파이프라인도
-    ft 를 쓴다.
+    **demucs 를 버리고 BS-Roformer 를 쓴다.** demucs `htdemucs_ft` 의 보컬 SDR 이 9~10 인데
+    이것은 **12.98** 이다. 사람이 demucs 판을 듣고 「반주 걷어낸 게 별로」라고 했고, 둘을
+    나란히 듣고 이쪽으로 정했다. 맞추기 성적은 같았다(둘 다 무너짐 3) — 차이는 소리다.
+
+    값은 시간이다. demucs 29 초, 이쪽은 3 분 남짓. 곡마다 한 번이고 캐시되니 치를 만하다.
     """
     made = path.with_suffix(".vocals.wav")
     if made.exists():
         return made
-
-    import torch
-    from demucs.apply import apply_model
-    from demucs.pretrained import get_model
-
-    where = device()
-    model = get_model("htdemucs_ft")
-    # **원본을 원음질 그대로 읽는다.** 앞판은 16 kHz 홑소리로 읽어 놓고 다시 44.1 kHz 로
-    # 늘려 demucs 에 넣었다 — 8 kHz 위를 먼저 버리고 없는 것을 만들어 낸 셈이라, 반주가
-    # 새어 들고 갈래마다 소리가 상했다. demucs 가 바라는 그대로 넣는다.
-    wave = read_audio(path, rate=model.samplerate, channels=2)
-    with torch.inference_mode():
-        stems = apply_model(model.to(where), wave[None].to(where), device=where, progress=False)
-    voice = stems[0, model.sources.index("vocals")].cpu()
-
-    # **원음질 스테레오로 남긴다.** 이 파일은 두 곳에 쓰인다 — 여기서 다시 리드/서브로
-    # 가르고(그 모델도 44.1 kHz 스테레오를 바란다), 사람이 작업실에서 듣는다. 맞추기에
-    # 넣을 때만 `read_audio` 가 16 kHz 홑소리로 줄여 준다.
-    write_audio(voice, made, model.samplerate)
-    return made
+    got = cut_apart(path, VOCALS_MODEL, "(Vocals)", made)
+    if got is None:
+        raise RuntimeError(f"보컬 갈래를 못 찾는다: {path.name}")
+    return got
 
 
 def voices_of(path: Path) -> tuple[Path, Path]:
@@ -407,10 +439,10 @@ def voices_of(path: Path) -> tuple[Path, Path]:
     Small girl 의 「(If, if I got a…)」 가 한 번은 0.88 초에 눌리고 다음 번은 10.23 초로
     뻗은 것이 그것이다. **한 갈래 소리에 두 목소리가 섞여 있는 한 이건 못 고친다.**
 
-    demucs 로는 안 된다. 보컬이 한 갈래(`drums·bass·other·vocals`)라 리드와 백이 같이 나온다.
-    UVR 계열 카라오케 모델이 그 둘을 가른다 — `mel_band_roformer_karaoke_aufr33_viperx`.
+    보컬을 뽑는 모델로는 안 된다. 그것은 반주와 목소리를 가를 뿐 목소리 안을 안 가른다.
+    UVR 계열 **카라오케** 모델이 그 둘을 가른다.
 
-    **XPU 로 돌린다.** audio-separator 는 cuda·mps·directml 만 보고 Arc 를 못 찾아 CPU 로
+    **XPU/CUDA 로 돌린다.** audio-separator 는 cuda·mps·directml 만 보고 Arc 를 못 찾아 CPU 로
     떨어지는데, 그러면 4 분 곡에 **20 분 51 초**가 걸려 못 쓴다. 만든 뒤 `torch_device` 를
     갈아 끼우면 4 분으로 준다 — 5.4 배다.
     """
@@ -427,7 +459,7 @@ def voices_of(path: Path) -> tuple[Path, Path]:
     into.mkdir(exist_ok=True)
     apart = Separator(output_dir=str(into), output_format="WAV", log_level=40)
     apart.torch_device = torch.device(device())
-    apart.load_model(model_filename="mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt")
+    apart.load_model(model_filename=KARAOKE_MODEL)
     made = apart.separate(str(voice))
 
     # **이름으로 고르면 안 된다.** 이 모델은 `(Vocals)` 가 백보컬이고 `(Instrumental)` 이
@@ -437,8 +469,6 @@ def voices_of(path: Path) -> tuple[Path, Path]:
     #
     # 소리 크기로 정한다. 리드가 백보컬보다 크다 — 재 보니 0.1248 대 0.0279 로 4.5 배였다.
     # 판이 바뀌어도 이 성질은 안 바뀐다.
-    import torch  # noqa: F401  (read_audio 가 쓴다)
-
     loud = []
     for name in made:
         got = into / name
@@ -902,44 +932,71 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #    보컬이 낫다」고 적었는데, 그때 리드라고 부르던 파일이 실은 **백보컬**이었다. 이름을
     #    믿고 거꾸로 붙인 탓이다. 바로잡고 여덟 곡으로 다시 재니 리드 갈래가 낫다 —
     #    무너진 줄 18 개에서 14 개, 세 곡이 좋아지고 나빠진 곡은 없다.
+    #
+    # 2. **네 갈래에서 각각 맞추고 줄마다 가장 잘 맞은 것을 고른다.**
+    #
+    #    갈래를 바꿔 푸는 길은 막혔다. 열여덟 개 모델을 견줬더니 **전부** Small girl 의
+    #    20·62 번을 「주 목소리가 아니다」로 버렸다(멀쩡한 줄 47% 대 그 줄 3~9%). 백보컬
+    #    전용(BVE)은 리드를 통째로 버려 반대로 못 쓰고, 카라오케를 원본에 바로 걸면 0% 다.
+    #    모델들은 `vocals` 를 **리드 노래**로 배웠고 효과가 잔뜩 걸린 애드리브는 그 밖이다.
+    #
+    #    그러니 갈래 하나를 잘 고르는 대신 **여럿을 겹쳐 놓고 줄마다 고른다.** 어느 갈래에서도
+    #    안 들리는 소리라도 원본에는 반드시 있다 — 반주가 섞여 흔들리지만 아무것도 없는 것보다
+    #    낫다.
+    #    **어느 갈래에서 맞췄는지는 레인과 아무 상관이 없다.** 한동안 서브 갈래에서 맞춘 줄에
+    #    레인 1 을 붙였는데, 그것은 「다른 사람이 부른다」가 아니라 「그 갈래가 더 잘 맞았다」일
+    #    뿐이다. 네 갈래로 넓히자 그 혼동이 드러났다 — 혼자 부르는 곡이 14 대 9 로 갈리고,
+    #    한 곡은 29 덩어리에 홑줄이 19 개였다. 레인은 아래 `who_sings` 만 정한다.
+    lanes: dict[int, int] = {index: 0 for index in range(len(lines))}
+    tries = [("리드", lead), ("서브", back), ("보컬", vocals_of(path)), ("원본", path)]
     out = align_song(lead, lines, tokenize, separate=False)
 
-    # 2. **이미 무너진 줄만** 서브 소리로 구제한다.
-    #
-    #    멀쩡한 줄은 손대지 않으므로 이 단계는 나빠질 수가 없다. 서브에서 더 잘 맞으면
-    #    그 시각을 쓰고, 아니면 리드 것을 그대로 둔다.
-    hurt = sorted(broken_lines(out))
-    lanes: dict[int, int] = {index: 0 for index in range(len(lines))}
-    if not hurt:
-        return out, lanes
+    # 곡 전체의 치우침. 리드가 못 맞춘 줄은 리드 자리로 담을 세울 수 없으므로, 밖에서 온
+    # 줄 시각을 또 하나의 기준으로 쓴다.
+    marks = [(index, one[0]["at"]) for index, one in enumerate(out)
+             if one and lines[index].get("at") is not None]
+    bias = (sorted(at - lines[index]["at"] for index, at in marks)[len(marks) // 2]
+            if marks else 0)
 
-    # 서브 소리에서 **줄을 다 두고** 한 번 더 맞춘다. 이 판은 덤이라, 여기서 뭐가 나오든
-    # 리드 판은 그대로다.
-    #
-    # 무너진 줄만 남겨 봤다가 크게 헛디뎠다. 네 줄만 두면 그것들이 곡 어디에나 갈 수 있어
-    # **47~147 초씩 튀었다** — 「(If, if I got a…)」 는 곡에 열 번 넘게 나오니 어느 것에
-    # 붙어도 점수가 좋다. 줄을 다 두면 차례가 그것들을 제자리 언저리에 묶는다.
-    rescued = align_song(back, lines, tokenize, separate=False)
+    for name, stem in tries[1:]:
+        # 줄을 다 두고 맞춘다. 몇 줄만 남기면 되풀이 구절이 곡 어디로든 가 47~147 초씩 튄다.
+        other = align_song(stem, lines, tokenize, separate=False)
+        for index, got in enumerate(other):
+            if not got or got[0].get("stuck"):
+                continue
+            now = [one for word in got for one in (word.get("chars") or [])]
+            was = [one for word in out[index] for one in (word.get("chars") or [])]
+            if not now:
+                continue
 
-    for index in hurt:
-        got = rescued[index]
-        if not got or got[0].get("stuck"):
-            continue
-        was = [one for word in out[index] for one in (word.get("chars") or [])]
-        now = [one for word in got for one in (word.get("chars") or [])]
-        if not was or not now:
-            continue
-        # 너무 멀리 갔으면 안 믿는다. 서브 갈래에서 몇 줄만 맞추면 되풀이 구절이 곡 어디로든
-        # 갈 수 있다 — 고치려는 것과 같은 병이다. 리드가 짚은 자리 언저리라야 구제로 친다.
-        if abs(now[0]["at"] - was[0]["at"]) > RESCUE_REACH_MS:
-            continue
-        # 그 줄에서 가장 약한 글자끼리 견준다. 하나가 어긋나면 그 줄은 못 믿는다.
-        before = min(one.get("sure", -9.0) for one in was)
-        after = min(one.get("sure", -9.0) for one in now)
-        if after - before <= VOICE_EDGE:
-            continue
-        out[index] = got
-        lanes[index] = 1
+            # 너무 멀리 간 것은 안 믿는다. 기준은 둘 — **리드가 짚은 자리**와 **밖에서 온
+            # 줄 시각**. 리드에 소리가 없어 엉뚱한 데 놓인 줄은 앞엣것으로 담을 못 세우므로
+            # 뒤엣것이 있어야 한다. 이 담이 없으면 되풀이 구절이 곡 어디로든 간다.
+            near = []
+            if was:
+                near.append(abs(now[0]["at"] - was[0]["at"]))
+            if lines[index].get("at") is not None:
+                near.append(abs(now[0]["at"] - (lines[index]["at"] + bias)))
+            if not near or min(near) > RESCUE_REACH_MS:
+                continue
+
+            # **길이도 본다.** 점수만 보다가 19 번이 16.01 초로 늘어져 들어왔다 — 늘어난
+            # 줄은 글자마다의 점수가 좋을 수 있다. 소리가 없는 자리를 지나며 아무 데나
+            # 짚어도 그 프레임에서는 그 글자가 1 순위일 수 있기 때문이다.
+            #
+            # 바탕보다 갑절 넘게 길면 안 믿는다. 사람이 같은 글월을 두 배로 늘여 부르는 일은
+            # 드물고, 늘어난 줄은 다음 줄까지 밀어낸다.
+            span = now[-1]["at"] - now[0]["at"]
+            held = (was[-1]["at"] - was[0]["at"]) if len(was) > 1 else span
+            if len(now) > 1 and held > 0 and span > held * STRETCH:
+                continue
+
+            # 그 줄에서 가장 약한 글자끼리 견준다. 하나가 어긋나면 그 줄은 못 믿는다.
+            after = min(one.get("sure", -9.0) for one in now)
+            before = min((one.get("sure", -9.0) for one in was), default=-9.0)
+            if after - before <= VOICE_EDGE:
+                continue
+            out[index] = got
 
     # 누가 부르는가. 제목에 `Feat.` 이 있는 곡만 가른다.
     #
@@ -991,6 +1048,10 @@ VOICE_LEAST_MS = 1000
 VOICE_RUN = 3
 # 제목이 여럿이라고 알려 주면 같은 값을 쓴다. 더 낮출 자리가 없다.
 VOICE_RUN_TOLD = 3
+# 반주를 걷는 모델. 보컬 SDR 12.98 로 demucs htdemucs_ft(9~10)보다 높다.
+VOCALS_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+# 보컬을 리드와 서브(백보컬)로 가르는 모델.
+KARAOKE_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
 
 
 def who_sings(stem: Path, lines: list[dict], out: list[list[dict]], title: str) -> list[int | None]:
@@ -1076,6 +1137,18 @@ def who_sings(stem: Path, lines: list[dict], out: list[list[dict]], title: str) 
     for rank, one in enumerate(order):
         for index in one:
             who[index] = rank
+
+    # **홑줄은 지운다.** 앞뒤가 같은 사람인데 한 줄만 다르면 그것은 사람이 바뀐 것이 아니라
+    # 자국이 흔들린 것이다 — ECAPA 는 말로 훈련된 것이라 같은 사람도 음높이·창법에 따라
+    # 크게 움직인다. 한 곡에 홑줄이 열아홉 개까지 나왔고, 사람은 그것을 「애매하게 안 된다」로
+    # 읽었다.
+    #
+    # 진짜 화자 교대는 덩어리로 온다. 그 성질은 이미 `VOICE_RUN` 으로 「가를까 말까」를 정하는
+    # 데 쓰고 있는데, 가르기로 한 뒤의 **줄마다의 값**에도 같은 성질을 물려야 앞뒤가 맞는다.
+    for index in range(1, len(who) - 1):
+        left, here, right = who[index - 1], who[index], who[index + 1]
+        if here is not None and left is not None and left == right and here != left:
+            who[index] = left
     return who
 
 

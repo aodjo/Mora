@@ -1,14 +1,17 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AudioHit, Beat, Line, LyricHit, Song, Verdict, Word } from "./api";
+import type { AudioHit, Beat, Line, LyricHit, Song, Verdict } from "./api";
 import { addSong, alignState, clock, editSong, fetchState, getSong, listSongs, startAlign, startFetch } from "./api";
 import { Console } from "./Console";
 import { Finder, type Mode } from "./Finder";
 import { Lyrics } from "./Lyrics";
-import { Tapper } from "./Tapper";
+import { Timeline } from "./Timeline";
 import { Workspace } from "./Workspace";
 
 type Tab = "listen" | "tap" | "shop";
+
+/** How long an unaligned last line is assumed to run, in milliseconds. */
+const FALLBACK_SPAN = 4000;
 
 /** 오른쪽 아래에 잠깐 뜨는 알림. `bad` 는 붉게, `work` 는 일이 끝났다는 뜻으로 초록. */
 interface Note { id: number; text: string; kind: "info" | "work" | "bad" }
@@ -37,6 +40,15 @@ export default function App() {
   /** 맞추는 동안의 자취. 터미널처럼 쌓아 보인다. */
   const [log, setLog] = useState<Beat[]>([]);
   const [showLog, setShowLog] = useState(false);
+  /** 드물게 쓰는 일들을 접어 둔 자리. */
+  const [menu, setMenu] = useState(false);
+  // 밖을 누르면 닫는다. 마우스가 벗어나야만 닫히면 손가락이나 키보드로는 못 닫는다.
+  useEffect(() => {
+    if (!menu) return;
+    const shut = () => setMenu(false);
+    window.addEventListener("pointerdown", shut);
+    return () => window.removeEventListener("pointerdown", shut);
+  }, [menu]);
   /** 재생 배속. 낱말을 찍을 때는 늦춰야 손이 따라간다. */
   const [rate, setRate] = useState(1);
   /** 음원을 받는 중인 곡. 스무 초쯤 걸리므로 무엇을 기다리는지 내내 보여야 한다. */
@@ -181,15 +193,59 @@ export default function App() {
     (line: Line) => line.words?.find((word) => word?.at != null)?.at ?? line.at,
     []);
 
-  const activeIndex = useMemo(() => {
-    let found = -1;
-    // 첫 늦은 줄에서 멈추지 않는다. 맞춘 줄과 못 맞춘 줄이 섞이면 시각이 늘 오름차순이라는
-    // 보장이 없어, 멈춰 버리면 그 뒤가 통째로 안 켜진다.
-    for (let i = 0; i < lines.length; i++) {
-      if (startOf(lines[i]) <= nowMs - offset) found = i;
+  /**
+   * The time range a line actually occupies.
+   *
+   * Prefers the aligned characters, which are what the view paints. Lines the model
+   * could not place have no characters, so they fall back to the outside line time and
+   * run until the next line begins — without that they would never count as sounding
+   * and would never light up at all.
+   *
+   * @param {Line} line - A lyric line, possibly carrying aligned words.
+   * @param {Line} [next] - The following line, used to end an unaligned line's range.
+   * @returns {[number, number] | null} Start and end in lyric-clock milliseconds.
+   */
+  const spanOf = useCallback((line: Line, next?: Line): [number, number] | null => {
+    const chars = (line.words ?? []).flatMap((word) => word?.chars ?? []);
+    if (chars.length) {
+      return [chars[0].at, Math.max(...chars.map((one) => one.end ?? one.at))];
     }
-    return found;
-  }, [lines, nowMs, offset, startOf]);
+    if (line.at == null) return null;
+    return [line.at, next?.at ?? line.at + FALLBACK_SPAN];
+  }, []);
+
+  /**
+   * Every line sounding right now, and which of them the view should centre on.
+   *
+   * Two voices singing together is normal once lanes exist, and lighting only one of
+   * them hides half the song. So the view lights all sounding lines and anchors its
+   * scroll on the lowest lane among them — the lead keeps the eye while a backing line
+   * appears alongside in its own colour.
+   *
+   * When nothing is sounding, such as an instrumental gap, both fall back to the last
+   * line already started so the view holds its place instead of going blank.
+   *
+   * @returns {{singing: number[], anchor: number}} Sounding line indexes, and the index
+   *   to centre on. `anchor` is -1 before the first line begins.
+   */
+  const { singing, anchor } = useMemo(() => {
+    const at = nowMs - offset;
+    const live: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const range = spanOf(lines[i], lines[i + 1]);
+      if (range && at >= range[0] && at < range[1]) live.push(i);
+    }
+    if (live.length) {
+      const lead = live.reduce((best, one) =>
+        (lines[one].lane ?? 0) < (lines[best].lane ?? 0) ? one : best, live[0]);
+      return { singing: live, anchor: lead };
+    }
+    let found = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (startOf(lines[i]) <= at) found = i;
+    }
+    return { singing: found >= 0 ? [found] : [], anchor: found };
+  }, [lines, nowMs, offset, startOf, spanOf]);
 
   // ── 고치기 ────────────────────────────────────────────────────────────
   const patch = useCallback(async (change: Partial<Song>) => {
@@ -206,43 +262,11 @@ export default function App() {
    * 바뀌는데 두 저장이 서로의 타이머를 지우고, 늦게 잡힌 쪽이 제 것만 실은 옛 배열을
    * 보내 다른 하나를 되돌렸다.
    */
-  const pending = useRef<number | undefined>(undefined);
-  const keep = useCallback((songId: number, next: Line[]) => {
-    window.clearTimeout(pending.current);
-    pending.current = window.setTimeout(() => {
-      fetch(`/api/songs/${songId}/lines`, {
-        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next),
-      }).catch(() => say("저장 실패", "bad"));
-    }, 700);
-  }, [say]);
-
-  /**
-   * 줄 하나의 시각을 민다. 그 줄의 낱말은 찍기 쪽이 함께 옮겨 `saveWords` 로 보낸다.
-   *
-   * 치우침 보정은 곡 전체를 한꺼번에 미는 것이라 한두 줄만 어긋난 곡에는 쓸 수가 없다.
-   * LRCLIB 도 바이브도 사람이 찍은 것이라 그런 줄이 섞인다.
-   */
-  const shiftLine = useCallback((index: number, delta: number) => {
-    setSong((now) => {
-      if (!now?.lines) return now;
-      const next = now.lines.map((line, i) => (i === index
-        ? { ...line, at: line.at + delta, ...(line.end == null ? {} : { end: line.end + delta }) }
-        : line));
-      keep(now.id, next);
-      return { ...now, lines: next };
-    });
-  }, [keep]);
-
-  // 낱말은 곡 단위로 찍는다. 줄마다의 목록을 통째로 받아 그대로 저장한다.
-  // 저장은 몰아서 한다 — 낱말 하나 뗄 때마다 쓰면 곡 하나에 수백 번이 된다.
-  const saveWords = useCallback((perLine: Word[][]) => {
-    setSong((now) => {
-      if (!now?.lines) return now;
-      const next = now.lines.map((line, i) => ({ ...line, words: perLine[i] ?? [] }));
-      keep(now.id, next);
-      return { ...now, lines: next };
-    });
-  }, [keep]);
+  // 낱말을 저장하던 자리(`keep`·`shiftLine`·`saveWords`)를 걷어냈다. 사람이 손으로
+  // 시각을 고치는 일이 없어졌으므로 저장할 것도 없다 — 맞추기가 곧바로 데이터베이스에 쓴다.
+  //
+  // 남겨 두면 안 된다. 고칠 수 있게 두면 **모델의 실수가 사람 손을 거쳐 정답으로 굳고**,
+  // 그 정답으로 다시 모델을 재게 된다. §4 에 적어 둔 순환이 바로 그것이다.
 
   /**
    * 우리 모델로 한 번 맞춘다.
@@ -271,33 +295,32 @@ export default function App() {
       } else {
         setAligning(beat.state);
       }
-    }, 2000);
+      // 0.7 초마다 본다. 2 초로 두었더니 단계가 훅훅 지나가 터미널이 띄엄띄엄 찼다 —
+      // 갈래가 캐시된 곡은 통째로 13 초라 두세 번밖에 안 들여다보게 된다.
+    }, 700);
     return () => window.clearInterval(tick);
   }, [say, open]);
 
+  /**
+   * 사람이 손으로 거는 맞추기. **갈래부터 다시 만든다.**
+   *
+   * 캐시를 쓰면 「보컬 뽑음 · 0초」가 찍히는데, 사람이 이걸 누른 것이라면 「지금 코드로
+   * 처음부터」라는 뜻이다. 가르는 쪽을 고쳐 놓고 옛 갈래로 맞추면 무엇을 고쳤는지 모른다.
+   * 그만큼 오래 걸리므로(곡당 2~4 분) 터미널이 무엇이 도는지 내내 보여 준다.
+   */
   const runAlign = useCallback(async () => {
     if (!song) return;
     setAligning("보컬 뽑는 중");
     setLog([]); setShowLog(true);
     try {
-      await startAlign(song.id);
+      await startAlign(song.id, true);
     } catch (error) {
       setAligning(""); say(String((error as Error).message), "bad"); return;
     }
-    const tick = window.setInterval(async () => {
-      const beat = await alignState(song.id).catch(() => ({ state: "실패: 서버에 못 닿음" }));
-      if (beat.state.startsWith("done")) {
-        window.clearInterval(tick); setAligning("");
-        const [, count] = beat.state.split(" ");
-        say(`모델이 ${count} 줄을 맞췄습니다 — 듣고 고치세요`, "work");
-        await open(song.id);
-      } else if (beat.state.startsWith("실패")) {
-        window.clearInterval(tick); setAligning(""); say(beat.state, "bad");
-      } else {
-        setAligning(beat.state);
-      }
-    }, 2000);
-  }, [song, say, open]);
+    // 지켜보기는 **한 벌만** 둔다. 여기에 똑같은 폴링 고리를 따로 두었다가 그쪽에서만
+    // `setLog` 를 안 불러 터미널이 안 떴다 — 같은 일을 두 곳에 적으면 반드시 갈린다.
+    watchAlign(song.id);
+  }, [song, say, watchAlign]);
 
   /**
    * 아직 안 맞춰진 곡을 열면 곧바로 지켜본다.
@@ -421,35 +444,71 @@ export default function App() {
                 onBlur={(event) => song && patch({ artist: event.target.value }).then(() => say("아티스트 저장", "work"))} />
             </div>
           </div>
+          {/*
+            사람이 하는 일은 **판정 하나**다. 맞추는 것은 모델의 몫이니 판정만 앞에 두고
+            나머지는 접는다 — 같은 무게의 단추 일곱 개가 한 줄에 서 있으면 무엇이 이 화면의
+            일인지 안 읽힌다.
+          */}
           <div className="acts">
-            {([["good", "맞음"], ["off", "밀림"], ["wrong", "틀림"]] as const).map(([key, label]) => (
-              <button key={key} disabled={!song}
-                className={`act ${key} ${song?.verdict === key ? "on" : ""}`}
-                onClick={() => {
-                  const next = song?.verdict === key ? null : key;
-                  patch({ verdict: next });
-                  say(next ? `${label} 으로 표시` : "표시 지움", next === "wrong" ? "bad" : "work");
-                }}>{label}</button>
-            ))}
-            <button className="act" disabled={!song || !!aligning} onClick={runAlign}>
-              {aligning ? <><span className="spin" /> {aligning}</> : "다시 맞추기"}
-            </button>
-            <button className="act" disabled={!song} onClick={() => setFinder("audio")}>음원 바꾸기</button>
-            <button className="act" onClick={() => setFinder("both")}>곡 넣기</button>
-            <button className="act" onClick={() => { location.href = "/api/export"; }}>내보내기</button>
+            <div className="verdicts">
+              {([["good", "맞음"], ["off", "밀림"], ["wrong", "틀림"]] as const).map(([key, label]) => (
+                <button key={key} disabled={!song}
+                  className={`verdict ${key} ${song?.verdict === key ? "on" : ""}`}
+                  onClick={() => {
+                    const next = song?.verdict === key ? null : key;
+                    patch({ verdict: next });
+                    say(next ? `${label} 으로 표시` : "표시 지움", next === "wrong" ? "bad" : "work");
+                  }}>{label}</button>
+              ))}
+            </div>
+            {aligning && (
+              <span className="act-busy"><span className="spin" /> {aligning}</span>
+            )}
+            {/* 창 전체의 「밖을 누르면 닫기」가 여기까지 닿으면 열자마자 닫힌다. 이 안의
+                누름은 밖으로 안 내보낸다. */}
+            <div className="more" onPointerDown={(event) => event.stopPropagation()}>
+              <button className="act ghost" disabled={!song} onClick={() => setMenu((on) => !on)}
+                title="그 밖의 일">⋯</button>
+              <AnimatePresence>
+                {menu && (
+                  <motion.div className="more-list"
+                    initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.14 }}
+                    onMouseLeave={() => setMenu(false)}
+                  >
+                    <button disabled={!song || !!aligning}
+                      onClick={() => { setMenu(false); runAlign(); }}
+                      title="갈래부터 다시 만든다 · 곡당 2~4분">처음부터 다시 맞추기</button>
+                    <button disabled={!song}
+                      onClick={() => { setMenu(false); setFinder("audio"); }}>음원 바꾸기</button>
+                    <button onClick={() => { setMenu(false); location.href = "/api/export"; }}>
+                      정답 내보내기
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </div>
         </div>
 
         {song && (
           <div className="tabs">
-            {([["listen", "듣기"], ["tap", "낱말 찍기"], ["shop", "작업실"]] as const).map(([key, label]) => (
+            {/* 「낱말 찍기」가 아니라 「타임라인」이다. 손으로 찍는 일은 없어졌고, 이 화면은
+                모델이 놓은 자리를 눈으로 훑어보는 곳이다. */}
+            {([["listen", "듣기"], ["tap", "타임라인"], ["shop", "작업실"]] as const).map(([key, label]) => (
               <button key={key} className={`tab ${tab === key ? "on" : ""}`} onClick={() => setTab(key)}>
                 {label}
                 {tab === key && <motion.span className="tab-mark" layoutId="tabMark"
                   transition={{ type: "spring", stiffness: 420, damping: 32 }} />}
               </button>
             ))}
-            {/* 두 화면이 같은 재생 위치를 본다. 오갈 때 자리를 잃지 않는다. */}
+            {/*
+              「여기서 찍기」를 없앴다. 사람이 손으로 낱말을 놓는 일은 이제 없다 — 정확히
+              내놓는 것은 모델의 몫이고, 사람은 그 결과를 듣고 판정만 한다. 손으로 고칠 수
+              있게 두면 **모델의 실수가 사람 손을 거쳐 정답으로 굳는다.**
+
+              세 화면이 같은 재생 위치를 본다. 오갈 때 자리를 잃지 않는다.
+            */}
             <div className="tab-nav">
               {stem !== "origin" && (
                 <button className="stem-now" onClick={() => song && swapStem("origin", `/audio/${song.video_id}`)}>
@@ -457,9 +516,6 @@ export default function App() {
                 </button>
               )}
               <span>{clock(nowMs / 1000)} 지점</span>
-              <button className="hop" onClick={() => setTab(tab === "tap" ? "listen" : "tap")}>
-                {tab === "tap" ? "듣기로 ▶" : "● 여기서 찍기"}
-              </button>
             </div>
           </div>
         )}
@@ -467,22 +523,20 @@ export default function App() {
         {!song ? (
           <div className="empty-note">왼쪽 ＋ 로 곡을 찾아 넣으세요. 가사는 LRCLIB, 음원은 유튜브에서 가져옵니다.</div>
         ) : tab === "listen" ? (
-          <Lyrics lines={lines} offsetMs={offset} activeIndex={activeIndex} nowMs={nowMs} onSeek={seek} />
+          <Lyrics lines={lines} offsetMs={offset} anchor={anchor} singing={singing}
+                  nowMs={nowMs} onSeek={seek} />
         ) : tab === "shop" ? (
           <Workspace songId={song.id} stem={stem} onStem={swapStem}
-                     nowMs={nowMs} totalMs={total || song.duration * 1000} />
+                     nowMs={nowMs} totalMs={total || song.duration * 1000}
+                     busy={Boolean(aligning)} />
         ) : (
-          <div className="tap-wrap">
-            {/* 오디오 시각을 그대로 넘긴다. 보정치는 찍기 쪽이 가사를 밀어 그리는 데 쓴다 —
-                재생바는 실제 재생 위치이므로 보정한다고 뛰면 안 된다. */}
-            <Tapper
-              key={song.id}
-              lines={lines} nowMs={nowMs} offsetMs={offset}
-              durationMs={total || song.duration * 1000}
-              playing={playing} onSeek={seek}
-              onChange={saveWords} onShiftLine={shiftLine} onNotice={say}
-            />
-          </div>
+          /* 오디오 시각을 그대로 넘긴다. 보정치는 타임라인이 가사를 밀어 그리는 데 쓴다 —
+             재생바는 실제 재생 위치이므로 보정한다고 뛰면 안 된다. */
+          <Timeline
+            key={song.id}
+            lines={lines} nowMs={nowMs} offsetMs={offset}
+            durationMs={total || song.duration * 1000} onSeek={seek}
+          />
         )}
 
         <div className="foot">
@@ -548,7 +602,8 @@ export default function App() {
       {/* 맞추는 동안의 터미널. 끝나도 사람이 닫을 때까지 남는다 — 무엇이 있었는지 읽을
           자리가 있어야 한다. */}
       <AnimatePresence>
-        {showLog && log.length > 0 && (
+        {/* 자취가 아직 안 왔어도 띄운다. 「눌렀는데 아무 일도 안 일어난다」가 없어야 한다. */}
+        {showLog && (
           <Console log={log} running={Boolean(aligning)} onClose={() => setShowLog(false)} />
         )}
       </AnimatePresence>

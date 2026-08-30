@@ -17,14 +17,17 @@
 // 줄이 흔해서 고정 높이로는 어긋난다.
 
 import { motion } from "motion/react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Line } from "./api";
 import { clock } from "./api";
 
 interface Props {
   lines: Line[];
   offsetMs: number;
-  activeIndex: number;
+  /** Index the view centres on — the lead among the lines sounding now. */
+  anchor: number;
+  /** Every line sounding now. Two voices at once is normal once lanes exist. */
+  singing: number[];
   /** 지금 재생 위치(ms). 보정치를 빼지 않은 오디오 시각. */
   nowMs: number;
   onSeek: (ms: number) => void;
@@ -98,8 +101,10 @@ const ANCHOR = 0.34;
 const CASCADE = 0.045;
 /** 몇 줄 아래까지 늦출까. */
 const CASCADE_MAX = 3;
+/** How long a hand-scroll holds before the view drifts back to the playing line, in ms. */
+const HOLD_SCROLL = 2600;
 
-export function Lyrics({ lines, offsetMs, activeIndex, nowMs, onSeek }: Props) {
+export function Lyrics({ lines, offsetMs, anchor, singing, nowMs, onSeek }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const nodes = useRef<(HTMLButtonElement | null)[]>([]);
   const [tops, setTops] = useState<number[]>([]);
@@ -131,16 +136,70 @@ export function Lyrics({ lines, offsetMs, activeIndex, nowMs, onSeek }: Props) {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const focused = Math.max(0, activeIndex);
-  const anchor = height * ANCHOR;
+  const focused = Math.max(0, anchor);
+  const live = new Set(singing);
+  /** Where in the window the focused line sits, in pixels. */
+  const restAt = height * ANCHOR;
   const base = tops[focused] ?? 0;
 
+  /**
+   * How far the reader has pushed the lyrics away from the playing line, in pixels.
+   *
+   * The view normally rides the playhead, which is right while listening but leaves no
+   * way to read ahead or look back at a line that already passed. Scrolling adds that
+   * without giving up the follow: the push decays after a pause and the view returns to
+   * the playing line on its own.
+   */
+  const [drift, setDrift] = useState(0);
+  const pushed = useRef(0);
+  /** Last touch position, for turning finger drags into pushes. */
+  const reachedAt = useRef(0);
+
+  useEffect(() => {
+    if (!drift) return;
+    const tick = window.setInterval(() => {
+      if (Date.now() - pushed.current > HOLD_SCROLL) setDrift(0);
+    }, 400);
+    return () => window.clearInterval(tick);
+  }, [drift]);
+
+  /** Reset the push whenever the song changes, so a new song opens at its first line. */
+  useEffect(() => { setDrift(0); }, [lines]);
+
+  const reach = tops.length ? (tops[tops.length - 1] ?? 0) : 0;
+
+  /**
+   * Push the lyrics by a wheel or trackpad gesture.
+   *
+   * Clamped to the song's own extent so the text cannot be flung into empty space, and
+   * timestamped so the decay above knows when the reader stopped.
+   *
+   * @param {number} by - Pixels to move, positive scrolls toward later lines.
+   */
+  const push = useCallback((by: number) => {
+    pushed.current = Date.now();
+    setDrift((was) => Math.max(-reach - restAt, Math.min(reach + restAt, was - by)));
+  }, [reach, restAt]);
+
   return (
-    <div className="lyric-wrap" ref={box}>
-      <div className="lyric-stage">
+    <div className="lyric-wrap" ref={box}
+      onWheel={(event) => push(event.deltaY)}
+      onTouchStart={(event) => { pushed.current = Date.now(); reachedAt.current = event.touches[0].clientY; }}
+      onTouchMove={(event) => {
+        const y = event.touches[0].clientY;
+        push(reachedAt.current - y);
+        reachedAt.current = y;
+      }}
+    >
+      {/*
+        손으로 민 것은 **바깥 상자**에 건다. 줄마다의 y 에 더하면 휠을 굴릴 때마다 스프링이
+        걸려 끈적인다 — 스프링은 노래를 따라가는 데 쓰는 것이지 손을 따라가는 데 쓰는 것이
+        아니다. 여기서는 곧바로 움직여야 손에 붙는다.
+      */}
+      <div className="lyric-stage" style={{ transform: `translateY(${drift}px)` }}>
         {lines.map((line, index) => {
           const away = index - focused;
-          const now = away === 0;
+          const now = live.has(index);
           // 멀어질수록 흐리게. 세 줄 밖은 더 흐려지지 않게 묶는다 — 그 아래로는 차이가
           // 눈에 안 보이면서 브라우저만 힘들다.
           const far = Math.min(Math.abs(away), 3);
@@ -154,7 +213,7 @@ export function Lyrics({ lines, offsetMs, activeIndex, nowMs, onSeek }: Props) {
               onClick={() => onSeek((line.words?.find((one) => one?.at != null)?.at ?? line.at) + offsetMs)}
               initial={false}
               animate={{
-                y: (tops[index] ?? 0) - base + anchor,
+                y: (tops[index] ?? 0) - base + restAt,
                 // 지금 줄은 낱말이 제 색을 칠하므로 흐리게 하지 않는다.
                 opacity: now ? 1 : away < 0 ? 0.6 : 0.72 - far * 0.05,
                 filter: now ? "blur(0px)" : `blur(${0.4 + far * 0.45}px)`,
