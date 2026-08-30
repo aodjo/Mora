@@ -82,8 +82,9 @@ export function Timeline({ lines, nowMs, offsetMs, durationMs, onSeek }: Props) 
   const bars = useMemo<Bar[]>(() => {
     const out: Bar[] = [];
     lines.forEach((line, index) => {
-      const lane = Math.min(LANE_NAMES.length - 1, Math.max(0, line.lane ?? 0));
+      const held = line.lane ?? 0;
       for (const word of line.words ?? []) {
+        const lane = Math.min(LANE_NAMES.length - 1, Math.max(0, word?.lane ?? held));
         for (const grain of word?.chars ?? []) {
           if (grain.at == null) continue;
           out.push({

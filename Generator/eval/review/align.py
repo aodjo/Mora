@@ -241,6 +241,33 @@ def letters(grain: str) -> list[int]:
     return [table[one] for one in memo[grain] if one in table]
 
 
+def inside_parens(text: str, tokenize) -> list[bool]:
+    """Mark which words of a line sit inside brackets.
+
+    Lyric sheets put backing vocals and ad-libs in brackets, so a bracketed run is sung by
+    a different voice than the rest of its line. Because a lane is chosen per line, a line
+    like `(If, if I got a, if I got a) would you guarantee?` was painted as one voice even
+    though the bracketed half is the backing singer and the tail is the lead.
+
+    Depth is tracked across the whole line rather than per word: an opening bracket and its
+    closing partner usually land in different words, so a per-word test sees neither.
+
+    @param {str} text - The raw line text, brackets included.
+    @param {callable} tokenize - Splits the line into the same words the aligner uses.
+    @returns {list[bool]} One flag per word, true when that word is inside brackets.
+    """
+    out: list[bool] = []
+    depth = 0
+    for word in tokenize(text):
+        opens = sum(word.count(one) for one in "([（")
+        shuts = sum(word.count(one) for one in ")]）")
+        # A word carrying the opening bracket belongs to the bracketed run, and so does the
+        # one carrying the closing bracket, so the flag is taken before depth drops.
+        out.append(depth > 0 or opens > 0)
+        depth = max(0, depth + opens - shuts)
+    return out
+
+
 def speakable(text: str) -> str:
     """Keep only what can actually be sung.
 
@@ -990,7 +1017,8 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -
 
     out: list[list[dict]] = []
     at = 0
-    for rows in plan:
+    for where, rows in enumerate(plan):
+        mask = inside_parens(lines[where].get("text", ""), tokenize)
         flat: list[dict] = []
         shape: list[int] = []
         for row in rows:
@@ -1012,7 +1040,7 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -
 
         words_out: list[dict] = []
         cut = 0
-        for size in shape:
+        for spot, size in enumerate(shape):
             chars = flat[cut: cut + size]
             cut += size
             if not chars or chars[0]["at"] is None:
@@ -1023,6 +1051,7 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -
                 "end": max(chars[-1]["end"], chars[0]["at"] + LEAST_MS),
                 "sure": round(min(one["sure"] for one in chars), 3),
                 **({"shaky": True} if any(one.get("shaky") for one in chars) else {}),
+                **({"back": True} if spot < len(mask) and mask[spot] else {}),
                 "chars": chars,
             })
         out.append(words_out)
@@ -1113,7 +1142,6 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     lanes: dict[int, int] = {index: 0 for index in range(len(lines))}
     tries = [("리드", lead), ("서브", back), ("보컬", vocals_of(path)), ("원본", path)]
     out = align_song(lead, lines, tokenize, separate=False)
-    from_stem: dict[int, Path] = {index: lead for index in range(len(lines))}
 
     marks = [(index, one[0]["at"]) for index, one in enumerate(out)
              if one and lines[index].get("at") is not None]
@@ -1148,10 +1176,8 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             if after - before <= VOICE_EDGE:
                 continue
             out[index] = got
-            if stem == back:
-                from_stem[index] = stem
 
-    who = who_sings(from_stem, lines, out, title)
+    who = who_sings(lead, path, lines, out, title)
     for index, one in enumerate(who):
         if one:
             lanes[index] = one
@@ -1238,6 +1264,39 @@ MANY_VOICES = re.compile(r"\b(feat\.?|featuring|with)\b", re.I)
 #: Even one person's embedding wobbles in singing, so lines shorter than this (ms) are not used
 #: at all.
 VOICE_LEAST_MS = 1000
+#: How long (ms) a bracketed run inside a line must be before its own voice print is taken.
+#:
+#: Lower than `VOICE_LEAST_MS` on purpose: these runs are short by nature — Small girl's
+#: `(If, if I got a, if I got a)` lasts about 1.4 s and its tail `would you guarantee?` about
+#: 1.1 s, and requiring a full second of each would throw away most of the very lines this is
+#: for. The run is only ever matched against clusters that whole lines already built, never used
+#: to build one, so a shaky short print can pick the wrong side but cannot move the clusters.
+VOICE_PART_MS = 500
+#: Which stem the runs inside a line are read from — `"lead"`, `"back"` or `"vocals"`.
+#:
+#: Kept apart from the stem whole lines are read from because the two ask different questions. A
+#: whole line is asking who its singer is, and the lead stem answers that best. A run inside a line
+#: is asking whether **this piece** is a different voice from the piece beside it, and the lead stem
+#: is the worst place to ask: the karaoke split exists to push the backing voice out of it, so the
+#: bracketed backing run and the lead tail next to it come out looking alike. The vocals stem still
+#: holds both voices and is where the two pieces stay different.
+#:
+#: Whichever is chosen, the cluster centres the runs are matched against are rebuilt in that same
+#: stem — a distance between prints taken from different files measures the file, not the person.
+#:
+#: Measured against the four Small girl lines a person split by ear, with the pattern spread on:
+#:
+#:   lead   — 3/4, and line 19 comes out the mirror image of line 18
+#:   back   — 0/4, nothing splits at all
+#:   vocals — **4/4, no false hits**, and none of the five solo songs split a line
+VOICE_PART_FROM = "vocals"
+#: Whether a line that split is copied onto other lines carrying the very same words.
+#:
+#: Summing the prints of same-worded runs before matching was tried first and was worse: the sum
+#: pulled both runs of Small girl's lines 18~19 onto one cluster and **the split disappeared**
+#: (2 lines → 0). Copying the finished pattern instead leaves each decision where it was made and
+#: only fills in the lines that failed to decide.
+VOICE_PART_SPREAD = True
 #: How many **consecutive lines** a cluster needs before it counts as a different singer.
 #:
 #: Why measure it as a run: when the singer changes, that singer takes a whole passage, so the
@@ -1267,7 +1326,7 @@ VOCALS_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 KARAOKE_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
 
 
-def who_sings(from_stem: dict[int, Path], lines: list[dict], out: list[list[dict]],
+def who_sings(stem: Path, path: Path, lines: list[dict], out: list[list[dict]],
               title: str) -> list[int | None]:
     """Decide **who sings** each line: 0 = the singer with the most lines, 1·2 = the rest, None
     when it cannot be decided.
@@ -1281,8 +1340,23 @@ def who_sings(from_stem: dict[int, Path], lines: list[dict], out: list[list[dict
     To separate people, a **speaker embedding** is taken per voice and similar ones are clustered.
     `speechbrain`'s ECAPA-TDNN is used, and the embeddings are taken **per line** — the usual
     approach of sweeping a window over the audio to find speaker boundaries is unnecessary because
-    we already know where every line starts and ends. Each stem is read exactly once; reading per
+    we already know where every line starts and ends. The stem is read exactly once; reading per
     line would decode the same file dozens of times.
+
+    **Every print comes from one stem, the lead one.** Taking each line's print from whichever stem
+    that line happened to align on sounds more faithful and was tried, but a cluster is a comparison
+    of distances, and prints from different stems are not comparable — the karaoke split leaves its
+    own colouring on each, so two lines land far apart for having been read from different files
+    rather than for being different people. Measured against the six lines a person picked out by
+    ear on Small girl, and against whether Bigbang's members separate at all:
+
+      each line's own stem — 4/6, and 붉은 노을 does not split at all
+      lead stem           — **6/6, no false hits, and 붉은 노을 splits into 34/13/1**
+      backing stem        — 6/6 but two extra lines, and 붉은 노을 does not split
+      vocals stem         — 6/6, but 붉은 노을 does not split
+
+    The lead stem wins on both counts and costs one file read instead of three. It also keeps the
+    solo songs no worse: three of the five split either way.
 
     **Whether there are several singers is decided by "does it clump".** Three wrong turns led here:
 
@@ -1317,7 +1391,37 @@ def who_sings(from_stem: dict[int, Path], lines: list[dict], out: list[list[dict
     and even shredded solo songs into 15/9/3. Identical text is a genuine clue, but following the
     majority on it means following a wrong majority.
 
-    @param {dict[int, Path]} from_stem - Which stem each line was aligned on.
+    **The voice also changes inside a line.** Small girl writes
+    `(If, if I got a, if I got a) would you guarantee?` as one line, where the bracketed run is the
+    backing singer and the tail is the lead — but a lane per line painted the whole thing one
+    colour. So after the clusters exist, any line carrying a bracketed run has a print taken for
+    **each run** and matched to the nearest cluster centre, and the words keep that lane in
+    `word["lane"]`.
+
+    Brackets decide **where to cut**, never **who it is**. Reading a bracket as "this is the backing
+    singer" would be one more title-shaped guess like the `Feat.` rule above — lyric sheets bracket
+    the same singer's own doubling just as often. Here the print still answers who, so a bracket
+    sung by the same person lands in the same cluster and the line stays one colour. A line is only
+    repainted when its runs land in **different** clusters, which also means this can never split a
+    song the line-level pass declared a solo.
+
+    **A line that splits is copied onto other lines carrying the very same words.** These runs are
+    around a second long and a print that short wobbles: Small girl writes `(If, if I got a, if I
+    got a) would you guarantee?` as lines 18, 19, 60 and 61, letter for letter the same, and decided
+    one at a time only line 18 came out right. Summing their prints before matching was tried first
+    and was worse — the sum pulled both runs onto one cluster and **the split vanished**, 2 lines to
+    0. Copying the finished pattern instead leaves every decision where it was made and only fills
+    in the lines that failed to decide: 1/4 becomes 4/4 with no false hits.
+
+    This is not the majority vote rejected above. Nothing counts which answer is more common; a line
+    that reached no split takes the pattern of one that did, and a line that already split keeps its
+    own.
+
+
+    The line's own lane then follows its **longest** run, so the timeline agrees with the lyric.
+
+    @param {Path} stem - The lead stem every whole-line voice print is taken from.
+    @param {Path} path - The original audio, used to name the other stems.
     @param {list[dict]} lines - Lyric lines, unused for timing here.
     @param {list[list[dict]]} out - Per-line word dicts carrying character timings.
     @param {str} title - Song title, used as a weak hint that several singers exist.
@@ -1334,9 +1438,7 @@ def who_sings(from_stem: dict[int, Path], lines: list[dict], out: list[list[dict
             run_opts={"device": device()})
     model = _bundle["voice"]
 
-    heard: dict[Path, object] = {}
-    for one in set(from_stem.values()):
-        heard[one] = read_audio(one)[0]
+    audio = read_audio(stem)[0]
 
     least = VOICE_LEAST_MS / 1000 * SAMPLE_RATE
     where, marks = [], []
@@ -1345,7 +1447,6 @@ def who_sings(from_stem: dict[int, Path], lines: list[dict], out: list[list[dict
             chars = [one for word in words for one in (word.get("chars") or [])]
             if not chars:
                 continue
-            audio = heard[from_stem.get(index, next(iter(heard)))]
             since = int(chars[0]["at"] / 1000 * SAMPLE_RATE)
             until = int((chars[-1]["end"] or chars[-1]["at"]) / 1000 * SAMPLE_RATE)
             if until - since < least or since < 0 or until > audio.shape[-1]:
@@ -1381,6 +1482,85 @@ def who_sings(from_stem: dict[int, Path], lines: list[dict], out: list[list[dict
     for rank, one in enumerate(order):
         for index in one:
             who[index] = rank
+
+    close = {"lead": stem, "back": path.with_suffix(".back.wav"),
+             "vocals": path.with_suffix(".vocals.wav")}.get(VOICE_PART_FROM, stem)
+    if close != stem and close.exists():
+        audio = read_audio(close)[0]
+        with torch.inference_mode():
+            for spot, index in enumerate(where):
+                chars = [one for word in out[index] for one in (word.get("chars") or [])]
+                since = int(chars[0]["at"] / 1000 * SAMPLE_RATE)
+                until = int((chars[-1]["end"] or chars[-1]["at"]) / 1000 * SAMPLE_RATE)
+                if since < 0 or until > audio.shape[-1] or until <= since:
+                    continue
+                mark = model.encode_batch(
+                    audio[since:until].unsqueeze(0).to(device())).squeeze().cpu()
+                stack[spot] = mark / mark.norm().clamp(min=1e-9)
+
+    middles = []
+    for one in order:
+        rows = torch.stack([stack[where.index(index)] for index in one]).mean(dim=0)
+        middles.append(rows / rows.norm().clamp(min=1e-9))
+    middle = torch.stack(middles)
+
+    torn: list[tuple[int, list[list[dict]], list[object]]] = []
+    with torch.inference_mode():
+        for index, words in enumerate(out):
+            if who[index] is None or not any(word.get("back") for word in words):
+                continue
+            runs, mine = [], []
+            for word in words:
+                if mine and bool(word.get("back")) != bool(mine[0].get("back")):
+                    runs.append(mine)
+                    mine = []
+                mine.append(word)
+            if mine:
+                runs.append(mine)
+            if len(runs) < 2:
+                continue
+
+            said = []
+            for run in runs:
+                since = int(run[0]["at"] / 1000 * SAMPLE_RATE)
+                until = int(run[-1]["end"] / 1000 * SAMPLE_RATE)
+                if until - since < VOICE_PART_MS / 1000 * SAMPLE_RATE \
+                        or since < 0 or until > audio.shape[-1]:
+                    said.append(None)
+                    continue
+                mark = model.encode_batch(
+                    audio[since:until].unsqueeze(0).to(device())).squeeze().cpu()
+                said.append(mark / mark.norm().clamp(min=1e-9))
+            torn.append((index, runs, said))
+
+    said_as = [[None if mark is None else int((middle @ mark).argmax()) for mark in said]
+               for _, _, said in torn]
+
+    if VOICE_PART_SPREAD:
+        shape: dict[str, list[int | None]] = {}
+        for (index, runs, _), lanes in zip(torn, said_as):
+            if len({one for one in lanes if one is not None}) > 1:
+                shape.setdefault(" ".join(word["text"] for word in
+                                          [one for run in runs for one in run]), lanes)
+        for spot, ((index, runs, _), lanes) in enumerate(zip(torn, said_as)):
+            if len({one for one in lanes if one is not None}) > 1:
+                continue
+            same = shape.get(" ".join(word["text"] for word in
+                                      [one for run in runs for one in run]))
+            if same and len(same) == len(lanes):
+                said_as[spot] = list(same)
+
+    for (index, runs, _), lanes in zip(torn, said_as):
+        if len({one for one in lanes if one is not None}) < 2:
+            continue
+        for run, lane in zip(runs, lanes):
+            if lane is None:
+                continue
+            for word in run:
+                word["lane"] = lane
+        widest = max((one for one in zip(runs, lanes) if one[1] is not None),
+                     key=lambda one: one[0][-1]["end"] - one[0][0]["at"])
+        who[index] = widest[1]
 
     for index in range(1, len(who) - 1):
         left, here, right = who[index - 1], who[index], who[index + 1]

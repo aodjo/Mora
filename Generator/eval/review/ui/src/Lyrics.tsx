@@ -88,13 +88,31 @@ function Ink({ text, at, end, nowMs }: { text: string; at: number; end: number; 
  * @param {number} props.nowMs - Current playback position in ms; -1 leaves every word unsung.
  * @returns {JSX.Element} The painted words, or the plain line text when there are no word times.
  */
+/**
+ * Fill in a line word by word as it is sung.
+ *
+ * A word may carry a lane of its own, and then it overrides the line's. Lyric sheets write
+ * `(If, if I got a, if I got a) would you guarantee?` as one line although the bracketed run is
+ * the backing singer and the tail is the lead, so a colour per line painted the whole thing one
+ * voice. `--voice` is set on the word's own wrapper, and because the line already sets the same
+ * variable, a word without a lane inherits it and nothing else has to know about this.
+ *
+ * @param {object} props - Component props.
+ * @param {Line} props.line - The line to draw, with its word and character timings.
+ * @param {number} props.offsetMs - Shift applied to every time, for nudging against the audio.
+ * @param {number} props.nowMs - Where the song is now, or -1 for a line that is not sounding.
+ * @returns {JSX.Element} The line's words, each filled to the point it has been sung.
+ */
 function Sung({ line, offsetMs, nowMs }: { line: Line; offsetMs: number; nowMs: number }) {
   const words = line.words?.filter((word) => word && word.at != null) ?? [];
   if (!words.length) return <>{line.text}</>;
   return (
     <>
       {words.map((word, index) => (
-        <span key={index}>
+        <span key={index}
+              style={word.lane == null ? undefined : {
+                "--voice": VOICES[Math.min(VOICES.length - 1, Math.max(0, word.lane))],
+              } as React.CSSProperties}>
           {word.chars?.length
             ? word.chars.map((grain, at) => (
                 <Ink key={at} text={grain.text}

@@ -24,6 +24,13 @@ export interface Word {
   sure?: number;
   shaky?: boolean;
   /**
+   * Which voice sings this word, when it differs from the rest of its line.
+   *
+   * Present only where the voice changes inside a line — a bracketed run of backing vocals against
+   * the lead that follows it. Absent everywhere else, and then the line's own lane holds.
+   */
+  lane?: number;
+  /**
    * Why this **line** fell apart. Attached only to the first word of the line.
    *
    * This is a different measure from confidence (`sure`). Confidence is how sure the model is about a
