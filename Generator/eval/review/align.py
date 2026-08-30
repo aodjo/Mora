@@ -89,6 +89,27 @@ STRETCH = 1.8
 #: A gap this wide between characters inside one line means the alignment got lost somewhere
 #: in between (ms). Singing rarely pauses 2 s within a single line.
 STUCK_HOLE_MS = 2000
+#: Whether the line **after** a broken one is re-thought along with it.
+#:
+#: Breakage lives on a boundary, not in a line. Alignment is monotonic, so a line cannot be squeezed
+#: without the next line's head having been placed too early — that head is what took its sound. The
+#: squeezed line itself is often already sitting where it belongs, so pinning only the line the
+#: detector named moves nothing.
+RETHINK_NEXT = True
+#: How far a song's lines may scatter around the outside clock before that clock is called tight,
+#: measured as the median distance from the median offset (ms).
+#:
+#: This is what makes leaning on the outside times safe here. The old objection stands — when the
+#: YouTube audio and the Naver master are different arrangements the whole song shifts and the
+#: outside clock cannot tell our mistakes from a difference of release. But that shift moves
+#: **every** line together. When sixty lines of a song sit within a fifth of a second of the clock,
+#: the two that sit five seconds away are not a different arrangement.
+CLOCK_TIGHT_MS = 300
+#: How far from the song's own offset a line must sit, in a song whose clock is tight, before it is
+#: slid back (ms). Well above `SUSPECT_MS`, because this correction ignores the audio entirely.
+CLOCK_APART_MS = 1500
+#: How many lines must carry an outside time before the clock is judged at all.
+CLOCK_LEAST = 8
 #: How much better per token the backing stem must score before a line is taken as backing.
 #:
 #: Deliberately biased one way. The lead carries most of the song, and sending a lead line to
@@ -736,6 +757,7 @@ def rethink(log_probs, tokens, heads, spans, lines, merged, per_frame):
         reach[index] = (merged[head].start, merged[last].start, spans[index])
 
     floor = CRAMP_MS / per_frame
+    hole = STUCK_HOLE_MS / per_frame
     broken = set()
     for index in reach:
         start, stop, count = reach[index]
@@ -744,6 +766,13 @@ def rethink(log_probs, tokens, heads, spans, lines, merged, per_frame):
             broken.add(index)
             broken.add(index - 1)
         if count >= 4 and (stop - start) <= (count - 1) * floor + 1:
+            broken.add(index)
+
+    for index, head in enumerate(heads):
+        if head is None or not spans[index]:
+            continue
+        mine = merged[head: head + spans[index]]
+        if any(b.start - a.start > hole for a, b in zip(mine, mine[1:])):
             broken.add(index)
 
     said_text = [" ".join(one.get("text", "").split()) for one in lines]
@@ -761,6 +790,13 @@ def rethink(log_probs, tokens, heads, spans, lines, merged, per_frame):
         mine = reach[index][1] - reach[index][0]
         if mid > 0 and mine > mid * STRETCH:
             broken.add(index)
+        if mid > 0 and mine * STRETCH < mid:
+            broken.add(index)
+
+    if RETHINK_NEXT:
+        for index in sorted(broken):
+            if index + 1 in reach:
+                broken.add(index + 1)
 
     pins = []
     for index, head in enumerate(heads):
@@ -801,6 +837,92 @@ def rethink(log_probs, tokens, heads, spans, lines, merged, per_frame):
             continue
         kept.append((head, frame))
     return kept
+
+
+def settle_clock(lines: list[dict], out: list[list[dict]]) -> None:
+    """Slide a stray line back onto the song's own clock. Edits `out` in place.
+
+    Measuring against the outside line times was ruled out early and for a good reason: confronting
+    fifteen badly-off lines with the audio showed **only one** where the outside position was
+    better, because a YouTube upload and the Naver master are often different arrangements and then
+    the whole song shifts. That objection is about a shift that moves **every line together**, and it
+    is exactly what this function tests for before doing anything.
+
+    The song's offset is taken as the median distance between our starts and the outside times, and
+    the scatter around it as the median absolute deviation. A wide scatter means the two clocks
+    disagree and nothing is touched. A tight scatter means the audio really is the same take, and
+    then a line sitting seconds away from a clock the other sixty lines agree with is our error.
+
+    Small girl is the case this was written for. Its lines 20 and 62 are the third repeat of
+    `(If, if I got a, if I got a)`, and both landed about five seconds late — `+5.22 s` and
+    `+4.81 s` — while all sixty other lines sat within `±0.2 s`. The model has no say there: scored
+    at its own placement the passage reads −19 against −9.5 for a healthy line, and eighteen vocal
+    models were measured discarding this same passage. Two lines failing the same way in the same
+    place of a repeated verse is a pattern, not two judgements.
+
+    The line is moved **whole**, keeping the spacing inside it, and never past where the line before
+    it starts or where the line after it starts. Anything that will not fit is left alone.
+
+    A line that has been stretched can cover the room its neighbour needs, and at first that counted
+    as no room and blocked the move — 5 of the 7 stray lines were held by a tail, not by a voice.
+    A tail that reaches over the moved line is trimmed back instead, the same trimming
+    `settle_lanes` does for two lines of one voice. Only the tail moves; a line's own start is never
+    crossed, so nothing is swallowed.
+
+    @param {list[dict]} lines - Lyric lines carrying the outside start times.
+    @param {list[list[dict]]} out - Per-line word dicts, modified in place.
+    @returns {None}
+    """
+    edge: dict[int, tuple[int, int]] = {}
+    for index, words in enumerate(out):
+        chars = [one for word in words for one in (word.get("chars") or [])]
+        if chars:
+            edge[index] = (chars[0]["at"], max(one["end"] or one["at"] for one in chars))
+
+    off = [edge[index][0] - lines[index]["at"] for index in edge
+           if lines[index].get("at") is not None]
+    if len(off) < CLOCK_LEAST:
+        return
+    mid = sorted(off)[len(off) // 2]
+    apart = sorted(abs(one - mid) for one in off)
+    if apart[len(apart) // 2] > CLOCK_TIGHT_MS:
+        return
+
+    order = sorted(edge)
+    for spot, index in enumerate(order):
+        if lines[index].get("at") is None:
+            continue
+        since, until = edge[index]
+        want = lines[index]["at"] + mid
+        if abs(since - want) <= CLOCK_APART_MS:
+            continue
+        before = order[spot - 1] if spot else None
+        floor = edge[before][0] + LEAST_MS if before is not None else 0
+        roof = edge[order[spot + 1]][0] - LEAST_MS if spot + 1 < len(order) else want + (until - since)
+        want = max(floor, min(want, roof - (until - since)))
+        if want < floor or want + (until - since) > roof or abs(want - since) <= CLOCK_APART_MS:
+            continue
+        move = want - since
+        for word in out[index]:
+            word["at"] += move
+            word["end"] += move
+            for grain in word.get("chars") or []:
+                grain["at"] += move
+                if grain["end"] is not None:
+                    grain["end"] += move
+        edge[index] = (since + move, until + move)
+
+        if before is not None and edge[before][1] > want:
+            for word in out[before]:
+                for grain in word.get("chars") or []:
+                    if grain["at"] >= want:
+                        grain["at"] = max(edge[before][0], want - LEAST_MS)
+                    grain["end"] = max(grain["at"] + 20, min(grain["end"] or grain["at"], want))
+                got = word.get("chars") or []
+                if got:
+                    word["at"] = got[0]["at"]
+                    word["end"] = max(one["end"] for one in got)
+            edge[before] = (edge[before][0], want)
 
 
 def pinned(log_probs, tokens: list[int], pins):
@@ -1055,6 +1177,7 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -
                 "chars": chars,
             })
         out.append(words_out)
+    settle_clock(lines, out)
     flag_stuck(lines, out)
     return out
 
