@@ -27,8 +27,8 @@ def words_of(text: str) -> list[str]:
     return [one for one in text.split() if one and not NOT_A_WORD.match(one)]
 
 
-# `--off` 를 주면 2 차 되짚기를 끄고 잰다. 견줄 바탕을 만드는 유일한 방법이라 여기 둔다 —
-# 밖에서 코드를 갈아 끼우면 `__file__` 같은 것이 없어 probe 가 안 돈다.
+#: `--off` 를 주면 2 차 되짚기를 끄고 잰다. 견줄 바탕을 만드는 유일한 방법이라 여기 둔다 —
+#: 밖에서 코드를 갈아 끼우면 `__file__` 같은 것이 없어 probe 가 안 돈다.
 if "--off" in sys.argv:
     align.rethink = lambda *a, **k: []
     print("2 차 되짚기 끔 — 견줄 바탕\n")
@@ -49,8 +49,8 @@ for row in rows[:how_many]:
     stuck = [(index, one[0]["stuck"]) for index, one in enumerate(got)
              if one and one[0].get("stuck")]
 
-    # 겹침은 따로 센다. `flag_stuck` 은 겹침을 표로 안 내보내지만(사람에게는 길이·틈이
-    # 읽히기 쉽다) 두 줄이 같은 소리에 포개진 것은 가장 뚜렷한 무너짐이다.
+    #: 겹친 줄 수. 따로 센다 — `flag_stuck` 은 겹침을 표로 안 내보내지만(사람에게는 길이·틈이
+    #: 읽히기 쉽다) 두 줄이 같은 소리에 포개진 것은 가장 뚜렷한 무너짐이다.
     over = 0
     ends = []
     for one in got:

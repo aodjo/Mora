@@ -51,7 +51,7 @@ for row in rows[:how_many]:
     for one in lanes.values():
         tally[one] = tally.get(one, 0) + 1
 
-    # 두 번 이상 나오는 글월마다, 모든 번이 한 레인에 들었나.
+    #: 두 번 이상 나오는 글월마다, 모든 번이 한 레인에 들었나.
     same: dict[str, list[int]] = defaultdict(list)
     for index, line in enumerate(lines):
         text = " ".join(line.get("text", "").split())

@@ -21,7 +21,7 @@ for index, line in enumerate(lines):
     if want and want not in text:
         continue
     words = line.get("words") or []
-    # 화면이 기대하는 어절 수와 저장된 어절 수가 맞는가. 어긋나면 그 줄이 통째로 어긋난다.
+    #: 화면이 기대하는 어절. 저장된 것과 수가 어긋나면 그 줄이 통째로 어긋난다.
     expect = [one for one in text.split() if one]
     flag = "" if len(words) == len(expect) else f"  ★ 화면은 {len(expect)}개를 기대"
     print(f"\n[{index}] {text[:40]}  → 저장 {len(words)}개{flag}")

@@ -13,9 +13,19 @@ type Tab = "listen" | "tap" | "shop";
 /** How long an unaligned last line is assumed to run, in milliseconds. */
 const FALLBACK_SPAN = 4000;
 
-/** 오른쪽 아래에 잠깐 뜨는 알림. `bad` 는 붉게, `work` 는 일이 끝났다는 뜻으로 초록. */
+/** A toast that shows briefly in the bottom right corner. `bad` is red, `work` means a job finished and is green. */
 interface Note { id: number; text: string; kind: "info" | "work" | "bad" }
 
+/**
+ * The review console for machine-aligned lyrics.
+ *
+ * Owns the whole review session: the song list, the song under review, the audio element
+ * and its playback clock, alignment progress, and the toast stack. The one thing a person
+ * does here is pass a verdict — aligning is the model's work — so the verdict sits up front
+ * and everything else folds away.
+ *
+ * @returns {JSX.Element} The full application view.
+ */
 export default function App() {
   const [songs, setSongs] = useState<Song[]>([]);
   const [song, setSong] = useState<Song | null>(null);
@@ -25,46 +35,62 @@ export default function App() {
   const noteId = useRef(0);
   const [tab, setTab] = useState<Tab>("listen");
   /**
-   * 지금 울리는 갈래. `origin` 이면 원본이다.
+   * The stem now sounding. `origin` is the untouched track.
    *
-   * 갈래를 바꿔도 **듣던 자리를 지킨다** — 원본과 갈래를 같은 지점에서 번갈아 들어야
-   * 무엇이 갈렸는지 귀로 안다. 자리를 잃으면 견줄 수가 없다.
+   * Switching stems **keeps the listening position** — the original and a stem have to be
+   * heard from the same point for the ear to tell what changed. Lose the position and there
+   * is nothing left to compare.
    */
   const [stem, setStem] = useState("origin");
   const [nowMs, setNowMs] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [total, setTotal] = useState(0);
   const [state, setState] = useState("");
-  /** 우리 모델로 맞추는 중이면 그 상태. 보컬 뽑기까지 하면 1 분쯤 걸린다. */
+  /** Progress of an alignment run with our model. With vocal extraction it takes about a minute. */
   const [aligning, setAligning] = useState("");
-  /** 맞추는 동안의 자취. 터미널처럼 쌓아 보인다. */
+  /** The trace left by an alignment run. Stacked up and shown like a terminal. */
   const [log, setLog] = useState<Beat[]>([]);
   const [showLog, setShowLog] = useState(false);
-  /** 드물게 쓰는 일들을 접어 둔 자리. */
+  /** The rarely used actions, folded away. */
   const [menu, setMenu] = useState(false);
-  // 밖을 누르면 닫는다. 마우스가 벗어나야만 닫히면 손가락이나 키보드로는 못 닫는다.
+  /**
+   * Closes the overflow menu on any press outside it.
+   *
+   * Closing only when the mouse leaves the menu made it impossible to close with a finger
+   * or with a keyboard, so a window-wide pointer press shuts it instead.
+   */
   useEffect(() => {
     if (!menu) return;
     const shut = () => setMenu(false);
     window.addEventListener("pointerdown", shut);
     return () => window.removeEventListener("pointerdown", shut);
   }, [menu]);
-  /** 재생 배속. 낱말을 찍을 때는 늦춰야 손이 따라간다. */
+  /** Playback rate. Stamping words needs it slowed down for the hand to keep up. */
   const [rate, setRate] = useState(1);
-  /** 음원을 받는 중인 곡. 스무 초쯤 걸리므로 무엇을 기다리는지 내내 보여야 한다. */
+  /** The song whose audio is being fetched. It takes about twenty seconds, so what is being waited on must stay visible throughout. */
   const [pulling, setPulling] = useState<{ title: string; since: number } | null>(null);
   const [waited, setWaited] = useState(0);
   const audio = useRef<HTMLAudioElement>(null);
-  // 배속을 ref 로도 들고 있는다. 갈래를 바꾸면 재생기가 1 로 되돌리는데, 그때 `rate` 를
-  // 클로저로 잡으면 옛 값이 실린다.
+  /**
+   * The playback rate, mirrored into a ref.
+   *
+   * Switching stems makes the player reset the rate to 1, and capturing `rate` in the
+   * restore closure would carry a stale value.
+   */
   const rateRef = useRef(1);
   useEffect(() => { rateRef.current = rate; }, [rate]);
 
   /**
-   * 울리는 갈래를 바꾼다. **듣던 자리와 배속을 그대로 물려준다.**
+   * Switches the sounding stem, **carrying the listening position and the rate across**.
    *
-   * 자리를 지키는 것이 요점이다 — 원본과 갈래를 같은 지점에서 번갈아 들어야 무엇이
-   * 갈렸는지 귀로 안다. 처음으로 되감기면 견줄 수가 없다.
+   * Holding the position is the whole point — the original and a stem have to be heard from
+   * the same point for the ear to tell what changed. Rewinding to the start leaves nothing
+   * to compare. Attaching a new source resets both the position and the rate, so they are
+   * restored once metadata has loaded and seeking is possible again.
+   *
+   * @param {string} key - Identifier of the stem to play, or `origin` for the untouched track.
+   * @param {string} url - Audio URL of that stem.
+   * @returns {void}
    */
   const swapStem = useCallback((key: string, url: string) => {
     const element = audio.current;
@@ -73,7 +99,6 @@ export default function App() {
     const wasPlaying = !element.paused;
     setStem(key);
     element.src = url;
-    // 새 소리를 물리면 자리와 배속이 처음으로 돌아간다. 실을 수 있게 된 뒤에 되돌린다.
     element.addEventListener("loadedmetadata", () => {
       element.currentTime = at;
       element.playbackRate = rateRef.current;
@@ -81,7 +106,11 @@ export default function App() {
     }, { once: true });
   }, []);
 
-  // 받는 동안 흐른 시간. 멈춘 것인지 더디는 것인지는 이것으로 가른다.
+  /**
+   * Counts the seconds elapsed while audio is being fetched.
+   *
+   * This is what tells a stall apart from something merely slow.
+   */
   useEffect(() => {
     if (!pulling) { setWaited(0); return; }
     const tick = window.setInterval(
@@ -90,11 +119,17 @@ export default function App() {
   }, [pulling]);
 
   /**
-   * 오른쪽 아래에 쌓이는 알림.
+   * Pushes a toast onto the stack in the bottom right corner.
    *
-   * 가운데 아래 한 줄짜리로 두었더니 무엇을 눌렀는지가 안 남았다 — 「모두 다시 깔기」처럼
-   * 화면이 통째로 바뀌는 일도 알림 하나가 스쳐 지나가고 끝이었다. 음원 받는 알림과 같은
-   * 자리에 쌓아 두면 방금 무슨 일이 있었는지 되짚을 수 있다.
+   * A single line at the bottom centre left no record of what had been pressed — even
+   * something that redraws the whole screen, like "realign everything", was one toast
+   * flitting past and gone. Stacking them in the same corner as the audio-fetch banner makes
+   * it possible to look back at what just happened. At most four are kept, and each clears
+   * itself after 3.2 seconds.
+   *
+   * @param {string} text - Message to show.
+   * @param {Note["kind"]} [kind="info"] - Tone of the toast: `bad` is red, `work` is green.
+   * @returns {void}
    */
   const say = useCallback((text: string, kind: Note["kind"] = "info") => {
     const id = ++noteId.current;
@@ -102,10 +137,27 @@ export default function App() {
     window.setTimeout(() => setNotes((now) => now.filter((one) => one.id !== id)), 3200);
   }, []);
 
+  /**
+   * Reloads the song list from the server.
+   *
+   * @async
+   * @returns {Promise<void>} Resolves once the list state has been replaced.
+   */
   const refresh = useCallback(async () => setSongs(await listSongs()), []);
   useEffect(() => { refresh(); }, [refresh]);
 
-  // ── 곡 열기 ───────────────────────────────────────────────────────────
+  /**
+   * Opens a song and makes it the one under review.
+   *
+   * Resets the clock, the play state and the stem back to the original, then points the
+   * audio element at the song. If its audio has not been downloaded yet, the fetch is started
+   * and polled every 2 seconds until it is done or fails; the source is then re-attached with
+   * a cache-busting timestamp so the browser does not keep serving the earlier miss.
+   *
+   * @async
+   * @param {number} id - Database id of the song to open.
+   * @returns {Promise<void>} Resolves once the song is loaded and any fetch has been started.
+   */
   const open = useCallback(async (id: number) => {
     const got = await getSong(id);
     setSong(got); setNowMs(0); setPlaying(false);
@@ -129,21 +181,33 @@ export default function App() {
     }, 2000);
   }, [say]);
 
-  // ── 재생 ──────────────────────────────────────────────────────────────
+  /**
+   * Plays or pauses the audio.
+   *
+   * @returns {void}
+   */
   const toggle = useCallback(() => {
     const element = audio.current;
     if (!element) return;
     if (element.paused) { element.play(); setPlaying(true); } else { element.pause(); setPlaying(false); }
   }, []);
+
+  /**
+   * Moves playback to a point in the track.
+   *
+   * @param {number} ms - Target position in milliseconds; anything negative clamps to the start.
+   * @returns {void}
+   */
   const seek = useCallback((ms: number) => {
     if (audio.current) audio.current.currentTime = Math.max(0, ms) / 1000;
   }, []);
 
   /**
-   * 재생 중에는 매 프레임 시각을 읽는다.
+   * Reads the playback clock every frame while playing.
    *
-   * `onTimeUpdate` 는 초당 네 번쯤만 온다. 줄은 몇 초에 한 번 바뀌니 그것으로 충분했지만,
-   * 낱말은 0.4 초짜리라 **통째로 건너뛴다** — 가라오케가 안 켜지던 이유가 이것이다.
+   * `onTimeUpdate` only arrives about four times a second. Lines change every few seconds, so
+   * that was enough for them, but a character lasts 0.4 s and gets **skipped entirely** —
+   * that was why karaoke never lit up.
    */
   useEffect(() => {
     if (!playing) return;
@@ -157,8 +221,12 @@ export default function App() {
     return () => { alive = false; cancelAnimationFrame(id); };
   }, [playing]);
 
-  // 재생/정지와 앞뒤 넘기기는 두 화면 어디서나 듣는다. 찍기 쪽에만 두었더니 듣는 중에
-  // 스페이스가 페이지를 스크롤시켰다.
+  /**
+   * Binds play/pause and five-second skips to the keyboard on every screen.
+   *
+   * Typing into an input or a textarea is left alone. These keys once lived on the tapping
+   * screen only, which meant space scrolled the page while listening.
+   */
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
@@ -177,17 +245,22 @@ export default function App() {
   const offset = song?.offset_ms ?? 0;
   const lines = song?.lines ?? [];
   /**
-   * 줄이 **실제로 시작하는 때**. 맞춘 글자가 있으면 그 첫 글자를 따르고, 없으면 밖에서 온
-   * 줄 시각을 쓴다.
+   * When a line **actually begins**. Follows the first aligned character when there is one,
+   * and otherwise the line time that came from outside.
    *
-   * 시계가 둘이면 안 된다. 어느 줄을 켤지는 바이브가 준 줄 시각으로 정하면서 글자를 칠하는
-   * 것은 우리가 맞춘 글자 시각으로 하고 있었다. 둘은 가운뎃값 76ms, p90 1051ms, 최대
-   * 1.4 초까지 어긋난다 — 줄이 아직 회색인 동안 그 줄의 첫 글자들은 이미 제 때를 지나 있다가,
-   * 줄이 켜지는 순간 **한꺼번에 흰색으로 튄다.** 반대로 어긋나면 노래는 이미 시작했는데 줄이
-   * 회색으로 남는다.
+   * There must not be two clocks. Which line to light was being decided from the line times
+   * Vibe supplied, while the characters were painted from the character times we aligned
+   * ourselves. The two drift by a median of 76 ms, p90 1051 ms, and up to 1.4 s — while a
+   * line is still grey its first characters are already past due, and the instant the line
+   * lights they **all snap to white at once**. Drifting the other way, the singing has
+   * already started while the line stays grey.
    *
-   * 화면이 보여 주는 것은 **우리가 맞춘 결과**다. 그러니 줄을 켜는 것도 그것을 따라야 한다.
-   * 옆에 적히는 시각만 바이브 것 그대로 둔다 — 그것은 견줄 자이지 그릴 자가 아니다.
+   * What the view shows is **the result we aligned**, so lighting a line has to follow that
+   * too. Only the timestamp printed beside a line is left as Vibe gave it — that is a
+   * yardstick to compare against, not one to draw with.
+   *
+   * @param {Line} line - The lyric line to place.
+   * @returns {number} Start of the line in lyric-clock milliseconds.
    */
   const startOf = useCallback(
     (line: Line) => line.words?.find((word) => word?.at != null)?.at ?? line.at,
@@ -247,7 +320,13 @@ export default function App() {
     return { singing: found >= 0 ? [found] : [], anchor: found };
   }, [lines, nowMs, offset, startOf, spanOf]);
 
-  // ── 고치기 ────────────────────────────────────────────────────────────
+  /**
+   * Saves a change to the open song and mirrors it into the list row.
+   *
+   * @async
+   * @param {Partial<Song>} change - The fields to update on the open song.
+   * @returns {Promise<void>} Resolves once both the open song and its row have been updated.
+   */
   const patch = useCallback(async (change: Partial<Song>) => {
     if (!song) return;
     const got = await editSong(song.id, change);
@@ -256,30 +335,36 @@ export default function App() {
   }, [song]);
 
   /**
-   * 줄과 낱말은 같은 배열에 들어 있으므로 저장 경로를 하나로 둔다.
+   * Why there is a single save path, and why hand editing is gone.
    *
-   * 앞선 판은 둘이 각자 타이머를 잡았다. 줄 눈금을 끌면 줄 시각과 그 줄의 낱말이 함께
-   * 바뀌는데 두 저장이 서로의 타이머를 지우고, 늦게 잡힌 쪽이 제 것만 실은 옛 배열을
-   * 보내 다른 하나를 되돌렸다.
+   * Lines and words live in the same array, so they share one save path. An earlier version
+   * gave each of them its own timer. Dragging a line marker changes the line time and that
+   * line's words together, and the two saves wiped each other's timer; whichever was
+   * scheduled later sent an old array carrying only its own change and reverted the other.
+   *
+   * The word-saving code (`keep`, `shiftLine`, `saveWords`) has been torn out. Nobody fixes
+   * times by hand any more, so there is nothing to save — alignment writes straight to the
+   * database. It must not be left behind. Leaving the times editable lets **a model's mistake
+   * be laundered through a human hand into ground truth**, and that ground truth is then used
+   * to measure the model again. That is exactly the loop written down in §4.
    */
-  // 낱말을 저장하던 자리(`keep`·`shiftLine`·`saveWords`)를 걷어냈다. 사람이 손으로
-  // 시각을 고치는 일이 없어졌으므로 저장할 것도 없다 — 맞추기가 곧바로 데이터베이스에 쓴다.
-  //
-  // 남겨 두면 안 된다. 고칠 수 있게 두면 **모델의 실수가 사람 손을 거쳐 정답으로 굳고**,
-  // 그 정답으로 다시 모델을 재게 된다. §4 에 적어 둔 순환이 바로 그것이다.
 
   /**
-   * 우리 모델로 한 번 맞춘다.
+   * Watches an alignment run through to the end.
    *
-   * 화면이 깔아 주던 것은 「줄 구간을 글자 수로 나눈 값」이라 소리와 아무 상관이 없다.
-   * 여기서 나오는 것은 실제로 들어 보고 놓은 자리다 — 그래도 **정답이 아니라 출발점**이고,
-   * 사람이 고쳐야 의미가 있다.
-   */
-  /**
-   * 맞추기가 끝날 때까지 지켜본다.
+   * Runs the server scheduled by itself land here too — nobody presses "align with the
+   * model". A person's only job is review, and what the model produced is the thing being
+   * reviewed. What the view used to lay down was "the line's span divided by its character
+   * count", which has nothing to do with the sound; what comes out of here are positions
+   * found by actually listening — still **a starting point, not ground truth**, and only
+   * worth something once a person has been over it.
    *
-   * 서버가 저절로 걸어 둔 것도 여기서 받는다 — 사람이 「모델로 맞추기」를 누를 일이 없다.
-   * 사람이 하는 일은 검수뿐이고, 모델이 낸 것이 곧 검수할 대상이다.
+   * Polls every 0.7 s. At 2 s the stages flew past and the terminal filled in fits and
+   * starts — a song whose stems are cached takes 13 s end to end, which leaves only two or
+   * three looks.
+   *
+   * @param {number} id - Database id of the song being aligned.
+   * @returns {() => void} Teardown that stops the polling.
    */
   const watchAlign = useCallback((id: number) => {
     const tick = window.setInterval(async () => {
@@ -295,18 +380,25 @@ export default function App() {
       } else {
         setAligning(beat.state);
       }
-      // 0.7 초마다 본다. 2 초로 두었더니 단계가 훅훅 지나가 터미널이 띄엄띄엄 찼다 —
-      // 갈래가 캐시된 곡은 통째로 13 초라 두세 번밖에 안 들여다보게 된다.
     }, 700);
     return () => window.clearInterval(tick);
   }, [say, open]);
 
   /**
-   * 사람이 손으로 거는 맞추기. **갈래부터 다시 만든다.**
+   * The alignment a person triggers by hand. **It rebuilds the stems from scratch.**
    *
-   * 캐시를 쓰면 「보컬 뽑음 · 0초」가 찍히는데, 사람이 이걸 누른 것이라면 「지금 코드로
-   * 처음부터」라는 뜻이다. 가르는 쪽을 고쳐 놓고 옛 갈래로 맞추면 무엇을 고쳤는지 모른다.
-   * 그만큼 오래 걸리므로(곡당 2~4 분) 터미널이 무엇이 도는지 내내 보여 준다.
+   * Reusing the cache prints "vocals extracted · 0 s", but a person pressing this means
+   * "from the beginning, with the code as it stands now". Fixing the separator and then
+   * aligning against the old stems tells you nothing about what the fix did. It costs that
+   * much longer (2-4 minutes per song), so the terminal shows what is running the whole way.
+   *
+   * There is **only one** watcher. A second identical polling loop lived here once and never
+   * called `setLog`, so the terminal never appeared — writing the same job in two places
+   * guarantees the two will diverge.
+   *
+   * @async
+   * @returns {Promise<void>} Resolves once the run has started and the watcher is attached.
+   * @throws {Error} Never propagates; a failure to start is shown as a red toast instead.
    */
   const runAlign = useCallback(async () => {
     if (!song) return;
@@ -317,17 +409,15 @@ export default function App() {
     } catch (error) {
       setAligning(""); say(String((error as Error).message), "bad"); return;
     }
-    // 지켜보기는 **한 벌만** 둔다. 여기에 똑같은 폴링 고리를 따로 두었다가 그쪽에서만
-    // `setLog` 를 안 불러 터미널이 안 떴다 — 같은 일을 두 곳에 적으면 반드시 갈린다.
     watchAlign(song.id);
   }, [song, say, watchAlign]);
 
   /**
-   * 아직 안 맞춰진 곡을 열면 곧바로 지켜본다.
+   * Starts watching the moment an unaligned song is opened.
    *
-   * 서버가 `GET /api/songs/{id}` 에서 이미 걸어 두므로 여기서 다시 걸 필요는 없다.
-   * 화면은 「지금 무엇이 도는가」만 보여 주면 된다 — 그것이 없으면 빈 가사를 보며
-   * 「왜 안 나오지」 하게 된다.
+   * The server already schedules the run in `GET /api/songs/{id}`, so there is no need to
+   * schedule it again here. The view only has to show **what is running right now** —
+   * without that you sit in front of empty lyrics wondering why nothing comes up.
    */
   useEffect(() => {
     if (!song || !song.has_audio || aligning) return;
@@ -337,7 +427,19 @@ export default function App() {
     return watchAlign(song.id);
   }, [song, aligning, watchAlign]);
 
-  // ── 넣기 ──────────────────────────────────────────────────────────────
+  /**
+   * Applies a pick made in the finder: either swap the audio, or add a new song.
+   *
+   * In `audio` mode the chosen video replaces the open song's audio and the song is reopened.
+   * Otherwise a lyric hit becomes a new song; when the pick carried no video of its own,
+   * YouTube is searched for the artist and title and the candidate whose duration sits
+   * closest to the lyrics' duration wins. Anything thrown along the way surfaces as a red
+   * toast rather than breaking the view.
+   *
+   * @async
+   * @param {{lyric?: LyricHit, audio?: AudioHit}} pick - What the finder handed back.
+   * @returns {Promise<void>} Resolves once the pick has been applied.
+   */
   const onPick = useCallback(async ({ lyric, audio: picked }: { lyric?: LyricHit; audio?: AudioHit }) => {
     setFinder(null);
     try {
@@ -365,11 +467,23 @@ export default function App() {
     }
   }, [finder, song, patch, open, refresh, say]);
 
+  /**
+   * The song list narrowed by whatever is typed in the search box.
+   *
+   * @returns {Song[]} Songs whose artist or title contains the trimmed, lower-cased needle,
+   *   or every song when the box is empty.
+   */
   const shown = useMemo(() => {
     const dust = needle.trim().toLowerCase();
     return dust ? songs.filter((row) => `${row.artist} ${row.title}`.toLowerCase().includes(dust)) : songs;
   }, [songs, needle]);
 
+  /**
+   * Verdict counts for the chips at the top of the rail.
+   *
+   * @returns {ReadonlyArray<readonly [string, number]>} Label and count pairs, in order:
+   *   total, good, off, wrong, and not yet heard.
+   */
   const tally = useMemo(() => {
     const count = (verdict: Verdict) => songs.filter((row) => row.verdict === verdict).length;
     return [["전체", songs.length], ["맞음", count("good")], ["밀림", count("off")],
@@ -388,8 +502,9 @@ export default function App() {
           </div>
         </div>
         <div className="rail-find">
-          {/* 치던 말이 곧 검색어다. 담긴 곡은 그 자리에서 걸러 보이고, 없으면 찾아 넣는다 —
-              「목록에서 거르기」라고만 두었더니 검색인 줄 알고 치다 아무것도 안 나왔다. */}
+          {/* What gets typed here is the query. Songs already in the library are filtered in
+              place, and anything not there is looked up and added — labelling it "filter the
+              list" alone made people type a search and get nothing back. */}
           <input
             placeholder="곡 찾기 — 아티스트나 제목"
             value={needle}
@@ -445,9 +560,9 @@ export default function App() {
             </div>
           </div>
           {/*
-            사람이 하는 일은 **판정 하나**다. 맞추는 것은 모델의 몫이니 판정만 앞에 두고
-            나머지는 접는다 — 같은 무게의 단추 일곱 개가 한 줄에 서 있으면 무엇이 이 화면의
-            일인지 안 읽힌다.
+            What a person does here is **one thing: the verdict**. Aligning is the model's
+            job, so only the verdict sits up front and the rest folds away — seven buttons of
+            equal weight standing in one row make it unreadable what this screen is for.
           */}
           <div className="acts">
             <div className="verdicts">
@@ -464,8 +579,8 @@ export default function App() {
             {aligning && (
               <span className="act-busy"><span className="spin" /> {aligning}</span>
             )}
-            {/* 창 전체의 「밖을 누르면 닫기」가 여기까지 닿으면 열자마자 닫힌다. 이 안의
-                누름은 밖으로 안 내보낸다. */}
+            {/* The window-wide "press outside to close" would otherwise reach in here and
+                shut the menu the instant it opened. Presses inside it are not let out. */}
             <div className="more" onPointerDown={(event) => event.stopPropagation()}>
               <button className="act ghost" disabled={!song} onClick={() => setMenu((on) => !on)}
                 title="그 밖의 일">⋯</button>
@@ -493,8 +608,8 @@ export default function App() {
 
         {song && (
           <div className="tabs">
-            {/* 「낱말 찍기」가 아니라 「타임라인」이다. 손으로 찍는 일은 없어졌고, 이 화면은
-                모델이 놓은 자리를 눈으로 훑어보는 곳이다. */}
+            {/* It is a "timeline", not "tap the words". Stamping by hand is gone, and this
+                screen is where the eye runs over what the model laid down. */}
             {([["listen", "듣기"], ["tap", "타임라인"], ["shop", "작업실"]] as const).map(([key, label]) => (
               <button key={key} className={`tab ${tab === key ? "on" : ""}`} onClick={() => setTab(key)}>
                 {label}
@@ -503,11 +618,13 @@ export default function App() {
               </button>
             ))}
             {/*
-              「여기서 찍기」를 없앴다. 사람이 손으로 낱말을 놓는 일은 이제 없다 — 정확히
-              내놓는 것은 모델의 몫이고, 사람은 그 결과를 듣고 판정만 한다. 손으로 고칠 수
-              있게 두면 **모델의 실수가 사람 손을 거쳐 정답으로 굳는다.**
+              "Tap here" is gone. Nobody places words by hand any more — getting them exactly
+              right is the model's job, and a person listens to the result and only judges it.
+              Leaving them editable would let **a model's mistake harden into ground truth by
+              way of a human hand.**
 
-              세 화면이 같은 재생 위치를 본다. 오갈 때 자리를 잃지 않는다.
+              All three screens watch the same playback position, so moving between them never
+              loses your place.
             */}
             <div className="tab-nav">
               {stem !== "origin" && (
@@ -530,8 +647,9 @@ export default function App() {
                      nowMs={nowMs} totalMs={total || song.duration * 1000}
                      busy={Boolean(aligning)} />
         ) : (
-          /* 오디오 시각을 그대로 넘긴다. 보정치는 타임라인이 가사를 밀어 그리는 데 쓴다 —
-             재생바는 실제 재생 위치이므로 보정한다고 뛰면 안 된다. */
+          /* The audio time is passed through as it is. The offset is what the timeline uses
+             to shift the lyrics it draws — the seek bar is the real playback position and must
+             not jump because of a correction. */
           <Timeline
             key={song.id}
             lines={lines} nowMs={nowMs} offsetMs={offset}
@@ -569,8 +687,9 @@ export default function App() {
             ))}
             <span className="offv">{offset} ms</span>
             <button disabled={!song} onClick={() => { patch({ offset_ms: 0 }); say("치우침 되돌림"); }}>되돌리기</button>
-            {/* 배속. 낱말을 찍을 때 0.5× 로 늦추면 손이 따라간다. 음높이는 그대로 둔다 —
-                브라우저가 기본으로 보존하므로 가사를 알아듣는 데 지장이 없다. */}
+            {/* Playback rate. Dropping to 0.5x while stamping words lets the hand keep up.
+                Pitch is left alone — the browser preserves it by default, so the lyrics stay
+                intelligible. */}
             <span className="rate">
               <span>배속</span>
               {[0.5, 0.75, 1, 1.25, 1.5].map((one) => (
@@ -588,21 +707,22 @@ export default function App() {
         </div>
       </main>
 
+      {/* Attaching a new source drops the playback rate back to 1, so the chosen rate is put
+          back on once metadata has loaded. */}
       <audio
         ref={audio} preload="metadata"
         onTimeUpdate={(event) => setNowMs(event.currentTarget.currentTime * 1000)}
         onLoadedMetadata={(event) => {
           setTotal(event.currentTarget.duration * 1000);
-          // 새 음원을 물리면 배속이 1 로 돌아간다. 고른 값을 다시 건다.
           event.currentTarget.playbackRate = rate;
         }}
         onEnded={() => setPlaying(false)}
       />
 
-      {/* 맞추는 동안의 터미널. 끝나도 사람이 닫을 때까지 남는다 — 무엇이 있었는지 읽을
-          자리가 있어야 한다. */}
+      {/* The terminal for an alignment run. It stays after the run ends until a person closes
+          it — there has to be somewhere to read what happened. It is shown even before any
+          trace has arrived, so that "I pressed it and nothing happened" never occurs. */}
       <AnimatePresence>
-        {/* 자취가 아직 안 왔어도 띄운다. 「눌렀는데 아무 일도 안 일어난다」가 없어야 한다. */}
         {showLog && (
           <Console log={log} running={Boolean(aligning)} onClose={() => setShowLog(false)} />
         )}
@@ -610,9 +730,10 @@ export default function App() {
 
       <AnimatePresence>
         {finder && (
+          /* Swapping only the audio seeds the finder with the open song's name; adding a new
+             song seeds it with whatever was being typed in the rail. */
           <Finder
             mode={finder}
-            // 음원만 바꿀 때는 지금 곡 이름을, 새로 넣을 때는 왼쪽에 치던 말을 물려준다.
             seedArtist={finder === "audio" ? song?.artist : needle.trim()}
             seedTitle={finder === "audio" ? song?.title : ""}
             wantSeconds={finder === "audio" ? song?.duration : undefined}
@@ -621,8 +742,9 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* 음원 받는 중. 스무 초쯤 걸리고 그동안 재생이 안 되므로, 무엇을 기다리는지
-          내내 보인다. 아래 구석 작은 글씨로는 사람이 못 보고 재생 단추만 눌러 댔다. */}
+      {/* Audio being fetched. It takes about twenty seconds and playback is dead throughout,
+          so what is being waited on stays visible the whole time. As small print in the bottom
+          corner it went unseen and people just kept hammering the play button. */}
       <AnimatePresence>
         {pulling && (
           <motion.div className="pulling"

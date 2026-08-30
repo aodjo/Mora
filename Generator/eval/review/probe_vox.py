@@ -24,7 +24,7 @@ sys.path.insert(0, str(HERE))
 import align  # noqa: E402
 
 NOT_A_WORD = re.compile(r"^[♪♫🎵🎶~\-–—…·.,()\[\]{}\"'“”‘’!?]+$")
-# SDR 12.98. 목록에서 가장 높다.
+#: 반주 걷기에 쓸 Roformer 판. SDR 12.98 로 목록에서 가장 높다.
 ROFORMER = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 
 
@@ -33,7 +33,14 @@ def words_of(text: str) -> list[str]:
 
 
 def roformer_vocals(path: Path) -> Path:
-    """Roformer 로 보컬을 뽑아 `.vox.wav` 로 둔다. 원음질 그대로."""
+    """Roformer 로 보컬을 뽑아 `.vox.wav` 로 둔다. 원음질 그대로.
+
+    원본을 먼저 wav 로 풀어 둔다. audio-separator 는 soundfile 로 읽어 **m4a 를 못 연다** —
+    카라오케 단계에서는 이미 wav(보컬 갈래)를 넘겨서 안 걸렸다.
+
+    나온 갈래 가운데 보컬을 고를 때는 이름이 판마다 다르니 **소리 큰 쪽이 아니라 이름**으로
+    찾는다. 반주가 보컬보다 큰 것이 보통이라 여기서는 크기로 못 고른다.
+    """
     made = path.with_suffix(".vox.wav")
     if made.exists():
         return made
@@ -43,8 +50,6 @@ def roformer_vocals(path: Path) -> Path:
 
     into = path.parent / "split"
     into.mkdir(exist_ok=True)
-    # audio-separator 는 soundfile 로 읽어 **m4a 를 못 연다.** 카라오케 단계에서는 이미
-    # wav(보컬 갈래)를 넘겨서 안 걸렸다. 원본을 넣을 때는 먼저 wav 로 풀어야 한다.
     raw = into / f"{path.stem}.src.wav"
     if not raw.exists():
         align.write_audio(align.read_audio(path, rate=44100, channels=2), raw, 44100)
@@ -54,8 +59,6 @@ def roformer_vocals(path: Path) -> Path:
     apart.load_model(model_filename=ROFORMER)
     got = apart.separate(str(raw))
 
-    # 보컬 갈래를 고른다. 이름이 판마다 다르니 **소리 큰 쪽이 아니라 이름**으로 찾는다 —
-    # 반주가 보컬보다 큰 것이 보통이라 여기서는 크기로 못 고른다.
     for name in got:
         one = into / name
         if not one.exists():

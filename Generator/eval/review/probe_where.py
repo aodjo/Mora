@@ -61,7 +61,7 @@ for index, line in enumerate(lines):
         continue
     chars = [c for w in one for c in (w.get("chars") or [])]
     off = one[0]["at"] - line["at"] - bias
-    # 그 줄이 얼마나 벌어져 있나. 되풀이가 어긋날 때는 시작만이 아니라 줄 전체가 눌린다.
+    #: 그 줄이 얼마나 벌어져 있나. 되풀이가 어긋날 때는 시작만이 아니라 줄 전체가 눌린다.
     span = (chars[-1]["end"] - chars[0]["at"]) / 1000 if chars else 0
     print(f"  {index:>3} {line['at'] / 1000:>7.2f}s {one[0]['at'] / 1000:>7.2f}s "
           f"{off:>+7.0f}ms  {mark:<4} {len(chars):>2}자 {span:>5.2f}s  {text[:30]}")

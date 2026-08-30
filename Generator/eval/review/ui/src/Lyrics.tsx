@@ -1,20 +1,24 @@
-// Apple Music 이 하는 것을 흉내낸다.
-//
-// 스크롤이 아니다. 줄마다 제자리가 있고, 지금 줄이 바뀌면 **모든 줄이 저마다 새 자리로
-// 움직인다.** 브라우저의 `scrollTo({behavior:"smooth"})` 는 스프링이 없어 미끄러지듯 서고,
-// 줄이 한 덩어리로 딸려 오므로 그 느낌이 안 난다.
-//
-// 세 가지가 그 인상을 만든다.
-//
-//   * **스프링** — 서는 자리에서 살짝 넘어갔다 돌아온다. 종이 뭉치가 멎는 무게가 생긴다.
-//   * **층지어 늦게 출발** — 지금 줄 **아래**의 줄들이 한 줄에 0.045 초씩 늦게 떠난다.
-//     한꺼번에 움직이면 판때기가 튀는데, 어긋나게 움직이면 뭉치가 자리를 잡는 것으로 읽힌다.
-//     세 줄 아래부터는 더 늦추지 않는다 — 그 아래까지 늦추면 지금 줄이 이미 지나간 뒤에도
-//     저 밑에서 아직 정리되고 있다.
-//   * **위아래 가장자리 흐리기** — 줄이 잘려 사라지지 않고 옅어지며 나간다.
-//
-// 줄 높이는 재서 쓴다. Reprise 는 한 줄로 잘라 고정 높이를 쓰지만, 한국어 가사는 접히는
-// 줄이 흔해서 고정 높이로는 어긋난다.
+/**
+ * An imitation of what Apple Music does.
+ *
+ * This is not scrolling. Every line has a place of its own, and when the current line changes
+ * **every line moves to a new place of its own.** The browser's `scrollTo({behavior:"smooth"})`
+ * has no spring, so it glides to a stop, and the lines are dragged along as one block — which
+ * does not give that feeling.
+ *
+ * Three things make the impression:
+ *
+ *   * **Spring** — it overshoots its resting place a little and comes back. That gives the weight
+ *     of a stack of paper settling.
+ *   * **Staggered departure** — the lines **below** the current one leave 0.045 s later, one per
+ *     line. Moving all at once makes the slab jump; moving out of step reads as a stack settling
+ *     into place. Nothing further than three lines down is delayed any more than that — delaying
+ *     past there means the bottom is still tidying itself long after the current line has gone by.
+ *   * **Fading the top and bottom edges** — a line fades out instead of being cut off.
+ *
+ * Line heights are measured, not assumed. Reprise cuts every line to one row and uses a fixed
+ * height, but Korean lyrics wrap often, so a fixed height goes out of alignment.
+ */
 
 import { motion } from "motion/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -28,27 +32,34 @@ interface Props {
   anchor: number;
   /** Every line sounding now. Two voices at once is normal once lanes exist. */
   singing: number[];
-  /** 지금 재생 위치(ms). 보정치를 빼지 않은 오디오 시각. */
+  /** Current playback position in ms. Audio time, with no correction subtracted. */
   nowMs: number;
   onSeek: (ms: number) => void;
 }
 
 /**
- * 지금 줄을 낱말로 갈라 칠한다. 찍어 둔 낱말 시각이 있을 때만.
+ * Paint one grain — a character or a word. Grey turns white from left to right.
  *
- * 줄만 켜면 여덟 초짜리 줄이 통째로 밝아진 채로 있어 어디를 부르는지 알 수 없다. 낱말이
- * 하나씩 켜져야 따라 읽힌다 — 애초에 낱말 시각을 만드는 이유가 그것이다.
+ * At 0 and 1 the grain is painted a flat colour. Leaving the gradient in place at those ends
+ * leaves a white thread on the left edge of a grain that has not been sung yet — the first two
+ * stops are both at 0%, so the space between them bleeds.
+ *
+ * The fill is deliberately not wrapped in motion, because it changes every frame. Put a spring on
+ * it and the fill falls behind the sound, and that lag is exactly what reads as "it does not
+ * match".
+ *
+ * @param {object} props - Component props.
+ * @param {string} props.text - The character or word to paint.
+ * @param {number} props.at - When the grain starts, in ms, with the correction already applied.
+ * @param {number} props.end - When the grain ends, in ms, with the correction already applied.
+ * @param {number} props.nowMs - Current playback position in ms; -1 leaves the grain unsung.
+ * @returns {JSX.Element} A span carrying the fill fraction as the `--filled` custom property.
  */
-/** 글자든 낱말이든 하나를 칠한다. 왼쪽에서 오른쪽으로 회색이 흰색이 된다. */
 function Ink({ text, at, end, nowMs }: { text: string; at: number; end: number; nowMs: number }) {
   const filled = Math.min(1, Math.max(0, (nowMs - at) / Math.max(1, end - at)));
   return (
     <span
-      // 0 과 1 에서는 단색으로 칠한다. 그러데이션으로 두면 안 부른 글자의 왼쪽 끝에
-      // 흰 실오라기가 남는다 — 첫 두 마디가 둘 다 0% 라 그 사이가 번진다.
       className={`word ${filled <= 0 ? "none" : filled >= 1 ? "full" : ""}`}
-      // 프레임마다 바뀌므로 motion 을 끼우지 않는다. 스프링을 걸면 차오름이 소리보다
-      // 뒤처지고, 그 지연이 곧 「안 맞는다」로 읽힌다.
       style={{ "--filled": `${filled * 100}%` } as React.CSSProperties}
     >
       {text}
@@ -56,20 +67,34 @@ function Ink({ text, at, end, nowMs }: { text: string; at: number; end: number; 
   );
 }
 
+/**
+ * Paint the current line split into words — only when recorded word times exist.
+ *
+ * Lighting the line as a whole leaves an eight-second line lit in one piece, so there is no
+ * telling which part is being sung. The words have to light one at a time for the reader to
+ * follow along — that is the whole reason word times are produced in the first place.
+ *
+ * When character times exist, each character is painted on its own. In Korean one character is one
+ * syllable, and that is the unit by which the song is followed — if 「떠나보내고」 fills as one
+ * block there is no telling where the singing is, and it is common for that one word to take
+ * 3 seconds.
+ *
+ * The space between words is kept outside the span. Inside an inline-block the trailing space is
+ * squeezed out and the words end up stuck to each other.
+ *
+ * @param {object} props - Component props.
+ * @param {Line} props.line - The line to draw.
+ * @param {number} props.offsetMs - Correction added to every recorded time, in ms.
+ * @param {number} props.nowMs - Current playback position in ms; -1 leaves every word unsung.
+ * @returns {JSX.Element} The painted words, or the plain line text when there are no word times.
+ */
 function Sung({ line, offsetMs, nowMs }: { line: Line; offsetMs: number; nowMs: number }) {
   const words = line.words?.filter((word) => word && word.at != null) ?? [];
   if (!words.length) return <>{line.text}</>;
   return (
     <>
       {words.map((word, index) => (
-        // 사이 공백은 스팬 밖에 둔다. inline-block 안에서는 꼬리 공백이 눌려 낱말이
-        // 서로 붙어 버린다.
         <span key={index}>
-          {/*
-            글자 시각이 있으면 글자마다 칠한다. 한국어는 한 글자가 한 음절이라 그것이
-            노래를 따라 읽는 단위다 — 「떠나보내고」가 통째로 차오르면 어디를 부르는지
-            알 수 없고, 그 낱말 하나가 3 초를 차지하는 일도 흔하다.
-          */}
           {word.chars?.length
             ? word.chars.map((grain, at) => (
                 <Ink key={at} text={grain.text}
@@ -86,32 +111,87 @@ function Sung({ line, offsetMs, nowMs }: { line: Line; offsetMs: number; nowMs: 
 }
 
 /**
- * 목소리마다의 색.
+ * One colour per voice.
  *
- * 가라오케가 차오르는 색을 바꾼다 — 안 부른 회색은 그대로 두고 **차오른 쪽만** 갈린다.
- * 그래야 「어디까지 불렀나」와 「누가 부르나」가 서로를 가리지 않는다.
+ * Karaoke changes the colour that fills in — the unsung grey is left alone and **only the filled
+ * side** differs. That keeps "how far has it been sung" and "who is singing" from hiding each
+ * other.
  *
- * 어두운 바탕에서 밝기가 비슷하도록 골랐다. 하나만 튀면 그 사람이 더 중요해 보인다.
+ * They were chosen to sit at a similar brightness on a dark ground. If one of them stands out,
+ * that singer looks more important than the others.
  */
 const VOICES = ["#f4f2ef", "#8fd8ff", "#ffc48a"];
 
-/** 지금 줄을 창의 어디에 둘까. 한가운데에 두면 다음 줄이 접혀 안 보인다. */
+/** Where in the window the current line sits, as a fraction of height. Dead centre folds the next line out of sight. */
 const ANCHOR = 0.34;
-/** 한 줄에 얼마씩 늦게 떠날까. */
+/** How much later each successive line below the current one departs, in seconds. */
 const CASCADE = 0.045;
-/** 몇 줄 아래까지 늦출까. */
+/** How many lines below the current one are delayed at all. */
 const CASCADE_MAX = 3;
 /** How long a hand-scroll holds before the view drifts back to the playing line, in ms. */
 const HOLD_SCROLL = 2600;
 
+/**
+ * The lyric view — every line held at a place of its own, springing to a new one as the song runs.
+ *
+ * The resting places are re-measured whenever the window resizes, because the seat of each line
+ * moves with it.
+ *
+ * A hand push is applied to the **outer box**, never added to each line's y. Added per line, the
+ * spring catches on every wheel tick and the whole thing turns sticky — the spring is there to
+ * follow the song, not to follow a hand. Here it has to move at once to feel attached to the
+ * finger.
+ *
+ * Lines blur further out the further they are, clamped at three lines away: past that the
+ * difference is invisible while the browser still pays for it. The current line is not blurred at
+ * all, because its words paint their own colour. Lines below the current one leave a little later,
+ * one after another; lines above are never delayed — a line that has already gone by, dawdling,
+ * pulls the eye back to it.
+ *
+ * Clicking a line seeks to **that line's first character**, not to the line time that came from
+ * outside: the line time is off by more than a second, which reads as "I pressed it and it started
+ * somewhere else". The push is cleared **first**, or the view moves twice — once to the pressed
+ * line, then again 2.6 s later as the push is released. That second move overlaps the spring and
+ * takes the lines clean off screen and back, which is what "the page went blank and came back"
+ * was.
+ *
+ * Both style values are set in **one** object. Giving one element `style` twice means **the later
+ * one replaces the earlier one whole** — the voice colour was attached separately and was wiped
+ * out by zIndex, and the type checker does not catch this.
+ *
+ * Lines that are not the current one are still drawn as words. Redrawing them as plain text turns
+ * the whole line white for that instant and then fades it late, so every line change flashes
+ * white. Passing `nowMs` as -1 puts every word in the unsung (grey) state instead.
+ *
+ * Broken lines are flagged. "Which line do I have to listen to first" is the first question of a
+ * review, and per-character confidence is too weak in this model to answer it. The flag reads
+ * contradictions inside the alignment result instead, so it does not wobble when the audio master
+ * changes.
+ *
+ * @param {Props} props - Component props.
+ * @param {Line[]} props.lines - Every line of the song, in order.
+ * @param {number} props.offsetMs - Correction added to every recorded time, in ms.
+ * @param {number} props.anchor - Index the view centres on — the lead among the lines sounding now.
+ * @param {number[]} props.singing - Every line sounding now.
+ * @param {number} props.nowMs - Current playback position in ms, uncorrected audio time.
+ * @param {(ms: number) => void} props.onSeek - Called with the time to seek to when a line is pressed.
+ * @returns {JSX.Element} The scrolling-free lyric stage.
+ */
 export function Lyrics({ lines, offsetMs, anchor, singing, nowMs, onSeek }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const nodes = useRef<(HTMLButtonElement | null)[]>([]);
   const [tops, setTops] = useState<number[]>([]);
   const [height, setHeight] = useState(0);
 
-  // 줄마다의 제자리. 재서 쌓는다 — 접히는 줄이 있어 높이가 저마다 다르다.
   useLayoutEffect(() => {
+    /**
+     * Measure and stack the resting place of every line.
+     *
+     * The heights are measured and accumulated rather than assumed, because lines wrap and so
+     * every height differs.
+     *
+     * @returns {void}
+     */
     const measure = () => {
       let run = 0;
       const next: number[] = [];
@@ -129,7 +209,6 @@ export function Lyrics({ lines, offsetMs, anchor, singing, nowMs, onSeek }: Prop
     return () => watch.disconnect();
   }, [lines]);
 
-  // 창 크기가 바뀌면 앉는 자리도 바뀐다.
   useEffect(() => {
     const onResize = () => setHeight(box.current?.clientHeight ?? 0);
     window.addEventListener("resize", onResize);
@@ -199,36 +278,23 @@ export function Lyrics({ lines, offsetMs, anchor, singing, nowMs, onSeek }: Prop
         reachedAt.current = y;
       }}
     >
-      {/*
-        손으로 민 것은 **바깥 상자**에 건다. 줄마다의 y 에 더하면 휠을 굴릴 때마다 스프링이
-        걸려 끈적인다 — 스프링은 노래를 따라가는 데 쓰는 것이지 손을 따라가는 데 쓰는 것이
-        아니다. 여기서는 곧바로 움직여야 손에 붙는다.
-      */}
       <div className="lyric-stage" style={{ transform: `translateY(${drift}px)` }}>
         {lines.map((line, index) => {
           const away = index - focused;
           const now = live.has(index);
-          // 멀어질수록 흐리게. 세 줄 밖은 더 흐려지지 않게 묶는다 — 그 아래로는 차이가
-          // 눈에 안 보이면서 브라우저만 힘들다.
           const far = Math.min(Math.abs(away), 3);
           return (
             <motion.button
               key={index}
               ref={(element) => { nodes.current[index] = element; }}
               className={`lyric ${now ? "now" : ""} ${alongside(index) ? "second" : ""}`}
-              // 줄을 누르면 **그 줄의 첫 글자**로 간다. 밖에서 온 줄 시각으로 가면 1 초 넘게
-              // 어긋나 「눌렀는데 딴 데서 시작한다」가 된다.
               onClick={() => {
-                // 밀어 둔 것을 **먼저** 되돌린다. 안 그러면 화면이 두 번 움직인다 — 누른
-                // 줄로 한 번, 2.6 초 뒤 밀기가 풀리며 또 한 번. 두 번째가 스프링과 겹쳐
-                // 줄이 통째로 화면 밖으로 나갔다 오는 것이 「빈 페이지가 되었다 돌아온다」다.
                 setDrift(0);
                 onSeek((line.words?.find((one) => one?.at != null)?.at ?? line.at) + offsetMs);
               }}
               initial={false}
               animate={{
                 y: (tops[index] ?? 0) - base + restAt,
-                // 지금 줄은 낱말이 제 색을 칠하므로 흐리게 하지 않는다.
                 opacity: now ? 1 : away < 0 ? 0.6 : 0.72 - far * 0.05,
                 filter: now ? "blur(0px)" : `blur(${0.4 + far * 0.45}px)`,
                 scale: alongside(index) ? 0.72 : now ? 1.03 : 1,
@@ -236,35 +302,20 @@ export function Lyrics({ lines, offsetMs, anchor, singing, nowMs, onSeek }: Prop
               transition={{
                 y: {
                   type: "spring", duration: 0.56, bounce: 0.24,
-                  // 아래 줄일수록 조금 늦게 떠난다. 위쪽은 늦추지 않는다 — 이미 지나간
-                  // 줄이 꾸물거리면 눈이 그쪽으로 끌린다.
                   delay: Math.min(Math.max(away, 0), CASCADE_MAX) * CASCADE,
                 },
                 opacity: { duration: 0.24 },
                 filter: { duration: 0.32 },
                 scale: { type: "spring", duration: 0.5, bounce: 0.3 },
               }}
-              // 한 요소에 style 을 두 번 주면 **뒤엣것이 앞엣것을 통째로 덮는다.** 색을
-              // 따로 붙였다가 zIndex 에 지워졌다 — 타입 검사는 이걸 안 잡는다. 한 곳에 모은다.
               style={{
                 zIndex: now ? 1 : 0,
-                // 그 줄을 부르는 사람의 색. 낱말이 차오를 때 이 색으로 찬다.
                 "--voice": VOICES[Math.min(VOICES.length - 1, Math.max(0, line.lane ?? 0))],
               } as React.CSSProperties}
               whileHover={{ opacity: 1, filter: "blur(0px)" }}
             >
-              {/*
-                지금 줄이 아니어도 낱말로 그린다. 평범한 글자로 바꿔 그리면 그 순간
-                줄이 통째로 흰색이 되었다가 뒤늦게 흐려져, 줄이 넘어갈 때마다 희게
-                번쩍인다. `nowMs` 를 -1 로 주면 모든 낱말이 안 부른 상태(회색)가 된다.
-              */}
               <Sung line={line} offsetMs={offsetMs} nowMs={now ? nowMs : -1} />
               <span className="lyric-at">{clock((line.at + offsetMs) / 1000)}</span>
-              {/*
-                무너진 줄을 짚어 준다. 「어느 줄부터 들어야 하나」가 검수의 첫 물음인데,
-                글자마다의 확신도는 이 모델에서 힘이 약해 그 물음에 답을 못 했다.
-                이것은 정렬 결과 안의 모순을 보므로 음원 판이 달라도 흔들리지 않는다.
-              */}
               {line.words?.[0]?.stuck && (
                 <span className="lyric-stuck" title={line.words[0].stuck}>무너짐</span>
               )}

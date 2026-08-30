@@ -1,28 +1,57 @@
-// 곡을 넣는 자리. 한 곡을 만들려면 두 가지가 필요하다 — 가사(LRCLIB)와 음원(유튜브).
-//
-// 통합에서는 둘을 나란히 놓고 하나씩 고른다. 길이가 얼마나 어긋나는지 그 자리에서 보이므로
-// 라이브·리메이크를 집어내기 쉽다. 한쪽만 필요할 때는(음원만 바꾸기) 개별로 연다.
+/**
+ * Where a song gets added. Making one song takes two things — lyrics (LRCLIB) and audio (YouTube).
+ *
+ * In the combined mode the two are laid side by side and picked one at a time. How far the
+ * durations diverge is visible right there, which makes live takes and remakes easy to spot.
+ * When only one side is needed (swapping just the audio) the panes open individually.
+ */
 
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AudioHit, LyricHit, LyricSource } from "./api";
 import { clock, findAudio, findLyrics } from "./api";
 
+/** Which panes are open: both sides at once, lyrics only, or audio only. */
 export type Mode = "both" | "lyrics" | "audio";
 
 interface Props {
   mode: Mode;
   seedArtist?: string;
   seedTitle?: string;
-  /** 음원만 바꿀 때, 길이를 견줄 기준. */
+  /** When swapping only the audio, the duration to compare candidates against. */
   wantSeconds?: number;
   onClose: () => void;
   onPick: (picked: { lyric?: LyricHit; audio?: AudioHit }) => void;
 }
 
+/**
+ * Modal sheet for finding a lyric sheet and an audio track and picking one of each.
+ *
+ * The artist and title fields drive both searches through a single query debounced by 420 ms,
+ * so typing does not fire a request per keystroke; changing the mode or the lyric source
+ * re-runs it the same way. Escape closes the sheet, and so does a click that lands on the
+ * backdrop itself rather than bubbling up out of the sheet.
+ *
+ * Every candidate row carries its duration, and audio rows also carry the gap against the
+ * reference duration: 3 seconds or less reads as a match, 8 seconds or less is neutral, and
+ * anything wider is flagged. That gap is the whole point of showing the two lists together —
+ * it is what makes live takes and remakes stand out before they are ever picked.
+ *
+ * The confirm button stays disabled until the current mode has everything it needs: audio
+ * only wants an audio hit, lyrics only wants a lyric hit, and the combined mode wants both.
+ *
+ * @param {Props} props - Component props.
+ * @param {Mode} props.mode - Mode the sheet opens in; the user can switch it afterwards.
+ * @param {string} [props.seedArtist] - Artist to prefill the search with.
+ * @param {string} [props.seedTitle] - Title to prefill the search with.
+ * @param {number} [props.wantSeconds] - Reference duration used when only the audio is being swapped.
+ * @param {() => void} props.onClose - Called when the sheet should be dismissed.
+ * @param {(picked: { lyric?: LyricHit, audio?: AudioHit }) => void} props.onPick - Called with the chosen hits on confirm.
+ * @returns {React.ReactElement} The finder sheet.
+ */
 export function Finder({ mode: initial, seedArtist, seedTitle, wantSeconds, onClose, onPick }: Props) {
   const [mode, setMode] = useState<Mode>(initial);
-  // 한국 곡은 바이브를 먼저 본다. LRCLIB 은 마흔 곡 중 다섯 곡만 쓸 만했다.
+  /** Lyric source, defaulting to Vibe: Korean songs go there first, because out of forty songs only five of the LRCLIB sheets were usable. */
   const [source, setSource] = useState<LyricSource>("vibe");
   const [artist, setArtist] = useState(seedArtist ?? "");
   const [title, setTitle] = useState(seedTitle ?? "");
@@ -34,12 +63,25 @@ export function Finder({ mode: initial, seedArtist, seedTitle, wantSeconds, onCl
   const [pickedAudio, setPickedAudio] = useState<number | null>(null);
   const timer = useRef<number | undefined>(undefined);
 
+  /**
+   * Run the lyric and audio searches for the current fields.
+   *
+   * Both requests are fired together, since there is no reason for one to wait on the other
+   * just because it is slow. `Promise.allSettled` keeps a failure on one side from throwing
+   * away the results of the other: whichever side settled gets its list, the failed side
+   * falls back to an empty list, and the first rejection's message is surfaced as the error.
+   * The mode short-circuits the side it does not need with an already-resolved empty array
+   * rather than skipping the call site. Empty fields clear both lists back to the
+   * not-yet-searched state instead of issuing a blank query.
+   *
+   * @async
+   * @returns {Promise<void>} Resolves once both searches have settled and state is updated.
+   */
   const run = useCallback(async () => {
     const free = [artist, title].filter(Boolean).join(" ").trim();
     if (!free) { setLyrics(null); setAudios(null); return; }
     setBusy(true); setError("");
     try {
-      // 둘을 함께 쏜다. 하나가 늦다고 다른 하나를 기다릴 이유가 없다.
       const [got1, got2] = await Promise.allSettled([
         mode === "audio" ? Promise.resolve([]) : findLyrics(source, { artist, title }),
         mode === "lyrics" ? Promise.resolve([]) : findAudio(free),
@@ -67,7 +109,7 @@ export function Finder({ mode: initial, seedArtist, seedTitle, wantSeconds, onCl
 
   const lyric = pickedLyric === null ? undefined : lyrics?.[pickedLyric];
   const audio = pickedAudio === null ? undefined : audios?.[pickedAudio];
-  // 견줄 기준: 음원만 바꿀 때는 원래 곡 길이, 새로 넣을 때는 고른 가사의 길이.
+  /** Duration every candidate is measured against: the original song's length when only the audio is being swapped, otherwise the length of the chosen lyric sheet. */
   const reference = wantSeconds ?? lyric?.duration;
   const ready = mode === "audio" ? !!audio : mode === "lyrics" ? !!lyric : !!lyric && !!audio;
 
@@ -191,6 +233,21 @@ export function Finder({ mode: initial, seedArtist, seedTitle, wantSeconds, onCl
   );
 }
 
+/**
+ * One result pane: either the rows, or the empty state that explains why there are none.
+ *
+ * `null` rows and an empty array mean different things and read differently — `null` is
+ * "nothing has been searched for yet", an empty array is "searched, found nothing". The
+ * spinner only replaces the list while there is nothing to show at all, so a re-search keeps
+ * the previous rows on screen instead of flashing the pane empty between keystrokes.
+ *
+ * @template T
+ * @param {object} props - Component props.
+ * @param {boolean} props.busy - Whether a search is currently in flight.
+ * @param {T[] | null} props.rows - Result rows, or null when no search has run yet.
+ * @param {(row: T, index: number) => React.ReactNode} props.render - Renders one row.
+ * @returns {React.ReactElement} The rows or an empty-state placeholder.
+ */
 function Hits<T>({ busy, rows, render }: {
   busy: boolean; rows: T[] | null; render: (row: T, index: number) => React.ReactNode;
 }) {
@@ -200,6 +257,21 @@ function Hits<T>({ busy, rows, render }: {
   return <AnimatePresence initial={false}>{rows.map(render)}</AnimatePresence>;
 }
 
+/**
+ * One selectable candidate row.
+ *
+ * The check mark is always mounted and only animates its scale and opacity, so selection
+ * moves between rows without the list reflowing underneath the pointer.
+ *
+ * @param {object} props - Component props.
+ * @param {boolean} props.on - Whether this row is the current selection.
+ * @param {() => void} props.onClick - Called when the row is chosen.
+ * @param {string} props.name - Primary label, usually the track title.
+ * @param {string} props.sub - Secondary label, such as artist, album, or uploader.
+ * @param {React.ReactNode} props.right - Right-hand column: duration, line count, and tags.
+ * @param {string} [props.note] - Extra detail appended to the secondary label.
+ * @returns {React.ReactElement} The row button.
+ */
 function Hit({ on, onClick, name, sub, right, note }: {
   on: boolean; onClick: () => void; name: string; sub: string;
   right: React.ReactNode; note?: string;

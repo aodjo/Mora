@@ -29,7 +29,7 @@ sys.path.insert(0, str(HERE))
 import align  # noqa: E402
 
 NOT_A_WORD = re.compile(r"^[♪♫🎵🎶~\-–—…·.,()\[\]{}\"'“”‘’!?]+$")
-# 바이브가 말한 자리 앞뒤로 이만큼 열어 준다. 줄 시각이 조금 틀려도 담기게.
+#: 바이브가 말한 자리 앞뒤로 이만큼 열어 준다. 줄 시각이 조금 틀려도 담기게.
 MARGIN_MS = 1500
 
 
@@ -89,7 +89,7 @@ whole = align.align_song(found, lines, words_of)
 pairs = [(i, one) for i, one in enumerate(whole) if one and lines[i].get("at") is not None]
 bias = sorted(one[0]["at"] - lines[i]["at"] for i, one in pairs)[len(pairs) // 2]
 
-# 볼 줄을 고른다. 번호를 주면 그 줄만, 아니면 크게 어긋난 줄을 모두.
+#: 볼 줄. 번호를 주면 그 줄만, 아니면 크게 어긋난 줄을 모두.
 picked = [only] if only is not None else [
     i for i, one in pairs if abs(one[0]["at"] - lines[i]["at"] - bias) > 800]
 
@@ -102,8 +102,8 @@ for index in picked:
     ours = whole[index][0]["at"] if whole[index] else None
     said = line["at"] + bias
 
-    # 두 자리를 같은 자로 견준다 — 우리가 고른 자리 vs 바이브가 말한 자리.
-    # 창 길이를 똑같이 맞춘다. 다르면 점수가 길이 때문에 갈린다.
+    #: 두 자리를 같은 자로 견주려고 창 길이를 똑같이 맞춘다 — 우리가 고른 자리 vs 바이브가
+    #: 말한 자리. 길이가 다르면 점수가 길이 때문에 갈린다.
     span = max(len(tokens) * 120, 2500) + 2 * MARGIN_MS
     out = []
     for name, middle_ms in (("우리", ours), ("바이브", said)):

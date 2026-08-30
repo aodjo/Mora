@@ -8,11 +8,15 @@
 
 여기서 재는 것 셋:
 
-1. **밖에서 온 줄 시각이 이미 겹치는가.** 겹친다면 그건 우리 정렬의 실수가 아니라
+1. **밖에서 온 줄 시각이 이미 겹치는가.** 다음 줄이 앞 줄보다 **먼저** 시작하거나 같은 때
+   시작하면, 그 둘은 소리에서 겹쳐 있다는 뜻이다. 겹친다면 그건 우리 정렬의 실수가 아니라
    **모형이 표현할 수 없는 것**을 넣고 있는 것이다. 고치는 방향이 완전히 달라진다.
 2. 괄호 친 줄이 실제로 더 많이 어긋나는가.
-3. 그 줄들을 **아예 빼고** 맞추면 나머지가 나아지는가 — 애드리브가 옆줄까지
+3. 그 줄들을 **아예 빼고**(`--drop`) 맞추면 나머지가 나아지는가 — 애드리브가 옆줄까지
    망가뜨리고 있는지 보는 가장 곧은 자.
+
+빼는 방식에 유의한다. 글월을 비우면 맞출 토큰이 없어져 그 줄은 건너뛰어진다. 줄 수는
+그대로 두어 아래 견줌에서 번호가 어긋나지 않게 한다.
 """
 import json
 import re
@@ -25,7 +29,7 @@ sys.path.insert(0, str(HERE))
 import align  # noqa: E402
 
 NOT_A_WORD = re.compile(r"^[♪♫🎵🎶~\-–—…·.,()\[\]{}\"'“”‘’!?]+$")
-# 괄호로 감싸인 줄. 가사 파일에서 백보컬·애드리브를 적는 가장 흔한 꼴이다.
+#: 괄호로 감싸인 줄. 가사 파일에서 백보컬·애드리브를 적는 가장 흔한 꼴이다.
 WRAPPED = re.compile(r"^\s*[(\[][^)\]]*[)\]]\s*$")
 
 
@@ -42,7 +46,7 @@ conn = sqlite3.connect(HERE / "review.db")
 conn.row_factory = sqlite3.Row
 rows = conn.execute("SELECT id, artist, title, video_id, lines FROM songs ORDER BY id").fetchall()
 how_many = int(sys.argv[1]) if len(sys.argv) > 1 else 8
-drop = "--drop" in sys.argv   # 괄호 줄을 아예 빼고 맞춰 본다
+drop = "--drop" in sys.argv  #: 괄호 줄을 아예 빼고 맞춰 본다.
 
 print("괄호 줄을 빼고 맞춘다\n" if drop else "있는 그대로 맞춘다\n")
 tally = {"괄호": [], "보통": []}
@@ -52,16 +56,12 @@ for row in rows[:how_many]:
         continue
     lines = json.loads(row["lines"])
 
-    # 1. 밖에서 온 줄 시각끼리 이미 겹치는가. 다음 줄이 앞 줄보다 **먼저** 시작하거나
-    #    같은 때 시작하면, 그 둘은 소리에서 겹쳐 있다는 뜻이다.
     same = sum(1 for a, b in zip(lines, lines[1:])
                if a.get("at") is not None and b.get("at") is not None and b["at"] <= a["at"])
     wrapped = [i for i, one in enumerate(lines) if WRAPPED.match(one.get("text", ""))]
 
     fed = [dict(one) for one in lines]
     if drop:
-        # 글월을 비우면 맞출 토큰이 없어져 그 줄은 건너뛰어진다. 줄 수는 그대로 두어
-        # 아래 견줌에서 번호가 어긋나지 않게 한다.
         for i in wrapped:
             fed[i] = {**fed[i], "text": ""}
     got = align.align_song(found, fed, words_of)

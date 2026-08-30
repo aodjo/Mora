@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""정렬 작업용 GPU 한 대를 vast.ai 에서 빌리고 **Tailscale 에 붙인다.**
+"""Rent one GPU box from vast.ai for alignment work and **join it to Tailscale.**
 
-`Generator/scripts/rent.py` 와는 다른 일을 한다. 그쪽은 Mora **워커**를 띄운다 —
-전용 이미지를 받아 `mora.junx.dev` 에 등록하고 곡을 처리한다. 이쪽은 검수·정렬을 돌릴
-**맨 기계**가 필요할 뿐이고, 우리가 ssh 로 들어가 쓰는 것이 목적이다.
+This does a different job from `Generator/scripts/rent.py`. That one brings up a Mora
+**worker** — it pulls the dedicated image, registers itself with `mora.junx.dev` and
+processes songs. This one only needs a **bare machine** to run review and alignment on,
+and the whole point is that we ssh into it and drive it ourselves.
 
-    rent_gpu.py offers            빌릴 만한 것 (아시아만)
-    rent_gpu.py up <offer>        빌리고 Tailscale 에 붙이기
-    rent_gpu.py list              지금 있는 것
-    rent_gpu.py down <id>         파기
+    rent_gpu.py offers            what is worth renting (Asia only)
+    rent_gpu.py up <offer>        rent it and join it to Tailscale
+    rent_gpu.py list              what we hold right now
+    rent_gpu.py down <id>         destroy
 
-Tailscale 키는 `--authkey` 로 주거나 `TS_AUTHKEY` 로 준다. **인자로 주면 명령 기록에 남으므로**
-환경변수 쪽이 낫다.
+The Tailscale key is given with `--authkey` or through `TS_AUTHKEY`. **Passing it as an
+argument leaves it in the shell history**, so the environment variable is the better way.
 """
 from __future__ import annotations
 
@@ -25,16 +26,32 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+#: Base URL of the vast.ai v0 REST API.
 VAST = "https://console.vast.ai/api/v0"
+#: File holding the vast.ai API key; the path can be overridden with VAST_API_KEY_FILE.
 KEY = Path(os.getenv("VAST_API_KEY_FILE", Path.home() / ".config/vastai/vast_api_key"))
-# CUDA 12.8 + torch 2.7. RTX 5090 은 Blackwell(sm_120)이라 cu124 휠로는 안 돈다.
+#: CUDA 12.8 + torch 2.7. The RTX 5090 is Blackwell (sm_120), so cu124 wheels will not run on it.
 IMAGE = os.getenv("MORA_GPU_IMAGE", "pytorch/pytorch:2.7.0-cuda12.8-cudnn9-devel")
-# 유튜브가 미국 데이터센터를 막는다 — 74/74 가 403 이었다(MEMORY §vast.ai).
+#: Rent in Asia only — YouTube blocks US datacenters; 74/74 came back 403 (MEMORY §vast.ai).
 ASIA = ("Korea", "Japan", "Taiwan", "Hong Kong", "Singapore", "Thailand", "Vietnam", "Malaysia")
 
 
 def vast(method: str, path: str, body: dict | None = None) -> dict:
-    """vast.ai 는 자주 물으면 429 를 준다. 물러섰다 다시 묻는다."""
+    """Call the vast.ai REST API, backing off and retrying when it pushes back.
+
+    vast.ai answers 429 when asked often, so each attempt that comes back 429 is retried
+    after an exponential wait — six attempts, starting at 5 s and doubling up to a 60 s
+    ceiling. Connection-level failures (URLError) are swallowed and retried the same way
+    rather than raised: a dropped connection once killed the teardown path outright. Any
+    other HTTP status is fatal and is re-raised carrying the first 300 characters of the
+    response body.
+
+    @param {str} method - HTTP method to use.
+    @param {str} path - API path appended to the vast.ai base URL.
+    @param {dict} [body=None] - JSON body to send; no body is sent when None.
+    @returns {dict} Decoded JSON response, or an empty dict when the response body is empty.
+    @throws {RuntimeError} If vast.ai answers with a non-429 HTTP error, or if all six attempts fail.
+    """
     key = KEY.read_text().strip()
     wait = 5
     for _ in range(6):
@@ -49,13 +66,24 @@ def vast(method: str, path: str, body: dict | None = None) -> dict:
             if error.code != 429:
                 raise RuntimeError(f"vast {error.code}: {error.read().decode()[:300]}") from None
         except urllib.error.URLError:
-            pass          # 연결이 끊겨도 물러섰다 다시 — 한 번 끊겨 거두는 쪽이 죽은 적이 있다
+            pass
         time.sleep(wait)
         wait = min(wait * 2, 60)
     raise RuntimeError("vast.ai 가 계속 안 받는다")
 
 
 def offers(limit: int) -> None:
+    """Print the cheapest rentable offers that are near enough to be useful.
+
+    Asks vast.ai for up to 200 verified, rentable, non-external on-demand bundles with at
+    least 23 GB of VRAM, 8 effective cores, 100 GB of disk, 0.97 reliability and 200 Mbit/s
+    downstream, ordered cheapest first. The result is then narrowed to offers whose
+    geolocation falls inside ASIA before the first `limit` of them are printed as a table.
+
+    @param {int} limit - How many of the surviving offers to print.
+    @returns {None} Nothing; the table is written to stdout.
+    @throws {RuntimeError} If the vast.ai query fails.
+    """
     query = {
         "verified": {"eq": True}, "rentable": {"eq": True}, "external": {"eq": False},
         "gpu_ram": {"gte": 23000}, "cpu_cores_effective": {"gte": 8},
@@ -72,13 +100,19 @@ def offers(limit: int) -> None:
 
 
 def onstart(authkey: str) -> str:
-    """기계가 뜨자마자 할 일. **Tailscale 부터** 붙어야 우리가 들어갈 수 있다.
+    """Build the boot script the rented machine runs. **Tailscale first** — nothing else lets us in.
 
-    `--tun=userspace-networking` 을 쓴다. 빌린 기계는 컨테이너라 `/dev/net/tun` 이 없는 일이
-    흔하고, 없으면 tailscaled 가 뜨다 만다. 사용자 공간으로 돌리면 그 걱정이 없다 —
-    우리가 쓰는 것은 이 기계로 **들어오는** ssh 뿐이라 그것으로 충분하다.
+    It uses `--tun=userspace-networking`. A rented box is a container and often has no
+    `/dev/net/tun`, and without it tailscaled comes up half-way and stops. Running in
+    userspace does away with that worry — all we use is ssh **into** this machine, and
+    userspace networking is enough for that.
 
-    `--ssh` 를 켜면 Tailscale 이 제 ssh 를 연다. 열쇠를 심을 것도, 22 번을 열 것도 없다.
+    Turning on `--ssh` makes Tailscale serve its own ssh, so there are no keys to plant and
+    no port 22 to open. The script also installs curl, ffmpeg and git, and touches
+    `/root/.mora-ready` at the end so the machine can be seen to have finished booting.
+
+    @param {str} authkey - Tailscale auth key embedded in the script for `tailscale up`.
+    @returns {str} A bash script for vast.ai to run when the instance starts.
     """
     return f"""#!/bin/bash
 set -x
@@ -97,9 +131,23 @@ touch /root/.mora-ready
 
 
 def up(offer: int, authkey: str, disk: int) -> None:
+    """Rent one offer and hand it the Tailscale boot script.
+
+    The instance is created with the ssh runtype, which swaps out the image's entrypoint.
+    That is the right choice here because we log in and drive the machine by hand rather
+    than letting the image run a program of its own. Port 8787 is published on the
+    instance. Joining Tailscale takes 3-5 minutes after the call returns, so the new box
+    only becomes reachable some time after this function has printed its contract id.
+
+    @param {int} offer - Offer id to rent, as printed by `offers`.
+    @param {str} authkey - Tailscale auth key passed through to the boot script.
+    @param {int} disk - Disk to request, in gigabytes.
+    @returns {None} Nothing; the new contract id is written to stdout.
+    @throws {SystemExit} If vast.ai does not report success.
+    @throws {RuntimeError} If the vast.ai call itself fails.
+    """
     body = {
         "client_id": "me", "image": IMAGE, "disk": disk,
-        # ssh 모드는 이미지의 entrypoint 를 갈아 끼운다. 우리는 들어가서 쓸 것이므로 그게 맞다.
         "runtype": "ssh ssh_direc ssh_proxy",
         "onstart": onstart(authkey),
         "env": {"-p 8787:8787": "1"},
@@ -112,6 +160,14 @@ def up(offer: int, authkey: str, disk: int) -> None:
 
 
 def show() -> None:
+    """Print the instances we currently hold, one line each.
+
+    Reports the status vast.ai gives for each instance, which is how a box that is still
+    booting is told apart from one that is ready to be reached over Tailscale.
+
+    @returns {None} Nothing; a table, or a "none held" line, is written to stdout.
+    @throws {RuntimeError} If the vast.ai query fails.
+    """
     rows = vast("GET", "/instances/").get("instances", [])
     if not rows:
         print("  없다")
@@ -124,6 +180,15 @@ def show() -> None:
 
 
 def down(ids: list[int]) -> None:
+    """Destroy instances by id, printing each one as it goes.
+
+    The ids are not checked against what we actually hold, so an id vast.ai rejects
+    aborts the run and leaves any remaining ids untouched.
+
+    @param {list[int]} ids - Instance ids to destroy.
+    @returns {None} Nothing; one line per destroyed instance is written to stdout.
+    @throws {RuntimeError} If vast.ai refuses one of the deletes.
+    """
     for one in ids:
         vast("DELETE", f"/instances/{one}/", {})
         print(f"  {one} 팠음")

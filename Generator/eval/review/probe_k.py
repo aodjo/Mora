@@ -110,8 +110,9 @@ for row in rows[:how_many]:
     groups: dict[int, list[int]] = {}
     for index, one in zip(where, labels):
         groups.setdefault(int(one), []).append(index)
+    #: 묶음을 큰 것부터 늘어놓는다. 0 번(가장 큰 묶음)이 주 화자이고, 그 뒤가
+    #: 「다른 사람」 후보다.
     order = sorted(groups.values(), key=len, reverse=True)
-    # 0 번(가장 큰 묶음)이 아닌 것들이 「다른 사람」 후보다.
     facts = []
     longest = 0
     for one in order[1:]:

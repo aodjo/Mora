@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-한국어 정답을 귀로 검수하는 임시 도구.
+Throwaway tool for reviewing the Korean ground truth by ear.
 
-`korean.py` 가 LRCLIB 에서 긁어 온 쉰다섯 곡이 정말 맞는 시각인지, 사람이 듣고 봐야 안다.
-GPU 를 두 시간 돌리기 전에 자가 성한지부터 보는 것이 순서다 — 오늘 하루 잘못된 자로 세 번
-속았다.
+Whether the fifty-five songs `korean.py` scraped off LRCLIB really carry the right timings
+is something a person has to hear and see. Before spending two hours of GPU time, checking
+that the ruler itself is sound comes first — in one day we were fooled three times by a bad
+ruler.
 
-갤북에서만 돈다. Tailscale 안에서만 닿으므로 인증을 두지 않는다. 바깥으로 열 물건이 아니다.
+Runs on the Galaxy Book only. It is reachable only inside Tailscale, so no authentication is
+set up. This is not a thing to open to the outside.
 
     ~/mora-review/.venv/bin/python server.py
 """
@@ -28,19 +30,29 @@ from fastapi.staticfiles import StaticFiles
 import urllib.parse
 import urllib.request
 
+#: Directory this server file sits in; every other path is resolved from it.
 HERE = Path(__file__).parent
+#: SQLite database holding the songs under review.
 DB = HERE / "review.db"
+#: Directory holding the downloaded originals and every stem derived from them.
 AUDIO = HERE / "audio"
-YTDLP = HERE.parent / "yt-dlp"  # 단일 실행파일이 없으면 venv 것을 쓴다
+#: Standalone `yt-dlp` executable; when that single file is absent the venv one is used.
+YTDLP = HERE.parent / "yt-dlp"
+#: Ground-truth file scraped off LRCLIB, kept alongside for reference.
 SEED = HERE / "korean-truth.json"
+#: User-Agent sent to LRCLIB so our requests are identifiable.
 AGENT = "Mora/0.1 (https://mora.junx.dev)"
 
 def yt_dlp() -> str:
-    """어디에 깔렸든 `yt-dlp` 를 찾는다.
+    """Find `yt-dlp` wherever it happens to be installed.
 
-    기계마다 세운 방식이 다르다 — 갤북·msi 는 venv 를, 빌린 GPU 기계는 conda 를 쓴다.
-    `.venv/bin/yt-dlp` 하나만 보다가 「yt-dlp 가 없다」로 곡을 못 넣었다. 있는 자리를
-    차례로 보고 없으면 PATH 에 묻는다.
+    Every machine is set up differently — the Galaxy Book and the msi use a venv, the rented
+    GPU box uses conda. Looking at `.venv/bin/yt-dlp` alone meant songs could not be added,
+    failing with "yt-dlp is missing". The known places are checked in turn and PATH is asked
+    only when none of them has it.
+
+    @returns {str} Absolute path to a usable `yt-dlp` executable.
+    @throws {RuntimeError} If `yt-dlp` is in neither the known places nor PATH.
     """
     import shutil
     for one in (YTDLP, HERE / ".venv/bin/yt-dlp"):
@@ -55,14 +67,21 @@ def yt_dlp() -> str:
 AUDIO.mkdir(exist_ok=True)
 app = FastAPI(title="Mora 정답 검수")
 
-# 내려받기는 오래 걸린다. 어느 곡이 지금 받는 중인지 여기에 둔다.
+#: Which song is being downloaded right now, keyed by video id — downloading takes a while.
 fetching: dict[str, str] = {}
+#: Guards `fetching` against the download threads.
 fetch_lock = threading.Lock()
 
 
-# ── 저장소 ────────────────────────────────────────────────────────────────────
-
 def db() -> sqlite3.Connection:
+    """Open a connection to the review database.
+
+    Rows come back as `sqlite3.Row` so they can be read by column name, and WAL is turned on
+    because the download and alignment threads write while request handlers read. The 30
+    second timeout keeps those writers from failing outright when they collide.
+
+    @returns {sqlite3.Connection} An open connection, rows keyed by name and WAL enabled.
+    """
     conn = sqlite3.connect(DB, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -70,6 +89,14 @@ def db() -> sqlite3.Connection:
 
 
 def setup() -> None:
+    """Create the songs table when it is not there yet.
+
+    The scraped fifty-five songs are deliberately not pre-loaded. Pushing them all in would
+    turn the review into "skimming what is already there", when choosing what to put in is
+    itself part of the review.
+
+    @returns {None}
+    """
     with db() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS songs (
@@ -80,20 +107,29 @@ def setup() -> None:
           language TEXT NOT NULL DEFAULT 'ko',
           duration REAL NOT NULL,
           lines TEXT NOT NULL,
-          -- 사람이 듣고 내린 판정. 아직 안 들은 것은 null 이다.
+          -- The verdict a person reached by listening. Null means not yet heard.
           verdict TEXT NULL CHECK (verdict IN ('good', 'off', 'wrong', 'drop')),
           note TEXT NOT NULL DEFAULT '',
-          -- 곡 전체가 일정하게 밀렸을 때 사람이 손으로 맞춘 값(ms).
+          -- Shift (ms) dialled in by hand when a whole song is off by a constant amount.
           offset_ms INTEGER NOT NULL DEFAULT 0,
           added_at INTEGER NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS songs_video ON songs(video_id);
         """)
-        # 미리 채우지 않는다. 긁어 온 쉰다섯 곡을 그대로 밀어 넣으면 검수가 "이미 있는 것을
-        # 훑는 일" 이 되는데, 무엇을 넣을지 고르는 것부터가 검수다.
 
 
 def row_to_song(row: sqlite3.Row, with_lines: bool = False) -> dict:
+    """Turn a database row into the song shape the screen reads.
+
+    `lines` is stored as a JSON string, so the line count comes from decoding it, and
+    `has_audio` is decided by looking for a file rather than by a column — downloading
+    happens outside the database. The full lines are attached only when asked for, since the
+    song list would otherwise carry every word of every song.
+
+    @param {sqlite3.Row} row - A row of the `songs` table.
+    @param {bool} [with_lines=False] - Whether to include the decoded `lines` array.
+    @returns {dict} The song in the shape the screen expects.
+    """
     song = {
         "id": row["id"], "video_id": row["video_id"], "artist": row["artist"],
         "title": row["title"], "language": row["language"], "duration": row["duration"],
@@ -106,25 +142,37 @@ def row_to_song(row: sqlite3.Row, with_lines: bool = False) -> dict:
     return song
 
 
-# ── 곡 ────────────────────────────────────────────────────────────────────────
-
 @app.get("/api/songs")
 def list_songs() -> list[dict]:
+    """List every song under review, ordered by artist then title.
+
+    Lines are left out so the list stays small; a song's lines arrive when it is opened.
+
+    @returns {list[dict]} Every song, without its lines.
+    """
     with db() as conn:
         return [row_to_song(r) for r in conn.execute("SELECT * FROM songs ORDER BY artist, title")]
 
 
 @app.get("/api/songs/{song_id}")
 def get_song(song_id: int) -> dict:
+    """Fetch one song with its lines, kicking off the alignment when nothing is placed yet.
+
+    When the audio is there but no line carries words, the alignment is started **right
+    here**. The only thing a person does is review; aligning is the model's job and the
+    person only judges whether its result is right. So opening a song must never show an
+    empty screen — that would mean there is nothing to review. A run already in flight is
+    left alone.
+
+    @param {int} song_id - Row id of the song.
+    @returns {dict} The song including its lines.
+    @throws {HTTPException} 404 when no song has that id.
+    """
     with db() as conn:
         row = conn.execute("SELECT * FROM songs WHERE id=?", (song_id,)).fetchone()
     if row is None:
         raise HTTPException(404, "없는 곡")
 
-    # 음원은 있는데 아직 안 맞춘 곡이면 **여기서 바로 건다.**
-    #
-    # 사람이 하는 일은 검수뿐이다. 맞추는 것은 모델의 몫이고, 사람은 그 결과가 맞는지만
-    # 본다. 그러니 곡을 열었을 때 빈 화면이 나오면 안 된다 — 검수할 것이 없는 셈이다.
     got = json.loads(row["lines"])
     if audio_path(row["video_id"]) and not any(one.get("words") for one in got):
         with align_lock:
@@ -138,6 +186,18 @@ def get_song(song_id: int) -> dict:
 
 @app.patch("/api/songs/{song_id}")
 async def edit_song(song_id: int, request: Request) -> dict:
+    """Update only the fields the request actually carries.
+
+    The editable field names are listed here rather than taken from the body, so a stray key
+    cannot reach the UPDATE statement. Lines are not editable through this route; they have
+    one of their own.
+
+    @async
+    @param {int} song_id - Row id of the song.
+    @param {Request} request - Request whose JSON body holds the fields to change.
+    @returns {dict} The updated song including its lines.
+    @throws {HTTPException} 400 when the body carries none of the editable fields, 404 when no song has that id.
+    """
     body = await request.json()
     fields, values = [], []
     for name in ("artist", "title", "video_id", "verdict", "note", "offset_ms"):
@@ -157,11 +217,18 @@ async def edit_song(song_id: int, request: Request) -> dict:
 
 @app.put("/api/songs/{song_id}/lines")
 async def save_lines(song_id: int, request: Request) -> dict:
-    """줄과 그 안의 낱말을 통째로 갈아 끼운다.
+    """Replace the lines and the words inside them wholesale.
 
-    낱말 시각은 사람이 노래를 들으며 두드려 넣는다. LRCLIB 에는 사실상 없고, 우리 파이프라인
-    출력으로 만들면 파이프라인의 실수를 정답으로 굳히게 된다. 한국어 낱말 정답은 이 길밖에
-    없어서 손으로 만든다.
+    Word timings are tapped in by a person listening to the song. LRCLIB effectively does not
+    have them, and building them from our own pipeline's output would freeze the pipeline's
+    mistakes into the ground truth. There is no other road to a Korean word-level ground
+    truth, so it is made by hand.
+
+    @async
+    @param {int} song_id - Row id of the song.
+    @param {Request} request - Request whose JSON body is the whole array of lines.
+    @returns {dict} The song with its new lines.
+    @throws {HTTPException} 400 when the body is not a non-empty list, 404 when no song has that id.
     """
     lines = await request.json()
     if not isinstance(lines, list) or not lines:
@@ -175,39 +242,75 @@ async def save_lines(song_id: int, request: Request) -> dict:
     return row_to_song(row, with_lines=True)
 
 
-# 강제 정렬은 오래 걸린다(보컬 뽑기 + 갈래 가르기 + 맞추기). 어느 곡이 도는 중인지와
-# **거쳐 온 자취**를 여기에 둔다.
-#
-# 한 줄짜리 상태로는 모자랐다. 곡 하나에 3~5 분이 걸리는데 「보컬 뽑는 중」만 떠 있으면
-# 멈춘 것인지 더딘 것인지 알 수가 없고, 끝난 뒤에는 무슨 일이 있었는지 아무것도 안 남는다.
-# 터미널처럼 쌓아 두면 사람이 그 자리에서 읽고 판단한다.
+#: Which song is being aligned right now, keyed by song id.
+#:
+#: Forced alignment takes a long time (vocal extraction + voice splitting + alignment), so
+#: both the song in flight and the trail it has walked are kept here.
 aligning: dict[int, str] = {}
+#: The trail of steps each alignment has walked, keyed by song id.
+#:
+#: A single-line status was not enough. One song takes 3 to 5 minutes, and with only
+#: "extracting vocals" on screen there is no telling whether it is stuck or merely slow, and
+#: once it ends nothing is left of what happened. Stacked up like a terminal, a person reads
+#: it and judges on the spot.
 align_log: dict[int, list[dict]] = {}
+#: Guards `aligning` and `align_log` against the alignment threads.
 align_lock = threading.Lock()
 
 
 def note(song_id: int, text: str, kind: str = "step") -> None:
-    """자취 한 줄. `kind` 는 `step`(하는 중) · `done`(끝) · `bad`(실패)."""
+    """Append one line to a song's trail and make it the current state.
+
+    A few dozen lines per song is plenty; beyond that the oldest are dropped, keeping the
+    last 60.
+
+    @param {int} song_id - Row id of the song being aligned.
+    @param {str} text - The line of trail to record.
+    @param {str} [kind="step"] - `step` (in progress), `done` (finished) or `bad` (failed).
+    @returns {None}
+    """
     with align_lock:
         aligning[song_id] = text
         align_log.setdefault(song_id, []).append(
             {"at": time.time(), "text": text, "kind": kind})
-        # 곡 하나에 수십 줄이면 충분하다. 더 쌓이면 앞엣것부터 버린다.
         align_log[song_id] = align_log[song_id][-60:]
+#: Matches a token made only of punctuation or interlude marks, which has nothing to sing.
 NOT_A_WORD = re.compile(r"^[♪♫🎵🎶~\-–—…·.,()\[\]{}\"'“”‘’!?]+$")
 
 
 def align_words(text: str) -> list[str]:
-    """맞출 어절만 남긴다. 간주 표시(♫)는 부를 것이 없다."""
+    """Keep only the tokens worth aligning.
+
+    Interlude marks (♫) have nothing to sing, so they are dropped.
+
+    @param {str} text - The text of one line.
+    @returns {list[str]} The tokens that carry something sung.
+    """
     return [one for one in text.split() if one and not NOT_A_WORD.match(one)]
 
 
 def run_align(song_id: int, fresh: bool = False) -> None:
-    """모델로 맞춘다. `fresh` 면 **갈래부터 다시 만든다.**
+    """Align with the models; when `fresh`, **rebuild the stems from scratch first.**
 
-    캐시된 갈래를 그대로 쓰면 「보컬 뽑음 · 0초」가 찍힌다. 처음 거는 것이라면 맞지만,
-    사람이 **「다시 맞추기」를 누른 것이라면 틀렸다** — 그건 「지금 코드로 처음부터」라는 뜻이다.
-    가르는 쪽을 고쳐 놓고 옛 갈래로 맞추면 무엇을 고쳤는지 알 수가 없다.
+    Using the cached stems as they are prints "vocals extracted · 0s". For a first run that
+    is right, but **when the person pressed "align again" it is wrong** — that means "from
+    the start, with the current code". Fixing the splitting side and then aligning against the
+    old stems leaves no way to tell what the fix did.
+
+    Only the lines that were placed are swapped in; the lines that failed keep whatever the
+    person laid down, because covering a failed line with a blank erases their work.
+
+    The tally counts **only the singable lines.** Lines like the `♫` of an interlude have
+    nothing to align, so they come out of the denominator — written as `28/31` it reads as
+    three lines missed, and with no way for a person to fix them by hand right now that
+    misreading turns into "something is badly wrong". Those three were in fact all `♫`.
+
+    This runs on a background thread where nothing would catch a failure, so exceptions are
+    printed to stderr and recorded in the trail instead of being raised.
+
+    @param {int} song_id - Row id of the song to align.
+    @param {bool} [fresh=False] - Delete the derived stems first and make them again.
+    @returns {None}
     """
     import align as aligner
     began = time.time()
@@ -250,17 +353,12 @@ def run_align(song_id: int, fresh: bool = False) -> None:
         got, lanes = aligner.align_voices(path, lines, align_words, row["title"])
         note(song_id, f"맞췄음 · {time.time() - step:.0f}초")
 
-        # 맞춘 줄만 갈아 끼운다. 못 맞춘 줄은 사람이 깔아 둔 것을 그대로 둔다 — 맞추기가
-        # 실패한 줄을 빈칸으로 덮으면 사람이 한 일을 지우게 된다.
         next_lines = [{**line, "words": got[index], "lane": lanes.get(index, 0)}
                       if got[index] else line
                       for index, line in enumerate(lines)]
         with db() as conn:
             conn.execute("UPDATE songs SET lines=? WHERE id=?",
                          (json.dumps(next_lines, ensure_ascii=False), song_id))
-        # **부를 줄만 센다.** 간주 자리의 `♫` 같은 줄은 맞출 것이 없으니 분모에서 뺀다 —
-        # `28/31` 로 적으면 세 줄을 못 맞춘 것처럼 읽히는데, 사람이 손으로 고칠 길이 없는
-        # 지금은 그 오해가 「큰일」이 된다. 실제로 그 셋은 전부 `♫` 였다.
         singable = sum(1 for line in lines if align_words(line.get("text", "")))
         done = sum(1 for one in got if one)
         skipped = len(lines) - singable
@@ -278,14 +376,22 @@ def run_align(song_id: int, fresh: bool = False) -> None:
 
 @app.post("/api/songs/{song_id}/align")
 def start_align(song_id: int, fresh: bool = False) -> dict:
-    """우리 모델로 맞춘다. `?fresh=1` 이면 **갈래부터 다시 만든다.**
+    """Align with our model; with `?fresh=1`, **rebuild the stems from scratch first.**
 
-    나온 것은 **정답이 아니라 출발점**이다. 사람이 듣고 판정해야 의미가 있다 — 이대로 두고
-    「맞음」을 누르면 우리 모델의 실수가 정답이 되어 그 정답으로 우리 모델을 재게 된다.
+    What comes out is **a starting point, not the ground truth.** It means something only
+    once a person has listened and judged — leaving it as it is and pressing "good" would
+    turn our model's mistakes into the ground truth, and then we would be measuring our model
+    against them.
+
+    Whether a run is in flight is decided by exclusion. Listing the step names here would mean
+    editing this spot every time a step name is added; anything that is neither finished
+    (`done`) nor a failure is running.
+
+    @param {int} song_id - Row id of the song to align.
+    @param {bool} [fresh=False] - Delete the derived stems first and make them again.
+    @returns {dict} The state, either of the run already in flight or of the one just started.
     """
     with align_lock:
-        # 「하는 중」인지 보는 데 문자열을 나열하면, 단계 이름을 하나 늘릴 때마다 여기도
-        # 고쳐야 한다. 끝났음(`done`)과 실패만 아니면 도는 중이다.
         now = aligning.get(song_id, "")
         if now and not now.startswith(("done", "실패")):
             return {"state": now}
@@ -296,6 +402,11 @@ def start_align(song_id: int, fresh: bool = False) -> dict:
 
 @app.get("/api/songs/{song_id}/align")
 def align_state(song_id: int) -> dict:
+    """Report a song's current alignment state together with its whole trail.
+
+    @param {int} song_id - Row id of the song.
+    @returns {dict} The current `state` and the `log` of trail entries.
+    """
     with align_lock:
         return {"state": aligning.get(song_id, "없음"),
                 "log": list(align_log.get(song_id, []))}
@@ -303,6 +414,13 @@ def align_state(song_id: int) -> dict:
 
 @app.delete("/api/songs/{song_id}")
 def drop_song(song_id: int) -> dict:
+    """Take a song out of the review set.
+
+    Only the row goes; the downloaded audio and its stems stay on disk.
+
+    @param {int} song_id - Row id of the song.
+    @returns {dict} `{"ok": True}`.
+    """
     with db() as conn:
         conn.execute("DELETE FROM songs WHERE id=?", (song_id,))
     return {"ok": True}
@@ -310,6 +428,16 @@ def drop_song(song_id: int) -> dict:
 
 @app.post("/api/songs")
 async def add_song(request: Request) -> dict:
+    """Put a song into the review set, replacing any row that has the same video id.
+
+    Every required field has to be non-empty, so a song cannot land with zero lines or a
+    zero duration and then look like a broken alignment later.
+
+    @async
+    @param {Request} request - Request whose JSON body carries video_id, artist, title, duration and lines.
+    @returns {dict} The stored song including its lines.
+    @throws {HTTPException} 400 when any required field is missing or empty.
+    """
     body = await request.json()
     for need in ("video_id", "artist", "title", "duration", "lines"):
         if not body.get(need):
@@ -324,12 +452,20 @@ async def add_song(request: Request) -> dict:
     return row_to_song(row, with_lines=True)
 
 
-# ── 찾기 ──────────────────────────────────────────────────────────────────────
-
+#: Matches one LRC line, `[mm:ss.xx] text`, with either hundredths or milliseconds.
 STAMP = re.compile(r"^\[(\d{2}):(\d{2})[.:](\d{2,3})\]\s*(.*)$")
 
 
 def parse_lrc(synced: str) -> list[dict]:
+    """Read an LRC body into lines carrying a start time in milliseconds.
+
+    The fraction is two or three digits depending on the file, so two digits are read as
+    hundredths and scaled by ten. Stamps with no text behind them are dropped — LRC leaves
+    those where the interludes are.
+
+    @param {str} synced - The LRC body.
+    @returns {list[dict]} Lines with `at` in milliseconds and `text`.
+    """
     rows = []
     for line in synced.splitlines():
         hit = STAMP.match(line.strip())
@@ -342,11 +478,15 @@ def parse_lrc(synced: str) -> list[dict]:
     return rows
 
 
-# `lyricsfile` 은 LRC 보다 낫다 — 줄의 **끝** 시각까지 준다. LRC 는 시작만 주므로 "시작은
-# 맞고 끝이 틀린" 정렬을 잴 수가 없다. 이백 항목 중 백일흔여섯에 end_ms 가 있었다.
-#
-# 규격에는 낱말 단위(`words:`)도 있는데 이백 중 하나에만 있었고 그 하나조차 첫 줄만 차 있고
-# 나머지는 `words: []` 였다. 아무도 안 채운다 — 그래서 낱말 정답은 사람이 두드려 만든다.
+#: Matches one `lyricsfile` entry — its text plus the `start_ms` and optional `end_ms` below.
+#:
+#: `lyricsfile` is better than LRC — it gives the **end** time of a line as well. LRC gives
+#: only the start, so a "start is right, end is wrong" alignment cannot be measured. Of two
+#: hundred entries, a hundred and seventy-six had end_ms.
+#:
+#: The format also has a word level (`words:`), but only one of the two hundred had it, and
+#: even that one had just the first line filled and `words: []` for the rest. Nobody fills it
+#: in — which is why the word-level ground truth is tapped in by a person.
 FILE_LINE = re.compile(
     r"^\s*-\s+text:\s*(?P<text>.*?)\s*$\n(?:(?!^\s*-\s+text:).*\n)*?"
     r"^\s+start_ms:\s*(?P<start>\d+)\s*$(?:\n^\s+end_ms:\s*(?P<end>\d+)\s*$)?",
@@ -354,6 +494,11 @@ FILE_LINE = re.compile(
 
 
 def unquote(raw: str) -> str:
+    """Strip one layer of matching quotes off a `lyricsfile` value.
+
+    @param {str} raw - The raw value, possibly wrapped in single or double quotes.
+    @returns {str} The value with its surrounding whitespace and one matching quote pair removed.
+    """
     raw = raw.strip()
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
         return raw[1:-1]
@@ -361,12 +506,20 @@ def unquote(raw: str) -> str:
 
 
 def parse_lyricsfile(text: str) -> list[dict]:
-    """`lyricsfile` 에서 줄의 시작·끝을 꺼낸다. YAML 파서를 들이지 않으려고 손으로 읽는다."""
+    """Pull each line's start and end out of a `lyricsfile`.
+
+    Read by hand rather than with a YAML parser, so that no YAML parser has to be pulled in.
+    Entries whose text is empty are interlude marks and have nothing to measure, so they are
+    skipped.
+
+    @param {str} text - The `lyricsfile` body.
+    @returns {list[dict]} Lines with `at` and `text`, plus `end` where the entry carried one.
+    """
     rows = []
     for hit in FILE_LINE.finditer(text):
         body = unquote(hit.group("text"))
         if not body:
-            continue  # 간주 표시. 잴 것이 없다.
+            continue
         row = {"at": int(hit.group("start")), "text": body}
         if hit.group("end"):
             row["end"] = int(hit.group("end"))
@@ -375,33 +528,56 @@ def parse_lyricsfile(text: str) -> list[dict]:
 
 
 def best_lines(item: dict) -> list[dict]:
-    """끝 시각이 있는 쪽을 쓴다. 없으면 LRC 로 물러선다."""
+    """Take whichever source carries end times, falling back to LRC when neither does.
+
+    @param {dict} item - One LRCLIB search result.
+    @returns {list[dict]} The parsed lines, empty when neither source has anything.
+    """
     rows = parse_lyricsfile(item.get("lyricsfile") or "")
     if rows and any("end" in row for row in rows):
         return rows
     return parse_lrc(item.get("syncedLyrics") or "")
 
 
+#: Matches a single Hangul syllable, used to reduce an artist name to its Korean part.
 HANGUL = re.compile(r"[가-힣]")
 
 
 def artist_core(name: str) -> str:
-    """표기가 갈린 같은 사람을 하나로 본다 — 「악뮤」와 「AKMU (악뮤)」는 같다."""
+    """See the same person written two ways as one — 「악뮤」 and 「AKMU (악뮤)」 are the same.
+
+    When the name has Hangul in it only the Hangul is kept; otherwise it falls back to the
+    lowercase alphanumerics.
+
+    @param {str} name - The artist name as written.
+    @returns {str} A comparable core form of the name.
+    """
     hangul = "".join(HANGUL.findall(name))
     return hangul or re.sub(r"[^a-z0-9]", "", name.lower())
 
 
 @app.get("/api/lrclib")
 def search_lrclib(q: str = "", artist: str = "", title: str = "") -> list[dict]:
-    """LRCLIB 에서 가사를 찾는다. 싱크가 있는 것만 돌려준다.
+    """Search LRCLIB for lyrics, returning only the entries that carry a sync.
 
-    이 API 가 받는 조합은 셋뿐이다 — 재어 보고 알았다.
-      * `q=` 자유 검색. artistName·trackName·albumName 을 통째로 훑는다.
-      * `track_name=` 만. 된다.
-      * `track_name=` + `artist_name=`. 된다.
-      * **`artist_name=` 만 주면 0 건이 온다.** 그래서 아티스트만 찾을 때는 `q=` 로 묻고
-        아티스트 칸이 실제로 맞는 행만 남긴다 — 「지코」로 물으면 앨범 칸에 걸린
-        `artistName="Hamah Music"` 짜리가 1 위로 오기 때문이다.
+    This API accepts only three combinations — found by measuring, not by reading:
+      * `q=` free search. It sweeps artistName, trackName and albumName together.
+      * `track_name=` alone. Works.
+      * `track_name=` plus `artist_name=`. Works.
+      * **`artist_name=` alone comes back with 0 rows.** So an artist-only search asks with
+        `q=` and then keeps only the rows whose artist field really matches — asking for
+        「지코」 otherwise brings back an `artistName="Hamah Music"` row, matched on the album
+        field, in first place.
+
+    Something other than a list comes back at times (an error object and such), so the type
+    is checked before any filtering — iterating a dict hands string keys onward, and the
+    missing `.get` turns into a 500.
+
+    @param {str} [q=""] - Free-text query.
+    @param {str} [artist=""] - Artist name.
+    @param {str} [title=""] - Track title.
+    @returns {list[dict]} The candidates that carry lines, with artist, title, album, duration and flags.
+    @throws {HTTPException} 400 when no search term is given, 502 when LRCLIB cannot be reached.
     """
     if title:
         params = {"track_name": title, **({"artist_name": artist} if artist else {})}
@@ -419,8 +595,6 @@ def search_lrclib(q: str = "", artist: str = "", title: str = "") -> list[dict]:
             items = json.loads(response.read().decode("utf-8"))
     except Exception as error:
         raise HTTPException(502, f"LRCLIB 에 못 닿는다: {type(error).__name__}")
-    # 목록이 아닌 것이 올 때가 있다(오류 객체 등). 걸러내기 전에 먼저 확인한다 —
-    # dict 를 돌면 키(문자열)를 집어 `.get` 이 없다며 500 이 난다.
     if not isinstance(items, list):
         return []
     items = [row for row in items if isinstance(row, dict)]
@@ -441,13 +615,24 @@ def search_lrclib(q: str = "", artist: str = "", title: str = "") -> list[dict]:
     return out
 
 
+#: Base URL of Naver Vibe's music web API.
 VIBE = "https://apis.naver.com/vibeWeb/musicapiweb"
+#: Desktop browser User-Agent sent to Vibe alongside the web player's Referer.
 BROWSER = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 
 def vibe_get(path: str, tries: int = 3) -> dict:
-    """한 번 끊겼다고 빈손으로 돌아오지 않는다 — 네이버는 이따금 끊는다."""
+    """GET one Vibe endpoint, retrying instead of coming back empty-handed on one break.
+
+    Naver drops a connection now and then, so a single break is not the answer. The wait
+    grows with each attempt, and only after the last one does it give up, leaving a line on
+    stderr rather than raising.
+
+    @param {str} path - Path under the Vibe API base.
+    @param {int} [tries=3] - How many attempts to make.
+    @returns {dict} The decoded response, or an empty dict when every attempt failed.
+    """
     request = urllib.request.Request(
         VIBE + path,
         headers={"Referer": "https://vibe.naver.com/", "Accept": "application/json",
@@ -466,10 +651,15 @@ def vibe_get(path: str, tries: int = 3) -> dict:
 
 
 def seconds(raw: object) -> float:
-    """바이브의 `playTime` 은 `"04:03"` 꼴이다. 초로 바꾼다.
+    """Turn Vibe's `playTime`, written as `"04:03"`, into seconds.
 
-    LRCLIB 의 `duration` 은 초 실수라 그쪽에 맞춰 `float()` 로 읽었는데, 여기서는 그것이
-    통째로 터진다. 삼킨 예외 뒤에서 여섯 곡이 조용히 사라졌다.
+    LRCLIB's `duration` is a float in seconds, so this was read with `float()` to match that
+    side, and here that blows up wholesale — six songs vanished quietly behind a swallowed
+    exception. Numbers pass straight through, `h:mm:ss` and `mm:ss` both fold through the
+    same running multiply, and anything unreadable becomes 0.
+
+    @param {object} raw - The duration as Vibe wrote it, or already a number.
+    @returns {float} The duration in seconds, 0.0 when it cannot be read.
     """
     if isinstance(raw, (int, float)):
         return float(raw)
@@ -480,7 +670,7 @@ def seconds(raw: object) -> float:
         if ":" in text:
             parts = [float(one) for one in text.split(":")]
             total = 0.0
-            for one in parts:  # 시:분:초 든 분:초 든 같은 셈으로 접힌다.
+            for one in parts:
                 total = total * 60 + one
             return total
         return float(text)
@@ -489,10 +679,18 @@ def seconds(raw: object) -> float:
 
 
 def vibe_lines(track: dict) -> dict | None:
-    """트랙 하나의 가사를 받아 우리 모양으로 바꾼다. 싱크가 없으면 버린다.
+    """Fetch one track's lyrics and reshape them into our form, dropping anything unsynced.
 
-    한 곡이 넘어져도 나머지는 간다. 여섯을 함께 쏘는데 그중 하나가 예상 밖의 모양으로
-    오면 `pool.map` 이 그 자리에서 다시 던져 검색 전체가 500 이 된다.
+    One song falling over must not stop the rest. Six are fired off together, and if one of
+    them comes back in an unexpected shape `pool.map` re-raises it on the spot and the whole
+    search turns into a 500.
+
+    The exception is swallowed, but a mark is left behind. An earlier version quietly returned
+    None, the search came back empty-handed, and there was no way to tell what had broken
+    without piecing it back together outside the server.
+
+    @param {dict} track - One track out of the Vibe search result.
+    @returns {dict | None} The song shape with its lines, or None when there is no usable sync.
     """
     if not isinstance(track, dict):
         return None
@@ -519,8 +717,6 @@ def vibe_lines(track: dict) -> dict | None:
             "lines": lines, "instrumental": False, "has_end": False, "source": "vibe",
         }
     except Exception as error:
-        # 삼키되 자국은 남긴다. 앞선 판은 조용히 None 을 돌려주어 검색이 빈손으로 왔는데,
-        # 무엇이 터졌는지 알 길이 없어 서버 밖에서 다시 짜 맞춰야 했다.
         print(f"[vibe] {track.get('trackTitle')!r} 건너뜀: "
               f"{type(error).__name__}: {error}", file=sys.stderr, flush=True)
         return None
@@ -528,15 +724,26 @@ def vibe_lines(track: dict) -> dict | None:
 
 @app.get("/api/vibe")
 def search_vibe(q: str = "", artist: str = "", title: str = "") -> list[dict]:
-    """네이버 바이브에서 가사를 찾는다.
+    """Search Naver Vibe for lyrics.
 
-    한국 곡에는 LRCLIB 보다 이쪽이 낫다. LRCLIB 은 마흔 곡 중 다섯 곡만 쓸 만했고(싱크가 있는
-    열여덟 중 열셋이 로마자였다) 바이브는 쳐 본 여덟 곡이 모두 한글 원문에 싱크까지 있었다.
-    제품이 멜론·지니에서 받는 그 글자와 같은 계열이라 로마자 문제가 아예 없다.
+    For Korean songs this beats LRCLIB. Of forty songs LRCLIB gave only five that were usable
+    (of the eighteen that had a sync, thirteen were romanised), while all eight songs tried on
+    Vibe had the Hangul original and a sync besides. It is the same lineage of text the
+    product gets from Melon and Genie, so the romanisation problem does not arise at all.
 
-    싱크는 나란한 두 배열로 온다 — `startTimeIndex[i]`(초)와 `contents[*].text[i]`. 예전
-    구조(`lyricLine[].startTimeMillis`)는 이제 오지 않는데 `hasSyncLyric` 은 여전히 true 라
-    깃발만 보아서는 알 수 없다.
+    The sync arrives as two parallel arrays — `startTimeIndex[i]` (seconds) and
+    `contents[*].text[i]`. The old structure (`lyricLine[].startTimeMillis`) no longer comes,
+    yet `hasSyncLyric` is still true, so the flag alone tells you nothing.
+
+    Lyrics have to be fetched per track. Fetched in a row, six round trips pile straight up
+    and the person gives up waiting — so they are fired together and put back into search
+    order rather than the order they returned in.
+
+    @param {str} [q=""] - Free-text query.
+    @param {str} [artist=""] - Artist name.
+    @param {str} [title=""] - Track title.
+    @returns {list[dict]} The tracks that carried a usable sync, in search order.
+    @throws {HTTPException} 400 when no search term is given.
     """
     words = " ".join(part for part in (title, artist, q) if part).strip()
     if not words:
@@ -546,8 +753,6 @@ def search_vibe(q: str = "", artist: str = "", title: str = "") -> list[dict]:
     tracks = [row for row in rows if isinstance(row, dict)][:6] if isinstance(rows, list) else []
     if not tracks:
         return []
-    # 트랙마다 가사를 따로 받아야 한다. 줄 세워 받으면 여섯 번의 왕복이 그대로 쌓여
-    # 사람이 기다리다 만다 — 함께 쏘고 온 순서가 아니라 검색 순서로 되돌린다.
     with ThreadPoolExecutor(max_workers=6) as pool:
         got = list(pool.map(vibe_lines, tracks))
     kept = [row for row in got if row]
@@ -557,9 +762,17 @@ def search_vibe(q: str = "", artist: str = "", title: str = "") -> list[dict]:
 
 @app.get("/api/youtube")
 def search_youtube(q: str, want: int = 8) -> list[dict]:
-    """유튜브에서 음원 후보를 찾는다. 내려받지 않고 정보만 본다."""
-    # 찾는 일은 `yt_dlp()` 한 곳에서만 한다. 같은 줄이 여기와 내려받기 쪽에 두 벌로 있었고,
-    # 내려받기만 고쳤더니 검색이 계속 「yt-dlp 가 없다」를 냈다.
+    """Search YouTube for audio candidates, reading the metadata without downloading.
+
+    Locating the binary happens in `yt_dlp()` and nowhere else. The same lines used to sit
+    here and in the download path in two copies, and after fixing only the download path the
+    search went on reporting "yt-dlp is missing".
+
+    @param {str} q - The search query.
+    @param {int} [want=8] - How many results to ask for.
+    @returns {list[dict]} Candidates with video_id, title, uploader and duration.
+    @throws {HTTPException} 503 when `yt-dlp` cannot be found, 504 when YouTube does not answer in time.
+    """
     try:
         binary = yt_dlp()
     except RuntimeError as error:
@@ -583,22 +796,28 @@ def search_youtube(q: str, want: int = 8) -> list[dict]:
     return out
 
 
-# ── 음원 ──────────────────────────────────────────────────────────────────────
-
-# 원본에서 **만들어 낸** 소리들. 원본 옆에 같은 이름으로 두므로 원본을 고를 때 걸러야 한다.
+#: Suffixes of the sounds **made from** the original. They sit next to the original under the
+#: same name, so they have to be filtered out when picking the original.
 MADE_FROM = (".vocals.wav", ".lead.wav", ".back.wav")
 
 
 def audio_path(video_id: str) -> Path | None:
-    """그 곡의 **원본** 음원.
+    """The song's **original** audio.
 
-    파생 파일을 걸러야 한다. 여기를 안 막아 두었다가 크게 당했다 — 보컬을 리드/서브로 가른
-    뒤 `{video_id}.back.wav` 가 생겼는데, 그것이 `.m4a` 보다 사전순으로 앞서서
-    `sorted(...)[0]` 이 **서브 보컬만 남은 소리**를 집었다. 사람이 듣는 재생도, 정렬의
-    바탕도 통째로 그것이 됐다. 「음원이 이상하다 · 목소리가 기계음이다」가 그 증상이다.
+    The derived files have to be filtered out. Not blocking that here cost us dearly — after
+    splitting the vocals into lead and backing, `{video_id}.back.wav` appeared, and since it
+    sorts ahead of `.m4a` alphabetically, `sorted(...)[0]` picked up **the sound with only the
+    backing vocals left**. Both the playback the person heard and the ground the alignment
+    stood on became that file wholesale. "The audio is wrong · the voice sounds robotic" was
+    the symptom.
 
-    probe 들은 이 거르기를 제 안에 갖고 있어서 멀쩡했고, 서버만 틀렸다. 그래서 같은 곡을
-    재는데 값이 달랐다 — **화면이 쓰는 것과 다른 것을 재고 있었다.**
+    The probes carried this filtering inside themselves and were fine; only the server was
+    wrong. That is why measuring the same song gave different numbers — **we were measuring
+    something other than what the screen was using.** Half-finished downloads (`.part`) are
+    skipped as well.
+
+    @param {str} video_id - YouTube video id of the song.
+    @returns {Path | None} Path to the original audio, or None when it has not been downloaded.
     """
     found = sorted(AUDIO.glob(f"{video_id}.*"))
     return next((p for p in found
@@ -606,6 +825,20 @@ def audio_path(video_id: str) -> Path | None:
 
 
 def download(video_id: str) -> None:
+    """Fetch a song's audio with `yt-dlp` and start the alignment the moment it lands.
+
+    Success is judged by whether the file is actually there afterwards, not by the exit code.
+    When the audio arrives the alignment runs **straight away**: the person should never have
+    to press "align with the model" — the only thing they do is review, and what the model
+    produced is the thing to be reviewed. Left as a button it would have to be remembered once
+    per song, and forgetting it means reviewing an empty screen.
+
+    This runs on a background thread, so failures are recorded in `fetching` rather than
+    raised.
+
+    @param {str} video_id - YouTube video id to fetch.
+    @returns {None}
+    """
     binary = yt_dlp()
     try:
         got = subprocess.run(
@@ -618,9 +851,6 @@ def download(video_id: str) -> None:
         with fetch_lock:
             fetching[video_id] = "done" if ok else f"실패: {got.stderr[-200:]}"
         if ok:
-            # 음원이 오면 **바로 맞춘다.** 사람이 「모델로 맞추기」를 누를 일이 없어야 한다 —
-            # 사람이 하는 일은 검수뿐이고, 모델이 낸 것이 곧 검수할 대상이다. 누를 단추로
-            # 두면 곡마다 그 한 번을 기억해야 하고, 잊으면 빈 화면을 검수하게 된다.
             with db() as conn:
                 row = conn.execute("SELECT id FROM songs WHERE video_id=?", (video_id,)).fetchone()
             if row is not None:
@@ -632,6 +862,13 @@ def download(video_id: str) -> None:
 
 @app.post("/api/audio/{video_id}")
 def start_fetch(video_id: str) -> dict:
+    """Start downloading a song's audio, or report the download already in flight.
+
+    Audio already on disk counts as done, so pressing the button again downloads nothing.
+
+    @param {str} video_id - YouTube video id to fetch.
+    @returns {dict} The download state.
+    """
     if audio_path(video_id):
         return {"state": "done"}
     with fetch_lock:
@@ -644,6 +881,14 @@ def start_fetch(video_id: str) -> dict:
 
 @app.get("/api/audio/{video_id}")
 def fetch_state(video_id: str) -> dict:
+    """Report the download state of one song's audio.
+
+    A file already on disk counts as done whatever the in-memory table says, because that
+    table does not survive a restart.
+
+    @param {str} video_id - YouTube video id.
+    @returns {dict} The download state.
+    """
     if audio_path(video_id):
         return {"state": "done"}
     with fetch_lock:
@@ -652,20 +897,29 @@ def fetch_state(video_id: str) -> dict:
 
 @app.get("/audio/{video_id}")
 def serve_audio(video_id: str):
-    """FileResponse 가 Range 를 다룬다 — 그것이 없으면 브라우저가 앞으로 감기를 못 한다."""
+    """Serve the original audio.
+
+    `FileResponse` handles Range — without it the browser cannot seek.
+
+    @param {str} video_id - YouTube video id.
+    @returns {FileResponse} The original audio file.
+    @throws {HTTPException} 404 when the audio has not been downloaded yet.
+    """
     path = audio_path(video_id)
     if path is None:
         raise HTTPException(404, "아직 안 받았다")
     return FileResponse(path, media_type="audio/mp4")
 
 
-# 그 곡을 다루며 만들어 낸 것들. 무엇에서 무엇이 나왔는지도 함께 적는다.
-#
-# 이름은 화면에 그대로 나가므로 여기서 정한다. `MADE_FROM` 과 짝이 맞아야 한다 —
-# 갈래를 더하면 두 곳을 같이 고쳐야 한다.
+#: Everything made while working on a song, along with what each one came out of.
+#:
+#: The labels go straight to the screen, so they are decided here. This has to stay paired
+#: with `MADE_FROM` — adding a stem means fixing both places together.
+#:
+#: demucs was dropped in favour of BS-Roformer. A person listened to the two side by side and
+#: decided: the demucs version was "not great at stripping the backing", and the alignment
+#: scores were the same, so the only difference was the sound.
 STEMS = {
-    # demucs 를 버리고 BS-Roformer 로 갈아탔다. 사람이 둘을 나란히 듣고 정했다 —
-    # demucs 판은 「반주 걷어낸 게 별로」였고, 맞추기 성적은 같았으니 차이는 소리뿐이었다.
     "vocals": (".vocals.wav", "보컬", "BS-Roformer 가 반주를 걷어 낸 것 (SDR 12.98)", "원본"),
     "lead": (".lead.wav", "리드", "카라오케 모델이 가른 주 목소리 · 정렬의 바탕", "보컬"),
     "back": (".back.wav", "서브", "백보컬·애드리브 · 무너진 줄을 구제하는 데 쓴다", "보컬"),
@@ -673,11 +927,15 @@ STEMS = {
 
 
 def wav_form(path: Path) -> str | None:
-    """그 wav 가 어떤 모양인가 — `44.1kHz · 2ch · 24bit`.
+    """What shape that wav has — `44.1kHz · 2ch · 24bit`.
 
-    화면에 내보이는 이유가 있다. 갈래를 16 kHz 홑소리로 남겨 두고 44.1 kHz 스테레오를 바라는
-    모델에 넣고 있었는데, **숫자가 어디에도 안 보여서** 사람이 「소리가 깨진다」고 말해 줄
-    때까지 몰랐다. 보이면 바로 안다.
+    There is a reason for putting it on screen. The stems were being left at 16 kHz mono and
+    fed to a model that wants 44.1 kHz stereo, and **because the numbers were nowhere to be
+    seen** nobody knew until a person said "the sound breaks up". Once shown, it is obvious at
+    a glance.
+
+    @param {Path} path - Path to the wav file.
+    @returns {str | None} The formatted shape, or None when the file is missing or unreadable.
     """
     import wave as wav
     if not path.exists():
@@ -694,10 +952,16 @@ def wav_form(path: Path) -> str | None:
 
 @app.get("/api/songs/{song_id}/workspace")
 def workspace(song_id: int) -> dict:
-    """그 곡의 **작업실** — 어떤 파일이 만들어졌고 각 단계가 무엇을 냈나.
+    """That song's **workshop** — which files were made, and what each step produced.
 
-    검수하다 「이 시각이 어디서 나온 거지」가 늘 막힌다. 원본과 갈래를 나란히 듣고 단계마다의
-    결과를 함께 보면 그 물음에 스스로 답할 수 있다.
+    While reviewing, "where did this timing come from" is forever the thing that blocks the
+    way. Listening to the original and the stems side by side while seeing each step's result
+    lets a person answer that question themselves. A step whose file is missing has simply not
+    been done yet.
+
+    @param {int} song_id - Row id of the song.
+    @returns {dict} `files` for the original and every stem, and `steps` for what each stage produced.
+    @throws {HTTPException} 404 when no song has that id.
     """
     with db() as conn:
         row = conn.execute("SELECT * FROM songs WHERE id=?", (song_id,)).fetchone()
@@ -723,7 +987,6 @@ def workspace(song_id: int) -> dict:
             "form": wav_form(got),
         })
 
-    # 단계마다 무엇이 나왔나. 파일이 없으면 그 단계는 아직 안 한 것이다.
     lines = json.loads(row["lines"])
     placed = [one for one in lines if one.get("words")]
     chars = [c for one in placed for w in one["words"] for c in (w.get("chars") or [])]
@@ -747,7 +1010,15 @@ def workspace(song_id: int) -> dict:
 
 @app.get("/stem/{video_id}/{kind}")
 def serve_stem(video_id: str, kind: str):
-    """가른 갈래를 들려준다. 원본과 나란히 들어야 무엇이 갈렸는지 안다."""
+    """Play back one split stem.
+
+    It has to be heard next to the original before you can tell what was split off.
+
+    @param {str} video_id - YouTube video id.
+    @param {str} kind - Stem key, one of `STEMS`.
+    @returns {FileResponse} The stem file.
+    @throws {HTTPException} 404 when the stem is unknown or has not been made yet.
+    """
     if kind not in STEMS:
         raise HTTPException(404, "그런 갈래가 없다")
     path = AUDIO / f"{video_id}{STEMS[kind][0]}"
@@ -756,11 +1027,15 @@ def serve_stem(video_id: str, kind: str):
     return FileResponse(path, media_type="audio/wav")
 
 
-# ── 내보내기 ──────────────────────────────────────────────────────────────────
-
 @app.get("/api/export")
 def export() -> JSONResponse:
-    """검수를 통과한 것만 정답 파일 모양으로 내보낸다."""
+    """Export only what passed review, in the shape of the ground-truth file.
+
+    Only the `good` and `off` verdicts go out. The shift a person dialled in is added here
+    before it leaves, so the measuring side can use the lines as they are.
+
+    @returns {JSONResponse} The ground-truth rows, sent as a `korean-truth.json` attachment.
+    """
     with db() as conn:
         rows = conn.execute("SELECT * FROM songs WHERE verdict IN ('good','off') ORDER BY artist").fetchall()
     out = []
@@ -770,13 +1045,13 @@ def export() -> JSONResponse:
         out.append({
             "video_id": row["video_id"], "artist": row["artist"], "title": row["title"],
             "language": row["language"], "duration": row["duration"],
-            # 사람이 맞춘 치우침은 여기서 미리 더해 내보낸다. 재는 쪽은 그대로 쓰면 된다.
             "lines": [{"at": line["at"] + shift, "text": line["text"]} for line in lines],
         })
     return JSONResponse(out, headers={"Content-Disposition": 'attachment; filename="korean-truth.json"'})
 
 
-# Vite 가 빌드한 것을 그대로 내준다. /api 와 /audio 를 먼저 잡아 두었으므로 나머지가 화면이다.
+#: Directory Vite builds the UI into; it is served as built. /api and /audio are claimed
+#: first, so everything left over is the screen.
 DIST = HERE / "ui" / "dist"
 if (DIST / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
@@ -784,15 +1059,21 @@ if (DIST / "assets").is_dir():
 
 @app.get("/{whatever:path}", response_class=HTMLResponse)
 def index(whatever: str = "") -> HTMLResponse:
+    """Serve the built screen for every path the API and audio routes did not claim.
+
+    This document is never cached. Bundle filenames carry a hash, so a rebuild changes their
+    names, but the thing pointing at those names is this document. Once it is cached the
+    browser goes on loading the old bundle even after a fresh build is deployed — server,
+    source and bundle all current while only the screen is old, and that was hunted for a long
+    time as a code problem.
+
+    @param {str} [whatever=""] - The requested path, which is ignored.
+    @returns {HTMLResponse} The built `index.html`, served with caching turned off.
+    @throws {HTTPException} 503 when the screen has not been built yet.
+    """
     page = DIST / "index.html"
     if not page.exists():
         raise HTTPException(503, "화면이 아직 안 지어졌다 — ui 에서 npm run build")
-    # 이 문서는 캐시하지 않는다.
-    #
-    # 번들 파일 이름에는 해시가 붙어 새로 지으면 이름이 바뀌지만, 그 이름을 가리키는 것은
-    # 이 문서다. 이것이 캐시되면 새로 지어 올려도 브라우저는 옛 번들을 계속 불러온다 —
-    # 서버도 소스도 번들도 최신인데 화면만 옛것인 상태가 되고, 그것을 코드 문제로 알고
-    # 한참 뒤졌다.
     return HTMLResponse(page.read_text(encoding="utf-8"),
                         headers={"Cache-Control": "no-store, must-revalidate"})
 

@@ -12,7 +12,7 @@ import sys
 
 from audio_separator.separator import Separator
 
-# 보컬 갈래가 아닌 것들. 이름으로 거른다.
+#: 보컬 갈래가 아닌 것들. 이름으로 거른다.
 SKIP = ("kara", "deverb", "denoise", "crowd", "aspir", "drum", "bass",
         "guitar", "piano", "reverb", "echo", "noise", "male", "female")
 

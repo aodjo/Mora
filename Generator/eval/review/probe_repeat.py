@@ -43,13 +43,13 @@ for row in rows[:how_many]:
     lines = json.loads(row["lines"])
     got = align.align_song(found, lines, words_of)
 
-    # 곡 전체의 치우침은 뺀다. 그것은 음원이 달라 생긴 것이지 정렬의 흔들림이 아니다.
+    #: 곡 전체의 치우침(`bias`)은 뺀다. 그것은 음원이 달라 생긴 것이지 정렬의 흔들림이 아니다.
     pairs = [(i, one) for i, one in enumerate(got) if one and lines[i].get("at") is not None]
     if not pairs:
         continue
     bias = middle([one[0]["at"] - lines[i]["at"] for i, one in pairs])
 
-    # 같은 글월이 몇 번 나오나. 띄어쓰기와 대소문자만 고르고 그대로 센다.
+    #: 같은 글월이 몇 번 나오나. 띄어쓰기와 대소문자만 고르고 그대로 센다.
     said = Counter(re.sub(r"\s+", " ", line.get("text", "")).strip().lower() for line in lines)
 
     print(f"\n  [{row['id']}] {row['artist'][:14]} — {row['title'][:24]} · 줄 {len(lines)}")
@@ -57,7 +57,8 @@ for row in rows[:how_many]:
     for i, one in pairs:
         text = re.sub(r"\s+", " ", lines[i].get("text", "")).strip().lower()
         off = abs(one[0]["at"] - lines[i]["at"] - bias)
-        # 그 줄이 얼마나 촘촘히 욱여넣어졌나. 사람이 낼 수 없는 속도면 정렬이 무너진 것이다.
+        #: 그 줄이 얼마나 촘촘히 욱여넣어졌나. 사람이 낼 수 없는 속도(`rate`)면 정렬이
+        #: 무너진 것이다.
         chars = [c for w in one for c in (w.get("chars") or [])]
         span = (chars[-1]["at"] - chars[0]["at"]) if len(chars) > 1 else 0
         rate = len(chars) / (span / 1000) if span > 0 else 0.0

@@ -14,6 +14,11 @@ Small girl 의 20·62 번(`(If, if I got a…)`)이 지금 쓰는 BS-Roformer �
 
 자리는 **밖에서 온 줄 시각**으로 잡는다. 우리 정렬로 잡으면 「줄이 간주에 놓였을 때」와
 구별이 안 된다.
+
+덫이 둘 있다. 모델 이름을 **자르면 안 된다** — `mel_band_roformer_ki…` 로 시작하는 것이
+넷이라 20 자로 자르니 서로 같은 파일을 가리켰고, 세 모델이 앞엣것의 결과를 그대로
+재사용했다(0 초로 찍혔다). 보컬 갈래를 찾을 때 **대소문자를 가려서도 안 된다** — 판마다
+`(Vocals)` 와 `(vocals)` 가 섞여 나와, 세 모델이 「보컬 갈래가 없다」로 빠졌다.
 """
 import json
 import subprocess
@@ -26,18 +31,21 @@ import torch
 
 HERE = Path(__file__).parent
 RATE = 16_000
-# 견줄 모델들. 이름은 `audio-separator` 의 파일 이름 그대로다.
+#: 견줄 모델들. 이름은 `audio-separator` 의 파일 이름 그대로다. 세 무리로 나뉜다.
+#:
+#: **BVE 는 백보컬 전용**이다(BVE = Backing Vocal Extraction). 보컬 모델이 「주 목소리가
+#: 아니다」로 버리는 것을 바로 이 모델이 집어내라고 만들어졌다.
+#:
+#: **카라오케 모델은 원본에 바로** 걸어 본다. 그 「instrumental」 쪽에는 리드를 뺀 나머지가
+#: 다 들어가므로 백보컬이 살아 있을 수 있다.
+#:
+#: **Kim FT 셋**은 앞 판에서 이름 잘림 때문에 남의 결과를 쓴 것들이다. 제대로 다시 잰다.
 MODELS = [
-    # **백보컬 전용.** BVE = Backing Vocal Extraction. 보컬 모델이 「주 목소리가 아니다」로
-    # 버리는 것을 바로 이 모델이 집어내라고 만들어졌다.
     ("BVE 4B SN 1", "UVR-BVE-4B_SN-44100-1.pth"),
     ("BVE 4B SN 2", "UVR-BVE-4B_SN-44100-2.pth"),
-    # 카라오케 모델을 **원본에 바로** 걸어 본다. 그 「instrumental」 쪽에는 리드를 뺀
-    # 나머지가 다 들어가므로 백보컬이 살아 있을 수 있다.
     ("카라오케 aufr33 (원본에)", "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"),
     ("카라오케 gabox v2 (원본에)", "mel_band_roformer_karaoke_gabox_v2.ckpt"),
     ("카라오케 becruily (원본에)", "mel_band_roformer_karaoke_becruily.ckpt"),
-    # 앞 판에서 이름 잘림 때문에 남의 결과를 쓴 셋. 제대로 다시 잰다.
     ("Kim FT2 unwa", "mel_band_roformer_kim_ft2_unwa.ckpt"),
     ("Kim FT3 unwa", "mel_band_roformer_kim_ft3_unwa.ckpt"),
     ("Kim FT2 Bleedless", "mel_band_roformer_kim_ft2_bleedless_unwa.ckpt"),
@@ -62,7 +70,7 @@ def loud(wave, since: int, until: int) -> float:
 
 song = Path(sys.argv[1] if len(sys.argv) > 1 else "audio/UIBmWmDP1RU.m4a")
 lines = json.loads(Path(sys.argv[2] if len(sys.argv) > 2 else "lines.json").read_text())
-# 사라진다고 짚인 줄. 나머지는 견줄 바탕이 된다.
+#: 사라진다고 짚인 줄. 나머지는 견줄 바탕이 된다.
 GONE = {int(one) for one in (sys.argv[3].split(",") if len(sys.argv) > 3 else ["20", "62"])}
 
 raw = read(song)[0]
@@ -75,7 +83,7 @@ for (index, at), (_, nxt) in zip(timed, timed[1:] + [(None, timed[-1][1] + 4000)
 
 work = Path("out")
 work.mkdir(exist_ok=True)
-# 원본을 wav 로 한 번만 풀어 둔다 — audio-separator 는 soundfile 로 읽어 m4a 를 못 연다.
+#: 원본을 wav 로 한 번만 풀어 둔 것. audio-separator 는 soundfile 로 읽어 m4a 를 못 연다.
 src = work / "src.wav"
 if not src.exists():
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(song),
@@ -86,8 +94,6 @@ from audio_separator.separator import Separator  # noqa: E402
 print(f"  {song.name} · 줄 {len(lines)} · 사라진다고 짚인 줄 {sorted(GONE)}\n")
 print(f"  {'모델':<26} {'시간':>6} {'사라진 줄':>9} {'멀쩡한 줄':>9} {'곡 전체':>8}")
 for name, filename in MODELS:
-    # 이름을 자르면 안 된다. `mel_band_roformer_ki…` 로 시작하는 것이 넷이라 20 자로 자르니
-    # 서로 같은 파일을 가리켰고, 세 모델이 앞엣것의 결과를 그대로 재사용했다(0 초로 찍혔다).
     into = work / f"{filename.replace('/', '_')}.out.wav"
     try:
         began = time.time()
@@ -96,8 +102,6 @@ for name, filename in MODELS:
             apart.torch_device = torch.device("cuda")
             apart.load_model(model_filename=filename)
             made = apart.separate(str(src))
-            # 이름을 대소문자 가려 찾으면 안 된다. 판마다 `(Vocals)` 와 `(vocals)` 가 섞여
-            # 나와, 세 모델이 「보컬 갈래가 없다」로 빠졌다.
             picked = next((one for one in made if "(vocals)" in one.lower()), None)
             if picked is None:
                 print(f"  {name:<26} 보컬 갈래가 없다: {made}")

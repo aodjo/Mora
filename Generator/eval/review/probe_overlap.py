@@ -38,14 +38,14 @@ for row in conn.execute("SELECT id, artist, title, lines FROM songs ORDER BY id"
     both = cross = 0
     tales = []
     for (a, (a0, a1), la), (b, (b0, b1), lb) in zip(spans, spans[1:]):
-        if b0 < a1:                     # 다음 줄이 앞 줄이 끝나기 전에 시작한다
+        if b0 < a1:
             both += 1
             if la != lb:
                 cross += 1
                 if len(tales) < 3:
                     tales.append(f"{a}({la})↔{b}({lb}) {(a1 - b0) / 1000:.1f}초")
-    # **차례가 뒤집혔는가.** 뒷줄이 앞줄보다 먼저 시작하면 화면이 앞뒤로 튄다 — 지금 줄을
-    # 「시각이 지난 마지막 줄」로 고르기 때문이다. 겹침보다 이쪽이 훨씬 나쁘다.
+    #: **차례가 뒤집힌 줄.** 뒷줄이 앞줄보다 먼저 시작하면 화면이 앞뒤로 튄다 — 지금 줄을
+    #: 「시각이 지난 마지막 줄」로 고르기 때문이다. 겹침보다 이쪽이 훨씬 나쁘다.
     back = [(a, b, (a0 - b0) / 1000)
             for (a, (a0, _), _), (b, (b0, _), _) in zip(spans, spans[1:]) if b0 < a0]
 

@@ -1,16 +1,25 @@
 /**
- * 작업실 — 그 곡을 다루며 만들어 낸 것들을 한자리에 놓는다.
+ * Workspace — puts everything produced from a song in one place.
  *
- * 검수하다 「이 시각이 어디서 나온 거지」에서 늘 막힌다. 원본과 갈래를 **나란히 같은 자리에서**
- * 들어 보면 그 물음에 스스로 답할 수 있다 — 백보컬이 리드에 섞여 있는지, 반주가 새어 들었는지는
- * 숫자로는 안 보이고 귀로만 안다.
+ * Review always gets stuck on "where did this timestamp come from?". Listening to the original and
+ * a stem **side by side at the same position** lets you answer that question yourself — whether
+ * backing vocals are mixed into the lead, or whether the accompaniment bled through, is not
+ * visible in the numbers and is known only by ear.
  *
- * 그래서 재생 자리를 공유한다. 갈래를 바꿔도 듣던 지점이 그대로다.
+ * That is why the playback position is shared: switching stems keeps the exact point you were
+ * listening to.
  */
 import { motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { clock } from "./api";
 
+/**
+ * One artifact produced from the song, as returned by the workspace endpoint.
+ *
+ * `from` names the artifact this one was derived from; a null `from` marks a root, which is the
+ * original. `url` is null while the artifact has not been produced yet, and such a row is shown
+ * as disabled rather than hidden.
+ */
 interface Made {
   key: string;
   name: string;
@@ -20,40 +29,60 @@ interface Made {
   bytes: number | null;
   made_at: number | null;
   url: string | null;
-  /** `44.1kHz · 2ch · 24bit`. 없으면 원본이거나 아직 안 만든 것. */
+  /** `44.1kHz · 2ch · 24bit`. Absent when the entry is the original or has not been made yet. */
   form?: string | null;
 }
 
+/** One stage the song has passed through, in pipeline order. */
 interface Step {
   name: string;
   done: boolean;
   got: string;
 }
 
+/** Props for the {@link Workspace} component. */
 interface Props {
   songId: number;
-  /** 지금 울리고 있는 갈래. `origin` 이면 원본. */
+  /** The stem currently sounding. `origin` means the original. */
   stem: string;
   onStem: (key: string, url: string) => void;
   nowMs: number;
   totalMs: number;
   /**
-   * 맞추는 중인가. **끝나는 순간 다시 읽어야 한다.**
+   * Whether an alignment run is in progress. **The workspace must be re-read the moment it ends.**
    *
-   * 곡이 바뀔 때만 읽었더니, 갈래를 새로 만들고 나서도 옛 크기와 옛 시각이 그대로 보였다 —
-   * 「다시 만들었는데 아직 옛것이 남아 있다」로 읽힌다.
+   * Reading only when the song changed left the old size and the old timestamp on screen even
+   * after a stem had just been remade — which reads as "I remade it and the old one is still
+   * there".
    */
   busy: boolean;
 }
 
-/** 사람이 읽는 크기. 바이트 그대로 두면 큰지 작은지 안 읽힌다. */
+/**
+ * Formats a byte count as a size a person can read.
+ *
+ * Left as raw bytes, a size does not read as large or small, so anything below 1 MiB is rendered
+ * in whole KB and anything above it in MB with one decimal. An unknown size renders as an em dash.
+ *
+ * @param {number|null} bytes - Size in bytes, or null when unknown.
+ * @returns {string} Human-readable size such as `812 KB` or `4.3 MB`, or `—` when unknown.
+ */
 function heft(bytes: number | null): string {
   if (bytes === null) return "—";
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** 언제 만들었나. 오늘 것은 시각만, 지난 것은 날짜까지. */
+/**
+ * Formats the time an artifact was made.
+ *
+ * Anything made today shows the time only; anything older is prefixed with month and day, so the
+ * common case stays short while older entries stay unambiguous. An unknown stamp renders as an
+ * em dash.
+ *
+ * @param {number|null} stamp - Unix timestamp in seconds, or null when unknown.
+ * @returns {string} `HH:MM` for today, `M/D HH:MM` otherwise, or `—` when unknown.
+ */
 function when(stamp: number | null): string {
   if (stamp === null) return "—";
   const at = new Date(stamp * 1000);
@@ -64,12 +93,33 @@ function when(stamp: number | null): string {
   return sameDay ? `${hh}:${mm}` : `${at.getMonth() + 1}/${at.getDate()} ${hh}:${mm}`;
 }
 
+/**
+ * Renders the workspace panel: the stages the song has passed through and everything made from it.
+ *
+ * The artifact list is re-read from `/api/songs/{id}/workspace` on both `songId` and `busy`, so the
+ * refetch also fires when `busy` goes from true to false — that is, the moment an alignment run
+ * finishes. An in-flight response is dropped once the effect is cleaned up, so a late reply cannot
+ * overwrite newer state.
+ *
+ * Stages are numbered because they are ordered: without the earlier stage there is no later one.
+ * Each artifact row is indented under whatever it came from, with the original as the root, so the
+ * derivation is visible on the left edge.
+ *
+ * Rows also print the sample-rate form. A stem had been left at 16 kHz mono and fed to a model that
+ * expects 44.1 kHz; because the number was nowhere on screen, nobody noticed until a person said it
+ * "sounded broken".
+ *
+ * Clicking a row swaps the sounding stem while keeping the playback position, which is the whole
+ * point of the panel. Rows with no `url` are disabled.
+ *
+ * @param {Props} props - Component props.
+ * @returns {JSX.Element} The workspace panel.
+ */
 export function Workspace({ songId, stem, onStem, nowMs, totalMs, busy }: Props) {
   const [files, setFiles] = useState<Made[]>([]);
   const [steps, setSteps] = useState<Step[]>([]);
   const [failed, setFailed] = useState("");
 
-  // `busy` 가 참에서 거짓으로 바뀔 때, 곧 맞추기가 끝날 때 다시 읽는다.
   useEffect(() => {
     let alive = true;
     setFailed("");
@@ -89,7 +139,6 @@ export function Workspace({ songId, stem, onStem, nowMs, totalMs, busy }: Props)
       <div className="shop-cols">
         <section className="shop-side">
           <h3 className="shop-head">거쳐 온 자리</h3>
-          {/* 단계는 차례가 있으므로 번호를 매긴다 — 앞 단계가 없으면 뒤가 없다. */}
           <ol className="steps">
             {steps.map((one, at) => (
               <li key={one.name} className={`step ${one.done ? "done" : ""}`}>
@@ -121,7 +170,6 @@ export function Workspace({ songId, stem, onStem, nowMs, totalMs, busy }: Props)
                     animate={{ scale: here ? 1.008 : 1 }}
                     transition={{ type: "spring", duration: 0.34, bounce: 0.3 }}
                   >
-                    {/* 무엇에서 나왔는지 왼쪽에 들여쓰기로 보인다 — 원본이 뿌리다. */}
                     <span className={`made-tree ${one.from ? "child" : ""}`}>
                       {one.from ? "└" : "●"}
                     </span>
@@ -134,9 +182,6 @@ export function Workspace({ songId, stem, onStem, nowMs, totalMs, busy }: Props)
                       <i>{one.note}</i>
                       <code>
                         {one.name}
-                        {/* 표본율을 내보인다. 갈래를 16 kHz 홑소리로 남겨 두고 44.1 kHz 를
-                            바라는 모델에 넣고 있었는데, 숫자가 안 보여서 사람이 「깨진다」고
-                            말해 줄 때까지 몰랐다. */}
                         {one.form && <em>{one.form}</em>}
                       </code>
                     </span>

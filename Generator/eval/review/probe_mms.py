@@ -44,7 +44,7 @@ def mms_align(path: Path, lines: list[dict]) -> list[int | None]:
     voice = audio.to(torch.float32)
     voice = (voice - voice.mean()) / (voice.std() + 1e-7)
 
-    # 조각내어 추론하고 이어 붙인다. 지금 쓰는 것과 같은 방식이라야 견줄 수 있다.
+    #: 조각내어 추론하고 이어 붙인다. 지금 쓰는 것과 같은 방식이라야 견줄 수 있다.
     stride, pieces, at = 320, [], 0
     step = (30 * align.SAMPLE_RATE // stride) * stride
     edge = (2 * align.SAMPLE_RATE // stride) * stride
@@ -58,7 +58,7 @@ def mms_align(path: Path, lines: list[dict]) -> list[int | None]:
         at = stop
     log_probs = torch.log_softmax(torch.cat(pieces, dim=1), dim=-1)
 
-    # 한글을 로마자로 옮겨 어휘에 넣는다. 줄마다 첫 토큰이 몇 번째인지 기억해 둔다.
+    #: 한글을 로마자로 옮겨 어휘에 넣는다. 줄마다 첫 토큰이 몇 번째인지 기억해 둔다.
     tokens: list[int] = []
     firsts: list[int | None] = []
     for line in lines:

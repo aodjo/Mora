@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""강제 정렬이 실제로 되는지, 얼마나 걸리는지 한 곡으로 재 본다."""
+"""**강제 정렬이 실제로 되는지, 얼마나 걸리는지** 한 곡으로 재 본다.
+
+맞춘 뒤 여섯 가지를 훑는다:
+
+1. **낱말 길이가 그럴듯한가.** 0.06 초짜리가 줄줄이면 프레임 묶기가 또 깨진 것이다.
+2. **낱말 사이의 틈.** 음수면 겹친 것이고, 너무 크면 어느 한쪽이 제 길이를 못 가진 것이다.
+3. **글자끼리 이어졌는가.** 어절 안에서는 틈이 0 이어야 한다.
+4. **어절이 제 글자를 감싸는가.** 어긋나면 화면에서 글자가 막대 밖으로 나간다.
+5. **글자가 한 자리에 몰린 곳.** 0.04 초 안에 붙은 것은 사람이 낼 수 없는 간격이다.
+6. **진짜 잣대 — 밖에서 온 줄 시각과 견준다.** 바이브·LRCLIB 이 준 줄 시작 시각이 자다.
+
+확신도는 잣대로 쓰지 않는다. 그것은 「모델의 1순위가 그 글자와 같은가」를 재는데, 1순위가
+달라도 시각은 맞을 수 있다. 우리가 알고 싶은 것은 시각이므로, 밖에서 온 줄 시각과 대는
+것이 옳다.
+"""
 import json
 import re
 import sqlite3
@@ -48,13 +62,11 @@ spent = time.time() - began
 done = sum(1 for one in got if one)
 words = sum(len(one) for one in got)
 print(f"  맞춤 {spent:.1f}초 · 줄 {done}/{len(lines)} · 낱말 {words}")
-# 낱말 길이가 그럴듯한지. 0.06 초짜리가 줄줄이면 프레임 묶기가 또 깨진 것이다.
 spans = sorted((w["end"] - w["at"]) / 1000 for one in got for w in one)
 if spans:
     mid = spans[len(spans) // 2]
     print(f"  낱말 길이 최소 {spans[0]:.2f}s · 가운뎃값 {mid:.2f}s · 최대 {spans[-1]:.2f}s")
     print(f"  0.1초 미만 {sum(1 for one in spans if one < 0.1)}개 · 2초 초과 {sum(1 for one in spans if one > 2)}개")
-    # 낱말 사이의 틈. 음수면 겹친 것이고, 너무 크면 어느 한쪽이 제 길이를 못 가진 것이다.
     gaps = []
     for one in got:
         for a, b in zip(one, one[1:]):
@@ -68,7 +80,6 @@ if grains:
     lens = sorted((g["end"] - g["at"]) / 1000 for g in grains)
     print(f"  글자 {len(grains)}개 · 길이 가운뎃값 {lens[len(lens) // 2]:.2f}s "
           f"· 0.05초 미만 {sum(1 for one in lens if one < 0.05)}개 · 최대 {lens[-1]:.2f}s")
-    # 글자끼리 이어졌는가. 어절 안에서는 틈이 0 이어야 한다.
     holes = []
     for one in got:
         for w in one:
@@ -77,12 +88,10 @@ if grains:
     if holes:
         print(f"  어절 안 글자 사이 틈: 0 이 아닌 것 {sum(1 for h in holes if abs(h) > 0.001)}개 / {len(holes)}")
 
-# 어절이 제 글자를 감싸는가. 어긋나면 화면에서 글자가 막대 밖으로 나간다.
 bad = [w for one in got for w in one
        if w.get("chars") and (w["at"] > w["chars"][0]["at"] or w["end"] < w["chars"][-1]["end"])]
 print(f"  글자가 어절 밖으로 나간 것 {len(bad)}개" + ("" if not bad else f"  보기: {bad[0]['text']}"))
 
-# 글자가 한 자리에 몰린 곳. 0.04 초 안에 붙은 것은 사람이 낼 수 없는 간격이다.
 starts = [g["at"] for one in got for w in one for g in (w.get("chars") or [{"at": w["at"]}])]
 tight = sum(1 for a, b in zip(starts, starts[1:]) if 0 <= b - a <= 40)
 print(f"  0.04초 안에 붙은 글자 {tight}개 / {len(starts)}")
@@ -93,10 +102,6 @@ if sures:
     print(f"  확신도 가운뎃값 {sures[len(sures) // 2]:.2f} · 가장 낮은 것 {sures[0]:.2f}")
     print(f"  미심쩍다고 짚은 글자 {shaky}개 / {len(sures)}  ({shaky / len(sures):.0%})")
 
-# 진짜 잣대: 바이브·LRCLIB 이 준 **줄 시작 시각**과 견준다.
-#
-# 확신도는 「모델의 1순위가 그 글자와 같은가」를 재는데, 1순위가 달라도 시각은 맞을 수 있다.
-# 우리가 알고 싶은 것은 시각이므로, 밖에서 온 줄 시각과 대는 것이 옳다.
 gaps = []
 for index, one in enumerate(got):
     if not one:

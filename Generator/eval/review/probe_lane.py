@@ -16,6 +16,8 @@ import align  # noqa: E402
 
 NOT_A_WORD = re.compile(r"^[♪♫🎵🎶~\-–—…·.,()\[\]{}\"'“”‘’!?]+$")
 TRUTH = {7: {18, 19, 20, 60, 61, 62}}
+#: 혼자 부르는 곡. 화자로 갈리면 안 된다. 레인 1 이 있어도 그것은 백보컬 구제일 수 있으니
+#: 몇 줄인지로 가늠한다 — 화자 갈림은 이어진 덩어리라 대개 여러 줄이다.
 SOLO = {1, 2, 4, 5, 6}
 GROUP = {9}
 
@@ -28,7 +30,7 @@ conn = sqlite3.connect(HERE / "review.db")
 conn.row_factory = sqlite3.Row
 rows = conn.execute("SELECT id, artist, title, video_id, lines FROM songs ORDER BY id").fetchall()
 how_many = int(sys.argv[1]) if len(sys.argv) > 1 else 9
-# 문턱을 밖에서 준다. 곡을 더 넣을 때마다 다시 정해야 하는 값이라 코드를 고치지 않고 잰다.
+#: 문턱을 밖에서 준다. 곡을 더 넣을 때마다 다시 정해야 하는 값이라 코드를 고치지 않고 잰다.
 if len(sys.argv) > 2:
     align.VOICE_RUN = int(sys.argv[2])
     align.VOICE_RUN_TOLD = int(sys.argv[2])
@@ -52,8 +54,6 @@ for row in rows[:how_many]:
     elif row["id"] in GROUP:
         mark = "  ◀ 그룹 (여럿이 번갈아 부른다)"
     elif row["id"] in SOLO:
-        # 솔로 곡은 화자로 갈리면 안 된다. 레인 1 이 있어도 그것은 백보컬 구제일 수 있으니
-        # 몇 줄인지로 가늠한다 — 화자 갈림은 이어진 덩어리라 대개 여러 줄이다.
         mark = "  ◀ 솔로 (안 갈려야 맞다)"
     print(f"  {name:<34} 레인 {dict(sorted(tally.items()))}{mark}", flush=True)
 

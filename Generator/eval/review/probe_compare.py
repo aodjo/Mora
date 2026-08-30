@@ -8,7 +8,8 @@
 2. **안 옮긴 줄이 덩달아 움직였나.** 못을 박으면 그 자리에서 정렬을 가르므로, 못 옆의
    줄들이 다시 맞춰진다. 그때 나빠지는 줄이 있으면 그게 이 방식의 값이다.
 
-문턱(`EVIDENCE`)을 여러 개 훑어 고친 줄과 망가뜨린 줄을 나란히 센다.
+문턱(`EVIDENCE`)을 여러 개 훑어 고친 줄과 망가뜨린 줄을 나란히 센다. 둘을 가르는 자는
+0.5 초다 — 그보다 크게 옮겨졌으면 못을 박은 줄이고, 그보다 적으면 덩달아 움직인 줄이다.
 """
 import json
 import re
@@ -21,7 +22,7 @@ sys.path.insert(0, str(HERE))
 import align  # noqa: E402
 
 NOT_A_WORD = re.compile(r"^[♪♫🎵🎶~\-–—…·.,()\[\]{}\"'“”‘’!?]+$")
-MOVED_MS = 100      # 이만큼 넘게 움직였으면 「움직였다」고 본다
+MOVED_MS = 100  #: 이만큼 넘게 움직였으면 「움직였다」고 본다.
 
 
 def words_of(text: str) -> list[str]:
@@ -53,7 +54,7 @@ for row in conn.execute("SELECT id, artist, title, video_id, lines FROM songs OR
     if found:
         songs.append((row, found, json.loads(row["lines"])))
 
-# 끄고 한 번. 이것이 견줄 바탕이다.
+#: 2 차 되짚기를 끄고 한 번 맞춘 결과. 이것이 견줄 바탕이 된다.
 real_rethink = align.rethink
 align.rethink = lambda *a, **k: []
 base = {}
@@ -79,7 +80,6 @@ for mark in thresholds:
             if abs(a - b) <= MOVED_MS:
                 continue
             before, after = abs(was_offs[index]), abs(now_offs[index])
-            # 크게 옮겨졌으면 그건 못을 박은 줄이고, 조금이면 덩달아 움직인 줄이다.
             if abs(a - b) > 500:
                 moved += 1
                 if after < before - 100:

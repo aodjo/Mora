@@ -36,7 +36,7 @@ lines = json.loads(row["lines"])
 print(f"[{row['id']}] {row['artist']} — {row['title']} · 줄 {len(lines)}")
 got = align.align_song(found, lines, words_of)
 
-# 밖에서 온 줄 시각과 견줘 얼마나 어긋났나. 곡 전체의 치우침은 빼고 본다.
+#: 밖에서 온 줄 시각과 견줘 얼마나 어긋났나. 곡 전체의 치우침은 빼고 본다.
 pairs = [(i, one[0]["at"] - lines[i]["at"]) for i, one in enumerate(got)
          if one and lines[i].get("at") is not None]
 mid = sorted(gap for _, gap in pairs)[len(pairs) // 2]

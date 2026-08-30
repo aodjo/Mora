@@ -28,12 +28,14 @@ from demucs.apply import apply_model  # noqa: E402
 from demucs.pretrained import get_model  # noqa: E402
 
 began = time.time()
-# htdemucs_ft 는 네 모델을 겹쳐 돌려 네 배 걸린다. 맞추기에 쓸 보컬이라 htdemucs 로 넉넉하다.
+#: 반주를 걷을 모델. `htdemucs_ft` 는 네 모델을 겹쳐 돌려 네 배 걸리는데, 맞추기에 쓸
+#: 보컬이라 `htdemucs` 로 넉넉하다.
 model = get_model("htdemucs")
 print(f"  모델 올리기 {time.time() - began:.1f}초 · 소스 {model.sources}")
 
-# demucs 는 모델이 훈련된 표본율(44.1 kHz)과 두 갈래 소리를 바란다.
 import torchaudio.functional as AF  # noqa: E402
+
+#: 넘길 소리. demucs 는 모델이 훈련된 표본율(44.1 kHz)과 두 갈래를 바란다.
 wave = AF.resample(audio, align.SAMPLE_RATE, model.samplerate)
 wave = wave.repeat(2, 1) if wave.shape[0] == 1 else wave
 

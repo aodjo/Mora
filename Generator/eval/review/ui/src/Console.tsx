@@ -1,39 +1,80 @@
 /**
- * 맞추는 동안의 자취를 터미널처럼 쌓아 보인다.
+ * Stacks the trace of a matching run and shows it like a terminal.
  *
- * 한 줄짜리 상태로는 모자랐다. 곡 하나에 3~5 분이 걸리는데 「보컬 뽑는 중」만 떠 있으면
- * **멈춘 것인지 더딘 것인지 알 수가 없고**, 끝난 뒤에는 무슨 일이 있었는지 아무것도 안 남는다.
- * 쌓아 두면 사람이 그 자리에서 읽고 판단한다 — 몇 초 걸렸는지, 어느 갈래를 썼는지,
- * 무너진 줄이 몇인지.
+ * A one-line status was not enough. A single song takes 3-5 minutes, and when only
+ * "extracting vocals" is on screen there is **no way to tell whether it is stuck or
+ * merely slow**, and once it finishes nothing is left of what happened. Stacking the
+ * lines lets a person read and judge on the spot - how many seconds it took, which
+ * branch was taken, how many lines broke.
  */
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef } from "react";
 
+/**
+ * One line of the run log.
+ *
+ * Each beat is a single event the server emitted during the run, carrying its own
+ * timestamp so elapsed time can be derived on the client instead of being sent.
+ */
 export interface Beat {
-  /** 유닉스 시각(초). 서버가 찍는다. */
+  /** Unix time in seconds. Stamped by the server. */
   at: number;
+  /** The line of text shown to the reader. */
   text: string;
+  /** Which kind of line it is, which drives the styling of the row. */
   kind: "step" | "done" | "bad";
 }
 
+/**
+ * Props of the console panel.
+ */
 interface Props {
+  /** Beats to render, oldest first. */
   log: Beat[];
-  /** 아직 도는 중인가. 끝났으면 마지막 줄에 커서를 안 둔다. */
+  /** Whether the run is still going. When it has finished, no cursor is left on the last line. */
   running: boolean;
+  /** Called when the close button is pressed. */
   onClose: () => void;
 }
 
-/** 첫 줄로부터 몇 초 지났나. 절대 시각보다 「얼마나 걸렸나」가 읽힌다. */
+/**
+ * Format how many seconds have passed since the first line of the log.
+ *
+ * The timestamp column is rendered relative to the first beat rather than as an
+ * absolute clock time, because "how long did it take" is what actually reads off the
+ * screen. When the log is empty the given timestamp is used as its own origin, which
+ * yields 00:00, and the gap is clamped at zero so a beat stamped before the first one
+ * cannot render as a negative time.
+ *
+ * @param {Beat[]} log - The full log; only its first entry is used, as the origin.
+ * @param {number} at - Unix time in seconds of the beat being rendered.
+ * @returns {string} Elapsed time as zero-padded "MM:SS".
+ */
 function since(log: Beat[], at: number): string {
   const first = log[0]?.at ?? at;
   const gap = Math.max(0, at - first);
   return `${String(Math.floor(gap / 60)).padStart(2, "0")}:${String(Math.floor(gap % 60)).padStart(2, "0")}`;
 }
 
+/**
+ * Render the terminal-like panel that holds the run log.
+ *
+ * When a new line arrives the body follows down to the bottom, the way a terminal
+ * moves; the effect keys on the log length so that only an added line scrolls the
+ * view. While nothing has arrived yet a "connecting" line is shown instead of an
+ * empty body, because an empty box reads as "did it stall?". The blinking cursor is
+ * drawn only while the run is going, so a finished run does not look like it is still
+ * waiting for more output.
+ *
+ * @param {Props} props - Component props.
+ * @param {Beat[]} props.log - Beats to render, oldest first.
+ * @param {boolean} props.running - Whether the run is still going.
+ * @param {() => void} props.onClose - Called when the close button is pressed.
+ * @returns {JSX.Element} The console panel.
+ */
 export function Console({ log, running, onClose }: Props) {
   const tail = useRef<HTMLDivElement>(null);
 
-  // 새 줄이 오면 바닥으로 따라간다. 터미널이 그렇게 움직인다.
   useEffect(() => {
     tail.current?.scrollTo({ top: tail.current.scrollHeight, behavior: "smooth" });
   }, [log.length]);
@@ -64,7 +105,6 @@ export function Console({ log, running, onClose }: Props) {
             </motion.div>
           ))}
         </AnimatePresence>
-        {/* 아직 아무것도 안 왔을 때. 빈 상자를 띄우면 「멈췄나」로 읽힌다. */}
         {!log.length && (
           <div className="tty-line"><span className="tty-at">00:00</span>
             <span className="tty-text">서버에 거는 중…</span></div>
