@@ -162,13 +162,15 @@ def device():
     reason to fall back to CPU — the integrated GPU still beats the CPU by a wide margin, and
     the same slot is used later when bigger models run.
 
-    @returns {str} One of "xpu", "cuda" or "cpu".
+    @returns {str} One of "xpu", "cuda", "mps" or "cpu".
     """
     import torch
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
     if torch.cuda.is_available():
         return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 
@@ -686,7 +688,9 @@ def cut_apart(source: Path, model: str, want: str, into: Path) -> Path | None:
         write_audio(read_audio(source, rate=44100, channels=2), raw, 44100)
         fed = raw
 
-    apart = Separator(output_dir=str(work), output_format="WAV", log_level=40)
+    apart = Separator(output_dir=str(work), output_format="WAV", log_level=40, **FASTER)
+    #: `audio-separator` 는 cuda·mps·directml 만 본다. Arc 는 못 알아보고 CPU 로 떨어져 네 배짜리
+    #: 곡이 20 분 51 초 걸렸다 — 여기서 직접 물려 4 분이 됐다.
     apart.torch_device = torch.device(device())
     apart.load_model(model_filename=model)
     made = apart.separate(str(fed))
@@ -1602,6 +1606,18 @@ VOICE_RUN_TOLD = 3
 VOCALS_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 #: Model that splits the vocals into lead and backing.
 KARAOKE_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
+#: Half precision and a compiled graph, both handed to `audio-separator`.
+#:
+#: These are only checked for the Roformer families, which is exactly what both models above are.
+#: Separation is where nearly all the time goes — measured on an M5 Pro for a 3:10 song:
+#:
+#:   보컬 분리 (BS-Roformer)     237.8 초 → fp16 149.8 → 컴파일 178.9 → **둘 다 89.5**
+#:   리드·서브 (Mel-Band)        101.5 초 → fp16  69.3 → 컴파일  68.7 → **둘 다 40.2**
+#:
+#: The sound does not change: against the fp32 result the largest sample difference was 0.004 and
+#: the loudness ratio 1.0000. Turning only one of the two on is worth little; the pair is what
+#: makes the difference, and together they take a song from 5 분 45 초 to 2 분 16 초.
+FASTER = {"use_native_fp16": True, "use_torch_compile": True}
 
 
 #: Where the diarizer lives. It needs torch 2.8 and the aligner is pinned to 2.7 by `torchaudio`

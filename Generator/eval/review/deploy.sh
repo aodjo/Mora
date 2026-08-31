@@ -15,7 +15,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # 올릴 수 있다: `./deploy.sh msi` · `./deploy.sh galbook`.
 # 사용자까지 적는다. 빌린 기계는 컨테이너라 `root` 뿐인데, 안 적으면 ssh 가 이쪽 사용자
 # 이름으로 붙으려 해 `tailnet policy does not permit you to SSH as user "aodjo"` 로 막힌다.
-HOST=${1:-root@mora-gpu}
+# 기본은 이 맥이다. 빌린 5090 이 예산으로 꺼진 뒤로 여기서 돈다 — 곡당 2 분 16 초로 5090 의
+# 77 초보다 1.8 배 느리지만 돈이 안 든다. 다른 기계로 보내려면 `./deploy.sh msi` 처럼 적는다.
+HOST=${1:-mac}
 # 기계마다 파이썬과 node 가 있는 자리가 다르다. 비대화형 ssh 는 프로필을 안 읽으므로 여기서
 # 셋을 다 넣어 준다 — 없는 자리는 그냥 무시된다.
 REMOTE_PATH='export PATH="/opt/conda/bin:$HOME/.local/bin:$HOME/.local/node/bin:$PATH";'
@@ -44,7 +46,9 @@ say "1/4  올리기"
 #
 # `COPYFILE_DISABLE` 는 맥의 tar 가 확장 속성을 끼워 넣는 것을 막는다. 안 막으면 받는 쪽이
 # `Ignoring unknown extended header keyword` 를 줄줄이 뱉는다.
-COPYFILE_DISABLE=1 tar cf - -C "$HERE" server.py align.py \
+# `diarize.py` 도 함께 올린다. 딴 살림(`~/dia`)에서 돌지만 파일은 여기 있어야 `align.py` 가
+# 그것을 부를 수 있다 — 안 올리면 그 기계는 조용히 옛 ECAPA 길로 물러선다.
+COPYFILE_DISABLE=1 tar cf - -C "$HERE" server.py align.py diarize.py \
   | ssh "$HOST" 'cd ~/mora-review && tar xf -' || exit 1
 COPYFILE_DISABLE=1 tar cf - -C "$HERE"/ui/src . \
   | ssh "$HOST" 'mkdir -p ~/mora-review/ui/src && cd ~/mora-review/ui/src && tar xf -' || exit 1
@@ -75,7 +79,9 @@ say "4/4  다시 띄우기"
 ssh "$HOST" 'for p in $(pgrep -f "server[.]py"); do kill "$p" 2>/dev/null; done' || true
 sleep 2
 # venv 가 있으면 그것을, 없으면 PATH 의 python 을 쓴다. 기계마다 세운 방식이 다르다.
-ssh "$HOST" "$REMOTE_PATH"' cd ~/mora-review && PY=$([ -x .venv/bin/python ] && echo .venv/bin/python || command -v python3 || command -v python) && setsid nohup env PATH="$PATH" "$PY" server.py > server.log 2>&1 < /dev/null &' || true
+# `setsid` 는 리눅스에만 있다. 맥에서는 `nohup` 만으로 띄운다 — 없는 명령이라 통째로 실패하고
+# 서버가 안 떴는데 앞 단계는 다 통과해 「배포됐다」로 읽혔다.
+ssh "$HOST" "$REMOTE_PATH"' cd ~/mora-review && PY=$([ -x .venv/bin/python ] && echo .venv/bin/python || command -v python3 || command -v python) && GO=$(command -v setsid || echo "") && nohup env PATH="$PATH" $GO "$PY" server.py > server.log 2>&1 < /dev/null &' || true
 sleep 4
 code=$(ssh "$HOST" 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8787/')
 if [ "$code" != "200" ]; then
