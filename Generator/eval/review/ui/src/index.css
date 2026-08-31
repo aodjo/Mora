@@ -201,6 +201,9 @@ input { border: 0; background: none; outline: none; }
 }
 /* 아직 안 부른 낱말과 다 부른 낱말. 그러데이션을 걷고 단색으로 칠한다. */
 .word.none { background-image: none; -webkit-text-fill-color: var(--word-off); color: var(--word-off); }
+/* 지금 불리는 낱자. **전환효과를 넣지 않는다** — 번져 들어오는 빛은 늦는 느낌을 그대로 되살린다.
+   차오르는 것만으로는 시작하는 순간에 눈에 걸리는 것이 없어, 한 박자 늦게 읽혔다. */
+.word.live { text-shadow: 0 0 15px color-mix(in oklab, var(--voice, var(--ink)) 45%, transparent); }
 .word.full {
   background-image: none;
   -webkit-text-fill-color: var(--voice, var(--ink));

@@ -367,9 +367,15 @@ export default function App() {
    * @returns {() => void} Teardown that stops the polling.
    */
   const watchAlign = useCallback((id: number) => {
+    //: 아직 시작 안 한 새 판을, 앞판이 남긴 `done` 으로 끝났다고 보면 안 된다. 지켜보기를 부름
+    //: 보다 먼저 켜기 때문에 첫 물음이 서버에 닿을 때 그 곡의 상태가 아직 지난번 `done` 일 수
+    //: 있다. 한 번이라도 도는 상태를 본 뒤에만 `done` 을 믿는다.
+    let began = false;
     const tick = window.setInterval(async () => {
       const beat = await alignState(id).catch(() => ({ state: "실패: 서버에 못 닿음", log: [] as Beat[] }));
       if (beat.log?.length) setLog(beat.log);
+      if (!beat.state.startsWith("done") && !beat.state.startsWith("실패")) began = true;
+      if (!began) return;
       if (beat.state.startsWith("done")) {
         window.clearInterval(tick); setAligning("");
         const [, count] = beat.state.split(" ");
@@ -404,12 +410,13 @@ export default function App() {
     if (!song) return;
     setAligning("보컬 뽑는 중");
     setLog([]); setShowLog(true);
-    try {
-      await startAlign(song.id, true);
-    } catch (error) {
-      setAligning(""); say(String((error as Error).message), "bad"); return;
-    }
+    //: 지켜보기를 **먼저** 켠다. 앞판은 이 부름이 돌아오기를 기다린 뒤에 켰는데, 서버가 다른
+    //: 곡을 가르느라 바쁘면 그 부름이 몇 분씩 안 돌아온다 — 그 동안 화면은 「서버에 거는 중…」
+    //: 한 줄에서 굳어 있고, 정작 서버는 잘 돌고 있다. 사람이 「여기서 멈췄다」고 한 자리다.
     watchAlign(song.id);
+    startAlign(song.id, true).catch((error) => {
+      setAligning(""); say(String((error as Error).message), "bad");
+    });
   }, [song, say, watchAlign]);
 
   /**

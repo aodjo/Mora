@@ -8,7 +8,7 @@
  * branch was taken, how many lines broke.
  */
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * One line of the run log.
@@ -54,6 +54,34 @@ function since(log: Beat[], at: number): string {
   const first = log[0]?.at ?? at;
   const gap = Math.max(0, at - first);
   return `${String(Math.floor(gap / 60)).padStart(2, "0")}:${String(Math.floor(gap % 60)).padStart(2, "0")}`;
+}
+
+/**
+ * The line shown while the server has not sent its first step yet.
+ *
+ * It counts, rather than standing still. A frozen `00:00 서버에 거는 중…` is what a person saw
+ * when the server was busy separating another song, and there is no way to tell that from a
+ * hung tool — the same one line, unchanged, for minutes. A number that keeps moving says the
+ * screen is alive and the wait is the server's.
+ *
+ * @returns {JSX.Element} One trail line whose clock counts up from when it appeared.
+ */
+function Waiting() {
+  const [since, setSince] = useState(0);
+  useEffect(() => {
+    const tick = window.setInterval(() => setSince((one) => one + 1), 1000);
+    return () => window.clearInterval(tick);
+  }, []);
+  const mins = String(Math.floor(since / 60)).padStart(2, "0");
+  const secs = String(since % 60).padStart(2, "0");
+  return (
+    <div className="tty-line">
+      <span className="tty-at">{mins}:{secs}</span>
+      <span className="tty-text">
+        서버에 거는 중{since > 20 ? " — 다른 곡을 가르는 중일 수 있습니다" : "…"}
+      </span>
+    </div>
+  );
 }
 
 /**
@@ -105,10 +133,7 @@ export function Console({ log, running, onClose }: Props) {
             </motion.div>
           ))}
         </AnimatePresence>
-        {!log.length && (
-          <div className="tty-line"><span className="tty-at">00:00</span>
-            <span className="tty-text">서버에 거는 중…</span></div>
-        )}
+        {!log.length && <Waiting />}
         {running && <div className="tty-line"><span className="tty-at" /><span className="tty-cursor" /></div>}
       </div>
     </motion.div>

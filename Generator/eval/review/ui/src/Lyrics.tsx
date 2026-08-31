@@ -38,28 +38,37 @@ interface Props {
 }
 
 /**
- * Paint one grain — a character or a word. Grey turns white from left to right.
+ * How much of a syllable is already coloured the instant it begins, as a share of its width.
  *
- * At 0 and 1 the grain is painted a flat colour. Leaving the gradient in place at those ends
- * leaves a white thread on the left edge of a grain that has not been sung yet — the first two
- * stops are both at 0%, so the space between them bleeds.
+ * Without it the fill is a pure ramp and **nothing happens at the onset**. The first frame after a
+ * syllable starts paints about one pixel of colour down the left edge of a 44-pixel glyph, which
+ * nobody can see; the eye locks onto "which syllable is substantially coloured", so it reads the
+ * highlight late by a fraction of that syllable's own length. That is why it felt like a beat
+ * behind on every song rather than a fixed number of milliseconds — the error grows with the note.
  *
- * The fill is deliberately not wrapped in motion, because it changes every frame. Put a spring on
- * it and the fill falls behind the sound, and that lag is exactly what reads as "it does not
- * match".
+ * `loosen_chars` runs each character's end out to the next one's start so the front never pauses,
+ * which removes even the motion cue at a syllable boundary. Starting the front already inside the
+ * glyph gives the eye the edge it was missing, and it costs nothing at the tail: the syllable
+ * finishes filling slightly before it ends, which is how a karaoke wipe is supposed to lead.
+ */
+const FILL_LEAD = 0.22;
+
+/**
+ * One syllable, filled to the point the singing has reached.
  *
  * @param {object} props - Component props.
- * @param {string} props.text - The character or word to paint.
- * @param {number} props.at - When the grain starts, in ms, with the correction already applied.
- * @param {number} props.end - When the grain ends, in ms, with the correction already applied.
- * @param {number} props.nowMs - Current playback position in ms; -1 leaves the grain unsung.
- * @returns {JSX.Element} A span carrying the fill fraction as the `--filled` custom property.
+ * @param {string} props.text - The syllable itself.
+ * @param {number} props.at - When it starts, in audio time (ms).
+ * @param {number} props.end - When it gives way to the next one (ms).
+ * @param {number} props.nowMs - Where the song is now, or -1 when this line is not sounding.
+ * @returns {JSX.Element} The syllable, coloured from the left to the point reached.
  */
 function Ink({ text, at, end, nowMs }: { text: string; at: number; end: number; nowMs: number }) {
-  const filled = Math.min(1, Math.max(0, (nowMs - at) / Math.max(1, end - at)));
+  const gone = (nowMs - at) / Math.max(1, end - at);
+  const filled = gone <= 0 ? 0 : Math.min(1, gone + FILL_LEAD);
   return (
     <span
-      className={`word ${filled <= 0 ? "none" : filled >= 1 ? "full" : ""}`}
+      className={`word ${filled <= 0 ? "none" : filled >= 1 ? "full" : "live"}`}
       style={{ "--filled": `${filled * 100}%` } as React.CSSProperties}
     >
       {text}
@@ -68,28 +77,13 @@ function Ink({ text, at, end, nowMs }: { text: string; at: number; end: number; 
 }
 
 /**
- * Paint the current line split into words — only when recorded word times exist.
- *
- * Lighting the line as a whole leaves an eight-second line lit in one piece, so there is no
- * telling which part is being sung. The words have to light one at a time for the reader to
- * follow along — that is the whole reason word times are produced in the first place.
- *
- * When character times exist, each character is painted on its own. In Korean one character is one
- * syllable, and that is the unit by which the song is followed — if 「떠나보내고」 fills as one
- * block there is no telling where the singing is, and it is common for that one word to take
- * 3 seconds.
- *
- * The space between words is kept outside the span. Inside an inline-block the trailing space is
- * squeezed out and the words end up stuck to each other.
- *
- * @param {object} props - Component props.
- * @param {Line} props.line - The line to draw.
- * @param {number} props.offsetMs - Correction added to every recorded time, in ms.
- * @param {number} props.nowMs - Current playback position in ms; -1 leaves every word unsung.
- * @returns {JSX.Element} The painted words, or the plain line text when there are no word times.
- */
-/**
  * Fill in a line word by word as it is sung.
+ *
+ * Each character is painted on its own where character times exist. In Korean one character is one
+ * syllable, and that is the unit the song is followed by — 「떠나보내고」 filling as one block says
+ * nothing about where the singing is, and one word often takes three seconds. The space between
+ * words stays outside the span; inside an inline-block a trailing space is squeezed out and the
+ * words end up stuck together.
  *
  * A word may carry a lane of its own, and then it overrides the line's. Lyric sheets write
  * `(If, if I got a, if I got a) would you guarantee?` as one line although the bracketed run is
@@ -143,7 +137,7 @@ const VOICES = ["#f4f2ef", "#8fd8ff", "#ffc48a"];
 /** Where in the window the current line sits, as a fraction of height. Dead centre folds the next line out of sight. */
 const ANCHOR = 0.34;
 /** How much later each successive line below the current one departs, in seconds. */
-const CASCADE = 0.045;
+const CASCADE = 0.022;
 /** How many lines below the current one are delayed at all. */
 const CASCADE_MAX = 3;
 /** How long a hand-scroll holds before the view drifts back to the playing line, in ms. */
@@ -322,9 +316,9 @@ export function Lyrics({ lines, offsetMs, anchor, singing, nowMs, onSeek }: Prop
                   type: "spring", duration: 0.56, bounce: 0.24,
                   delay: Math.min(Math.max(away, 0), CASCADE_MAX) * CASCADE,
                 },
-                opacity: { duration: 0.24 },
-                filter: { duration: 0.32 },
-                scale: { type: "spring", duration: 0.5, bounce: 0.3 },
+                opacity: { duration: 0.11 },
+                filter: { duration: 0.16 },
+                scale: { type: "spring", duration: 0.3, bounce: 0.24 },
               }}
               style={{
                 zIndex: now ? 1 : 0,
