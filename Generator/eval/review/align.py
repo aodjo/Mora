@@ -177,7 +177,20 @@ def source_in(folder: Path, video_id: str) -> Path | None:
 
 #: Process-wide cache for everything expensive to build: the model, the vocabulary table, the
 #: romaniser, the speaker encoder and the romanisation memo.
-_bundle: dict = {}
+#: One cache per acoustic backend, keyed by `ACOUSTIC`. A single cache meant a process could hold
+#: one model, and the hybrid needs kresnik and MMS_FA loaded side by side.
+_bundles: dict[str, dict] = {}
+#: The speaker model, shared by every backend.
+_voice: dict = {}
+
+
+def _bag() -> dict:
+    """The cache for the acoustic backend named by `ACOUSTIC` right now.
+
+    @returns {dict} A per-backend dict, created on first use.
+    """
+    return _bundles.setdefault(ACOUSTIC, {})
+
 
 
 def device():
@@ -234,28 +247,29 @@ def load():
 
     @returns {tuple[dict, object]} The vocabulary table and the loaded model.
     """
-    if not _bundle:
+    bag = _bag()
+    if not bag:
         import torch
         torch.set_num_threads(8)
         where = device()
-        _bundle["where"] = where
+        bag["where"] = where
         if ACOUSTIC == "kresnik":
             from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
             name = "kresnik/wav2vec2-large-xlsr-korean"
             proc = Wav2Vec2Processor.from_pretrained(name)
-            _bundle["table"] = proc.tokenizer.get_vocab()
-            _bundle["blank"] = proc.tokenizer.pad_token_id
-            _bundle["unk"] = proc.tokenizer.unk_token_id
-            _bundle["model"] = Wav2Vec2ForCTC.from_pretrained(name).eval().to(where)
+            bag["table"] = proc.tokenizer.get_vocab()
+            bag["blank"] = proc.tokenizer.pad_token_id
+            bag["unk"] = proc.tokenizer.unk_token_id
+            bag["model"] = Wav2Vec2ForCTC.from_pretrained(name).eval().to(where)
         else:
             import torchaudio
             import uroman
             bundle = torchaudio.pipelines.MMS_FA
-            _bundle["table"] = bundle.get_dict()
-            _bundle["blank"] = 0
-            _bundle["roman"] = uroman.Uroman()
-            _bundle["model"] = bundle.get_model().eval().to(where)
-    return _bundle["table"], _bundle["model"]
+            bag["table"] = bundle.get_dict()
+            bag["blank"] = 0
+            bag["roman"] = uroman.Uroman()
+            bag["model"] = bundle.get_model().eval().to(where)
+    return bag["table"], bag["model"]
 
 
 def grains_of(word: str) -> list[str]:
@@ -312,10 +326,10 @@ def letters(grain: str) -> list[int]:
         #: with no Hangul in it (`drug`, `24`) becomes a single `[UNK]` rather than one per letter,
         #: which would ask the model to hear four unknown things in a row.
         ids = [table[one] for one in grain if one in table]
-        return ids if ids else [_bundle["unk"]]
-    memo = _bundle.setdefault("said", {})
+        return ids if ids else [_bag()["unk"]]
+    memo = _bag().setdefault("said", {})
     if grain not in memo:
-        memo[grain] = _bundle["roman"].romanize_string(grain).lower()
+        memo[grain] = _bag()["roman"].romanize_string(grain).lower()
     return [table[one] for one in memo[grain] if one in table]
 
 
@@ -674,7 +688,7 @@ def whole_logits(audio):
     """
     import torch
     _, model = load()
-    where = _bundle.get("where", "cpu")
+    where = _bag().get("where", "cpu")
     total = audio.shape[-1]
 
     voice = audio.to(torch.float32)
@@ -932,10 +946,10 @@ def weigh(log_probs, tokens: list[int], since: int, until: int):
     if piece.shape[1] < len(tokens) or not tokens:
         return None
     try:
-        paths, scores = F.forced_align(piece, torch.tensor([tokens]), blank=_bundle.get("blank", 0))
+        paths, scores = F.forced_align(piece, torch.tensor([tokens]), blank=_bag().get("blank", 0))
     except Exception:
         return None
-    merged = F.merge_tokens(paths[0], scores[0], blank=_bundle.get("blank", 0))
+    merged = F.merge_tokens(paths[0], scores[0], blank=_bag().get("blank", 0))
     if len(merged) != len(tokens):
         return None
     return float(scores[0].sum()) / len(tokens), since + merged[0].start
@@ -1307,10 +1321,10 @@ def pinned(log_probs, tokens: list[int], pins):
         if piece.shape[1] < len(piece_tokens):
             return None
         try:
-            paths, scores = F.forced_align(piece, torch.tensor([piece_tokens]), blank=_bundle.get("blank", 0))
+            paths, scores = F.forced_align(piece, torch.tensor([piece_tokens]), blank=_bag().get("blank", 0))
         except Exception:
             return None
-        got = F.merge_tokens(paths[0], scores[0], blank=_bundle.get("blank", 0))
+        got = F.merge_tokens(paths[0], scores[0], blank=_bag().get("blank", 0))
         if len(got) != len(piece_tokens):
             return None
         for span in got:
@@ -1320,7 +1334,7 @@ def pinned(log_probs, tokens: list[int], pins):
     return out if len(out) == len(tokens) else None
 
 
-def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -> list[list[dict]]:
+def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True) -> list[list[dict]]:
     """Align one song **in a single pass** and return the per-line word list.
 
     No window is placed per line. Line times mark only the **start**, so any window end is wrong,
@@ -1420,7 +1434,7 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -
 
     audio = read_audio(vocals_of(path) if separate else path)
     load()
-    blank = _bundle.get("blank", 0)
+    blank = _bag().get("blank", 0)
 
     tokens: list[int] = []
     plan: list[list[list[tuple[str, int]]]] = []
@@ -1567,6 +1581,56 @@ def in_order(out: list[list[dict]], index: int, now: list[dict]) -> bool:
         if chars:
             return since <= chars[0]["at"]
     return True
+
+
+#: A line with any Latin letter in it. Under the hybrid such a line goes to MMS_FA.
+LATIN = re.compile(r"[A-Za-z]")
+
+
+def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -> list[list[dict]]:
+    """Align one song with the backend named by `ACOUSTIC`, or with both under `"hybrid"`.
+
+    Measured over ten songs, kresnik (Hangul syllables) and MMS_FA (romanised) win in different
+    places: kresnik on the Korean-only rap (고스트시티 broken lines 14 → 9), MMS_FA wherever
+    English is mixed in (Small girl 1 → 7, NOT SORRY 2 → 8 under kresnik, whose vocabulary has no
+    Latin at all and turns `drug` into a single `[UNK]`). The hybrid runs both over the whole song
+    and takes each line from the model that can read it: a line holding any Latin letter from
+    MMS_FA, a Hangul-only line from kresnik. The swap keeps the song in order (`in_order`), and the
+    clock, spreading and breakage passes run once more over the merged result.
+
+    @param {Path} path - The audio to align.
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @param {bool} [separate=True] - Whether to separate vocals first.
+    @returns {list[list[dict]]} Per-line word dicts.
+    """
+    global ACOUSTIC
+    if ACOUSTIC != "hybrid":
+        return align_one(path, lines, tokenize, separate)
+    was = ACOUSTIC
+    got: dict[str, list[list[dict]]] = {}
+    try:
+        for one in ("mms", "kresnik"):
+            ACOUSTIC = one
+            got[one] = align_one(path, lines, tokenize, separate)
+    finally:
+        ACOUSTIC = was
+    out = got["mms"]
+    for index, line in enumerate(lines):
+        text = line.get("text", "")
+        if LATIN.search(text) or not got["kresnik"][index]:
+            continue
+        now = [one for word in got["kresnik"][index] for one in (word.get("chars") or [])
+               if one.get("at") is not None]
+        if now and in_order(out, index, now):
+            out[index] = got["kresnik"][index]
+    for words in out:
+        for word in words:
+            word.pop("stuck", None)
+    settle_clock(lines, out)
+    unpack_song(out)
+    flag_stuck(lines, out)
+    return out
 
 
 def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
@@ -2143,13 +2207,13 @@ def who_sings(stem: Path, path: Path, lines: list[dict], out: list[list[dict]],
     import torch
     from sklearn.cluster import AgglomerativeClustering
 
-    if "voice" not in _bundle:
+    if "voice" not in _voice:
         from speechbrain.inference.speaker import EncoderClassifier
-        _bundle["voice"] = EncoderClassifier.from_hparams(
+        _voice["voice"] = EncoderClassifier.from_hparams(
             source="speechbrain/spkrec-ecapa-voxceleb",
             savedir=str(Path(__file__).parent / "models/ecapa"),
             run_opts={"device": device()})
-    model = _bundle["voice"]
+    model = _voice["voice"]
 
     audio = read_audio(stem)[0]
 

@@ -79,44 +79,57 @@ def nearest(marks: list[int], at: int) -> int:
     return min(abs(one - at) for one in near)
 
 
-conn = sqlite3.connect(HERE / "review.db")
-conn.row_factory = sqlite3.Row
-rows = conn.execute("SELECT id, artist, title, video_id, lines FROM songs ORDER BY id").fetchall()
-how_many = int(sys.argv[1]) if len(sys.argv) > 1 else 10
-print(f"  모델 {os.environ.get('MORA_ACOUSTIC', 'mms')}\n")
-print(f"  {'곡':<30} {'낱자':>5} {'가운뎃값':>7} {'50ms 안':>7} {'들림':>6} {'무너짐':>5}")
+def main() -> int:
+    """Run the onset yardstick over the first N songs for the backend named by `MORA_ACOUSTIC`.
 
-every: list[int] = []
-heard_all = total_all = 0
-for row in rows[:how_many]:
-    found = align.source_in(HERE / "audio", row["video_id"])
-    if not found or not found.with_suffix(".lead.wav").exists():
-        continue
-    lines = json.loads(row["lines"])
-    out, _ = align.align_voices(found, lines, words_of, row["title"])
-    marks = onsets_of(found.with_suffix(".lead.wav"))
-    far: list[int] = []
-    heard = 0
-    for words in out:
-        for word in words:
-            for one in word.get("chars") or []:
-                if one.get("at") is None:
-                    continue
-                far.append(nearest(marks, one["at"]))
-                heard += one.get("sure", -9.0) >= align.SURE_HEARD
-    if not far:
-        continue
-    far.sort()
-    every.extend(far)
-    heard_all += heard
-    total_all += len(far)
-    broke = sum(1 for one in out if one and one[0].get("stuck"))
-    within = sum(1 for one in far if one <= NEAR_MS) / len(far)
-    print(f"  [{row['id']}] {row['artist'][:9]:<11} — {row['title'][:12]:<14} {len(far):>5} "
-          f"{far[len(far) // 2]:>5}ms {within * 100:>6.0f}% {heard / len(far) * 100:>5.0f}% {broke:>5}")
+    Kept behind a function so `probe_qwen` can import `onsets_of` and `nearest` without this
+    whole benchmark running at import time — which it did, once.
 
-if every:
-    every.sort()
-    print(f"\n  낱자 {len(every)} · 가운뎃값 {every[len(every) // 2]}ms · 50ms 안 "
-          f"{sum(1 for one in every if one <= NEAR_MS) / len(every) * 100:.0f}% · 들린 낱자 "
-          f"{heard_all / total_all * 100:.0f}%")
+    @returns {int} 0 always.
+    """
+    conn = sqlite3.connect(HERE / "review.db")
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT id, artist, title, video_id, lines FROM songs ORDER BY id").fetchall()
+    how_many = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+    print(f"  모델 {os.environ.get('MORA_ACOUSTIC', 'mms')}\n")
+    print(f"  {'곡':<30} {'낱자':>5} {'가운뎃값':>7} {'50ms 안':>7} {'들림':>6} {'무너짐':>5}")
+
+    every: list[int] = []
+    heard_all = total_all = 0
+    for row in rows[:how_many]:
+        found = align.source_in(HERE / "audio", row["video_id"])
+        if not found or not found.with_suffix(".lead.wav").exists():
+            continue
+        lines = json.loads(row["lines"])
+        out, _ = align.align_voices(found, lines, words_of, row["title"])
+        marks = onsets_of(found.with_suffix(".lead.wav"))
+        far: list[int] = []
+        heard = 0
+        for words in out:
+            for word in words:
+                for one in word.get("chars") or []:
+                    if one.get("at") is None:
+                        continue
+                    far.append(nearest(marks, one["at"]))
+                    heard += one.get("sure", -9.0) >= align.SURE_HEARD
+        if not far:
+            continue
+        far.sort()
+        every.extend(far)
+        heard_all += heard
+        total_all += len(far)
+        broke = sum(1 for one in out if one and one[0].get("stuck"))
+        within = sum(1 for one in far if one <= NEAR_MS) / len(far)
+        print(f"  [{row['id']}] {row['artist'][:9]:<11} — {row['title'][:12]:<14} {len(far):>5} "
+              f"{far[len(far) // 2]:>5}ms {within * 100:>6.0f}% {heard / len(far) * 100:>5.0f}% {broke:>5}")
+
+    if every:
+        every.sort()
+        print(f"\n  낱자 {len(every)} · 가운뎃값 {every[len(every) // 2]}ms · 50ms 안 "
+              f"{sum(1 for one in every if one <= NEAR_MS) / len(every) * 100:.0f}% · 들린 낱자 "
+              f"{heard_all / total_all * 100:.0f}%")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
