@@ -123,6 +123,8 @@ CLOCK_TIGHT_MS = 300
 #: while catching that.
 CLOCK_APART_LEAST_MS = 500
 CLOCK_APART_TIMES = 5
+#: How far before the first line's outside time a character may still be placed (ms).
+HEAD_ROOM_MS = 3000
 #: A character this sure (log-margin against the model's own best guess; 0 is certain) counts as
 #: **heard**. On MMS_FA a healthy line's best character sits around −0.2 ~ −1.0 and a passage the
 #: model cannot hear at all reads −5 and below on every character, so −1.0 separates the two.
@@ -185,6 +187,9 @@ def source_in(folder: Path, video_id: str) -> Path | None:
 _bundles: dict[str, dict] = {}
 #: The speaker model, shared by every backend.
 _voice: dict = {}
+#: Diarization answers already read, keyed by their file. Holding them keeps what `told_apart`
+#: writes onto them — the lane-to-speaker mapping — alive for the passes that come after.
+_said: dict[str, dict] = {}
 
 
 def _bag() -> dict:
@@ -1466,6 +1471,27 @@ def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True) ->
     if len(tokens) > log_probs.shape[1]:
         return [[] for _ in lines]
 
+    #: 첫 줄이 시작하기 한참 전에서는 어떤 낱자도 못 서게 막는다.
+    #:
+    #: 강제 정렬은 소리를 통째로 다 써야 하므로, 노래 앞에 가사에 없는 말 — 나레이션, 인트로
+    #: 대사 — 이 있으면 첫 줄이 그리로 끌려간다. 하치와레girl 은 첫 가사가 24.3 초인데 4.6~19.5 초에
+    #: 말이 있어서, 0 번 줄이 0.68 초에 놓이고 **곡 전체가 23 초 앞으로** 밀렸다.
+    #:
+    #: 시계 맞추기로는 못 잡는다. 그것은 가운뎃값을 그 곡의 고유한 어긋남으로 보고 거기서 벗어난
+    #: 줄만 되돌리므로, 모든 줄이 함께 밀린 것은 「이 곡은 원래 23 초 당겨져 있다」로 읽힌다.
+    #:
+    #: 막는 자리는 첫 줄의 밖 시각에서 `HEAD_ROOM_MS` 앞이다. 열 곡을 재 보니 줄 시작이 밖 시각과
+    #: ±0.6 초 안이라 3 초는 넉넉하다. 프레임을 잘라 내는 대신 그 구간의 낱자 확률만 눌러 둔다 —
+    #: 프레임 번호가 그대로라 되짚기·시계가 쓰는 절대 시각이 어긋나지 않는다.
+    said_at = [one["at"] for one in lines if one.get("at") is not None]
+    if said_at:
+        per_frame = audio.shape[-1] / log_probs.shape[1] / SAMPLE_RATE * 1000
+        head = int((min(said_at) - HEAD_ROOM_MS) / per_frame)
+        if head > 0:
+            log_probs = log_probs.clone()
+            log_probs[0, :head, :] = -1e4
+            log_probs[0, :head, blank] = 0.0
+
     paths, scores = F.forced_align(log_probs, torch.tensor([tokens]), blank=blank)
     merged = F.merge_tokens(paths[0], scores[0], blank=blank)
     if len(merged) != len(tokens):
@@ -1733,6 +1759,158 @@ def polish(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
     return done
 
 
+#: 화자 토막 둘 사이가 이보다 좁으면 한 번 부른 것으로 잇는다(ms). 숨 한 번은 쉼이 아니다.
+TURN_JOIN_MS = 250
+#: 줄의 가장자리에서 이만큼 밖까지 그 줄의 토막으로 본다(ms).
+TURN_EDGE_MS = 400
+#: 한 도막이 토막 여럿에 걸릴 때, 쉼이 이보다 길어야 나눈다(ms).
+TURN_REST_MS = 400
+
+
+def settle_turns(path: Path, lines: list[dict], out: list[list[dict]],
+                 lanes: dict[int, int] | None = None) -> int:
+    """Put the rests back inside a line, using the turns the diarizer already found.
+
+    A lyric line is one row of text but often several utterances with silence between them. Small
+    girl's line 18 reads `(If, if I got a, if I got a) would you guarantee?` and is sung as **three**
+    — the backing singer twice with a rest between, then the lead. The aligner had no way to say
+    that: it cuts a line at bracket boundaries only, so the nine bracketed words came out evenly
+    spaced 0.28 s apart with no rest at all, and a person watching said it "runs straight through".
+
+    Nothing new has to be heard. The lead stem is silent from 48.26 to 52.28 there — the passage is
+    not in it — while the diarizer already reports speaker 2 on at 48.78~49.10 and again at
+    51.66~52.14, and speaker 0 at 52.30~54.06. The rests and the turn are in hand; they were simply
+    not being used.
+
+    The stretches are looked for **inside the line's own window**, not around where the run currently
+    sits. Searching near the run was tried first and found almost nothing: line 18's backing run sat
+    at 48.50~50.70 while its second utterance begins at 51.66, so the very displacement being
+    corrected was hiding the evidence for it. The window runs from a little before the line's first
+    character to where the next line starts.
+
+    Each run of a line — the words sharing a lane — is laid onto its own speaker's stretches in that
+    window: one stretch and the run keeps its shape, several and it is shared out in proportion to
+    how long each lasts, spread evenly inside each. The line is written only if every character still
+    runs forward afterwards; anything that would cross is put back as it was.
+
+    @param {Path} path - The original audio, for the cached diarization beside it.
+    @param {list[dict]} lines - Lyric lines; only their order matters here.
+    @param {list[list[dict]]} out - Per-line word dicts, whose character times are rewritten.
+    @param {dict[int, int] | None} [lanes=None] - Voice per line, used when a word carries none.
+    @returns {int} How many lines were re-laid.
+    """
+    said = voices_apart(path)
+    rank = said.get("순서")
+    if not said.get("쪽") or not rank:
+        return 0
+    speaker_of = {int(one): int(who) for who, one in rank.items()}
+    turns: dict[int, list[tuple[int, int]]] = {}
+    for one in said["쪽"]:
+        joined: list[list[int]] = []
+        for a, b in ((int(x * 1000), int(y * 1000)) for x, y in one["토막"]):
+            if joined and a - joined[-1][1] <= TURN_JOIN_MS:
+                joined[-1][1] = b
+            else:
+                joined.append([a, b])
+        turns[one["누구"]] = [(a, b) for a, b in joined]
+
+    done = 0
+    for index, words in enumerate(out):
+        held = [one for one in words if (one.get("chars") or [])]
+        if not held:
+            continue
+        every = [one for word in held for one in (word.get("chars") or []) if one["at"] is not None]
+        if len(every) < 2:
+            continue
+        opens = every[0]["at"] - TURN_EDGE_MS
+        shuts = next((one[0]["at"] for one in out[index + 1:] if one),
+                     (every[-1].get("end") or every[-1]["at"]) + TURN_EDGE_MS)
+        if shuts - opens < LEAST_MS * len(every):
+            continue
+
+        runs: list[list[dict]] = []
+        for word in held:
+            lane = word.get("lane")
+            if runs and lane == runs[-1][0].get("lane"):
+                runs[-1].append(word)
+            else:
+                runs.append([word])
+
+        was = [(one, one["at"], one["end"]) for one in every]
+        moved = False
+        #: 도막은 줄 안에서 차례로 온다. 앞 도막이 쓴 토막 뒤에서만 찾는다 — 안 그러면 메인 도막이
+        #: **앞 줄의 꼬리**(창 머리에 물린 긴 토막)를 제 것으로 집어 줄 순서가 깨지고, 그러면
+        #: 아래 되돌리기가 줄 전체를 물려 아무것도 안 고쳐진다.
+        floor = opens
+        for run in runs:
+            chars = [one for word in run for one in (word.get("chars") or []) if one["at"] is not None]
+            if len(chars) < 2:
+                continue
+            #: 낱말에 레인이 없으면 **줄의** 레인을 쓴다. 0 으로 떨어뜨렸더니 61 번(줄 레인 2,
+            #: 낱말 레인 없음)이 메인으로 읽혀 메인이 부르는 자리로 통째로 끌려갔다.
+            lane = run[0].get("lane")
+            if lane is None:
+                lane = (lanes or {}).get(index, 0)
+            who = speaker_of.get(lane)
+            room = []
+            for a, b in turns.get(who, []):
+                a, b = max(a, opens, floor), min(b, shuts)
+                if b - a >= max(LEAST_MS, 200):
+                    room.append((a, b))
+            if not room:
+                continue
+            #: 끝은 마지막 낱자의 **시작**으로 잰다. `loosen_chars` 가 그 끝을 다음 줄까지 늘려
+            #: 두므로 `end` 로 재면 도막이 실제보다 3 초 길어 보이고, 「이미 겹친다」로 잘못 판정돼
+            #: 옮겨야 할 도막이 제자리에 남는다 — 그러면 앞 도막만 옮겨져 순서가 깨지고 되돌리기가
+            #: 줄 전체를 물린다. 18 번이 그렇게 아무 일도 안 일어난 채였다.
+            since, until = chars[0]["at"], chars[-1]["at"]
+            if len(room) < 2:
+                #: 토막이 하나뿐이어도, 그 줄이 실제로 울린 자리와 지금 자리가 거의 안 겹치면
+                #: 옮긴다 — 18 번의 `would you guarantee` 가 50.98 에 있는데 메인은 52.30 부터
+                #: 부른다. 겹치면 그대로 두는 것이 안전하다.
+                a, b = room[0]
+                over = min(until, b) - max(since, a)
+                if over > (until - since) * 0.5:
+                    floor = max(floor, b)
+                    continue
+            elif not any(b - a > TURN_REST_MS for (_, a), (b, _) in zip(room, room[1:])):
+                continue
+            total = sum(b - a for a, b in room)
+            if total < len(chars) * LEAST_MS:
+                continue
+            floor = max(floor, room[-1][1])
+
+            spot = 0
+            for at, (a, b) in enumerate(room):
+                left = len(chars) - spot
+                take = left if at == len(room) - 1 else max(1, round(len(chars) * (b - a) / total))
+                take = min(take, left - (len(room) - 1 - at))
+                if take < 1:
+                    continue
+                step = (b - a) / take
+                for k in range(take):
+                    chars[spot + k]["at"] = int(a + step * k)
+                    chars[spot + k]["end"] = int(a + step * (k + 1))
+                spot += take
+            moved = True
+
+        if not moved:
+            continue
+        #: 줄 안의 낱자가 뒤로 가면 통째로 되돌린다. 화자 토막이 서로 엇갈려 있을 때 그럴 수 있고,
+        #: 그런 줄은 고치지 않는 편이 낫다.
+        if any(b["at"] < a["at"] for a, b in zip(every, every[1:])):
+            for one, at, end in was:
+                one["at"], one["end"] = at, end
+            continue
+        for word in held:
+            mine = [one for one in (word.get("chars") or []) if one["at"] is not None]
+            if mine:
+                word["at"] = mine[0]["at"]
+                word["end"] = max(max(one["end"] for one in mine), mine[0]["at"] + LEAST_MS)
+        done += 1
+    return done
+
+
 def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     """Align a song against every separated stem and keep the best placement per line.
 
@@ -1896,6 +2074,9 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 줄 자리가 다 잡힌 뒤에, 그 창 안에서 음절만 Qwen3 로 다시 놓는다. 펴기 뒤여야 한다 —
     #: 펴기는 「모델이 못 들은 줄」의 마지막 수단이고, 여기서는 그 줄을 실제로 듣는다.
     polish(path, lines, out)
+    #: 그리고 마지막으로, 한 줄이 여러 번에 나뉘어 불린 자리에 쉼을 되돌린다. Qwen3 도 그 줄에서는
+    #: 못 듣는다 — 리드 갈래가 통째로 조용하다 — 그러니 화자 토막이 유일한 증거다.
+    settle_turns(path, lines, out, lanes)
 
     for words in out:
         for word in words:
@@ -2046,9 +2227,15 @@ def voices_apart(path: Path) -> dict:
     """
     stem = vocals_of(path)
     into = stem.with_suffix(".dia.json")
+    #: 한 번 읽고 물고 있는다. 부를 때마다 JSON 을 새로 읽으면 매번 **다른 사전**이 나와서,
+    #: `told_apart` 이 거기 적어 둔 레인→화자 대응이 다음 부름에서는 사라진다. `settle_turns` 가
+    #: 그것을 못 찾아 아무 도막도 못 고쳤다.
+    if str(into) in _said:
+        return _said[str(into)]
     if into.exists():
         try:
-            return json.loads(into.read_text(encoding="utf-8"))
+            _said[str(into)] = json.loads(into.read_text(encoding="utf-8"))
+            return _said[str(into)]
         except Exception:
             into.unlink(missing_ok=True)
     if not DIARIZE_PY.exists():
@@ -2058,7 +2245,8 @@ def voices_apart(path: Path) -> dict:
     if not into.exists():
         return {}
     try:
-        return json.loads(into.read_text(encoding="utf-8"))
+        _said[str(into)] = json.loads(into.read_text(encoding="utf-8"))
+        return _said[str(into)]
     except Exception:
         return {}
 
@@ -2183,6 +2371,9 @@ def told_apart(said: dict, out: list[list[dict]]) -> list[int | None]:
             tally[best] = tally.get(best, 0) + 1
     order = {one: rank for rank, one in
              enumerate(sorted(tally, key=lambda one: -tally[one]))}
+    #: 레인 번호에서 화자 번호로 되돌아갈 수 있게 남긴다. `settle_turns` 가 「이 레인은 어느
+    #: 사람인가」를 알아야 그 사람의 토막만 골라 쓴다.
+    said["순서"] = {str(one): rank for one, rank in order.items()}
     if len(order) < 2:
         return [0 if held else None for held in seconds]
 
