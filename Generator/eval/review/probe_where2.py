@@ -47,7 +47,9 @@ where = {"lead": found.with_suffix(".lead.wav"), "back": found.with_suffix(".bac
 mask = align.inside_parens(lines[which].get("text", ""), words_of)
 groups = {"통째로": None, "괄호 밖": False, "괄호 안": True}
 print(f"  [{song}] {row['title'][:30]} · {which}번  {lines[which]['text'][:44]}")
-print(f"  바이브 {lines[which]['at'] / 1000:.2f}s\n")
+#: 붙여 넣은 가사에는 밖에서 온 시각이 없다.
+said = lines[which].get("at")
+print(f"  바이브 {said / 1000:.2f}s\n" if said is not None else "  바이브 시각 없음\n")
 
 for kind in kinds:
     audio = align.read_audio(where[kind], align.SAMPLE_RATE, 1)[0].unsqueeze(0)

@@ -125,6 +125,9 @@ CLOCK_APART_LEAST_MS = 500
 CLOCK_APART_TIMES = 5
 #: How far before the first line's outside time a character may still be placed (ms).
 HEAD_ROOM_MS = 3000
+#: How much surer the vocals stem must come out than the lead, when both break the same number of
+#: lines, before it is taken instead. Not zero, so a tie keeps the lead.
+CLEAREST_EDGE = 0.3
 #: Whether characters are barred from stretches the diarizer says nobody sings in.
 VOICE_MASK = os.environ.get("MORA_VOICE_MASK", "1") != "0"
 #: Room left on each side of a sung stretch before the bar comes down (ms).
@@ -1956,6 +1959,56 @@ def settle_turns(path: Path, lines: list[dict], out: list[list[dict]],
     return done
 
 
+def clearest(path: Path, lines: list[dict], tokenize) -> Path:
+    """Pick the stem to align on by **aligning on both and keeping the better result.**
+
+    The lead stem is the base everywhere else, and on most songs it is right — the karaoke split
+    pushes the backing out of the way and the lead comes through cleaner. On a quiet, breathy song
+    it is the opposite: the split takes so much away that little is left to hear. Asked to
+    transcribe 야해 at 24 s, the lead stem gave `주니스 시와 말 시이 화치와` and the vocals stem
+    `조이스쉬 마기 시내 화치화` against a true `조용히 숨을 셔 … 맞춰` — the second is recognisable
+    and the first is not. Built on the lead, `워낙 넌 착해서 그렇게는 못할걸` landed at 48.4 s;
+    built on the vocals, at 44.2 s, which is where scoring that line at seven candidate places puts
+    it, and the song's broken lines went 1 → 0.
+
+    Scoring the two stems against each other was tried first and could not tell them apart — over a
+    whole song the totals came out within a few percent on every song, lead ahead each time,
+    including the one where the vocals plainly win. So nothing is predicted: both are aligned and
+    the finished results are compared with the yardstick already trusted elsewhere — how many lines
+    `flag_stuck` calls broken, and then how sure the model was. It costs one more acoustic pass, a
+    few seconds against the minutes separation already took.
+
+    @param {Path} path - The original audio.
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @returns {Path} The stem to align on.
+    """
+    lead, _ = voices_of(path)
+    vocals = vocals_of(path)
+    if not vocals.exists() or vocals == lead:
+        return lead
+
+    def judge(stem: Path) -> tuple[int, float]:
+        """How badly one stem's alignment came out — fewer broken lines first, then confidence.
+
+        @param {Path} stem - The stem to align on.
+        @returns {tuple[int, float]} Broken lines, and the median of each line's best character.
+        """
+        out = align_song(stem, lines, tokenize, separate=False, source=path)
+        broke = sum(1 for one in out if one and one[0].get("stuck"))
+        best = sorted(max(two.get("sure", -9.0) for word in one for two in (word.get("chars") or [])
+                          if two.get("at") is not None)
+                      for one in out
+                      if any(two.get("at") is not None for word in one for two in (word.get("chars") or [])))
+        return broke, best[len(best) // 2] if best else -9.0
+
+    lead_broke, lead_sure = judge(lead)
+    vocals_broke, vocals_sure = judge(vocals)
+    if vocals_broke < lead_broke or (vocals_broke == lead_broke and vocals_sure > lead_sure + CLEAREST_EDGE):
+        return vocals
+    return lead
+
+
 def guess_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     """Invent a rough start time for every line, for songs whose sheet carries none.
 
@@ -2091,6 +2144,9 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     @returns {tuple[list[list[dict]], dict[int, int]]} Per-line words, and per-line lane.
     """
     lead, back = voices_of(path)
+    #: 어느 갈래에서 더 잘 들리는지 재서 바탕을 고른다. 대개는 리드가 맞지만, 숨소리에 가까운
+    #: 곡에서는 가르기가 너무 많이 걷어내 보컬 갈래가 낫다.
+    lead = clearest(path, lines, tokenize)
 
     #: 밖에서 온 시각이 하나도 없으면 지어서 쓴다. 내보내는 값이 아니라, 시계를 필요로 하는
     #: 단계들에게만 건네는 밑그림이다 — 그 단계들은 정렬이 스스로 무너졌다고 말할 때만 줄을
