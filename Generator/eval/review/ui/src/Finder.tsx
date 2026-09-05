@@ -8,8 +8,8 @@
 
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AudioHit, LyricHit, LyricSource } from "./api";
-import { clock, findAudio, findLyrics } from "./api";
+import type { AudioHit, Line, LyricHit, LyricSource } from "./api";
+import { clock, findAudio, findLyrics, readPasted } from "./api";
 
 /** Which panes are open: both sides at once, lyrics only, or audio only. */
 export type Mode = "both" | "lyrics" | "audio" | "paste";
