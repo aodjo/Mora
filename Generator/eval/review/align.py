@@ -125,6 +125,10 @@ CLOCK_APART_LEAST_MS = 500
 CLOCK_APART_TIMES = 5
 #: How far before the first line's outside time a character may still be placed (ms).
 HEAD_ROOM_MS = 3000
+#: Whether characters are barred from stretches the diarizer says nobody sings in.
+VOICE_MASK = os.environ.get("MORA_VOICE_MASK", "1") != "0"
+#: Room left on each side of a sung stretch before the bar comes down (ms).
+VOICE_MASK_EDGE_MS = 700
 #: A character this sure (log-margin against the model's own best guess; 0 is certain) counts as
 #: **heard**. On MMS_FA a healthy line's best character sits around −0.2 ~ −1.0 and a passage the
 #: model cannot hear at all reads −5 and below on every character, so −1.0 separates the two.
@@ -1342,7 +1346,8 @@ def pinned(log_probs, tokens: list[int], pins):
     return out if len(out) == len(tokens) else None
 
 
-def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True) -> list[list[dict]]:
+def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True,
+              source: Path | None = None) -> list[list[dict]]:
     """Align one song **in a single pass** and return the per-line word list.
 
     No window is placed per line. Line times mark only the **start**, so any window end is wrong,
@@ -1483,14 +1488,48 @@ def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True) ->
     #: 막는 자리는 첫 줄의 밖 시각에서 `HEAD_ROOM_MS` 앞이다. 열 곡을 재 보니 줄 시작이 밖 시각과
     #: ±0.6 초 안이라 3 초는 넉넉하다. 프레임을 잘라 내는 대신 그 구간의 낱자 확률만 눌러 둔다 —
     #: 프레임 번호가 그대로라 되짚기·시계가 쓰는 절대 시각이 어긋나지 않는다.
+    per_frame = audio.shape[-1] / log_probs.shape[1] / SAMPLE_RATE * 1000
     said_at = [one["at"] for one in lines if one.get("at") is not None]
     if said_at:
-        per_frame = audio.shape[-1] / log_probs.shape[1] / SAMPLE_RATE * 1000
         head = int((min(said_at) - HEAD_ROOM_MS) / per_frame)
         if head > 0:
             log_probs = log_probs.clone()
             log_probs[0, :head, :] = -1e4
             log_probs[0, :head, blank] = 0.0
+
+    #: 아무도 안 부르는 구간에는 낱자를 못 놓게 한다.
+    #:
+    #: 강제 정렬에는 「여기는 노래가 아니다」라고 말할 방법이 없다 — 소리를 통째로 다 써야 하므로
+    #: 간주와 아웃트로에 가사가 번져 들어가고, 그러면 뒤쪽 줄이 통째로 밀린다. 하치와레girl 은
+    #: 바이브가 124 초에 끝난다는데 우리는 142.9 초까지 늘여 놓았고, 129.3~136.7 초와 137.3~140.1 초
+    #: — 화자 자르기가 **아무도 안 부른다**고 말하는 바로 그 자리 — 에 마지막 줄들이 있었다.
+    #:
+    #: 화자 자르기는 이미 그것을 안다. 그 토막 밖은 낱자 확률을 눌러 둔다. 잰 값:
+    #:
+    #:   하치와레girl   바이브와의 차 +6.2 초 → **+0.1 초**, 폭 19.8 → 5.5 초, 튀는 이음매 4 → 1
+    #:   Small girl    최고확신·튐·가운뎃값 그대로, 폭만 0.9 → 3.5 초
+    #:   붉은 노을      최고확신 −3.00 → −2.36, 무너짐 13 → 12
+    #:
+    #: 여유는 좁게 둔다. 1.5·3.0 초로 넓히면 하치와레girl 이 다시 +0.8 초/16.7 초로 벌어졌다 —
+    #: 넓힌 여유가 곧 아웃트로를 다시 열어 준다.
+    #:
+    #: **밖에서 온 줄 시각이 없을 때 이것이 유일한 버팀목이다.** 그때는 시계 맞추기도 되짚기도
+    #: 아무 일을 못 한다.
+    if VOICE_MASK:
+        #: `spans` 는 이 함수에서 이미 줄마다의 낱자 수다 — 같은 이름을 쓰는 바람에 `rethink` 이
+        #: 화자 토막을 낱자 수로 알고 터졌다. 이 갈래에서만 세 번째 겪는 그림자다.
+        sung = [(a, b) for one in voices_apart(source or path).get("쪽", []) for a, b in one["토막"]]
+        if sung:
+            import torch
+            keep = torch.zeros(log_probs.shape[1], dtype=torch.bool)
+            for a, b in sung:
+                since = max(0, int((a * 1000 - VOICE_MASK_EDGE_MS) / per_frame))
+                until = min(log_probs.shape[1], int((b * 1000 + VOICE_MASK_EDGE_MS) / per_frame))
+                keep[since:until] = True
+            if bool(keep.any()):
+                log_probs = log_probs.clone()
+                log_probs[0, ~keep, :] = -1e4
+                log_probs[0, ~keep, blank] = 0.0
 
     paths, scores = F.forced_align(log_probs, torch.tensor([tokens]), blank=blank)
     merged = F.merge_tokens(paths[0], scores[0], blank=blank)
@@ -1616,7 +1655,8 @@ def in_order(out: list[list[dict]], index: int, now: list[dict]) -> bool:
 LATIN = re.compile(r"[A-Za-z]")
 
 
-def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -> list[list[dict]]:
+def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True,
+               source: Path | None = None) -> list[list[dict]]:
     """Align one song with the backend named by `ACOUSTIC`, or with both under `"hybrid"`.
 
     Measured over ten songs, kresnik (Hangul syllables) and MMS_FA (romanised) win in different
@@ -1635,13 +1675,13 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -
     """
     global ACOUSTIC
     if ACOUSTIC != "hybrid":
-        return align_one(path, lines, tokenize, separate)
+        return align_one(path, lines, tokenize, separate, source)
     was = ACOUSTIC
     got: dict[str, list[list[dict]]] = {}
     try:
         for one in ("mms", "kresnik"):
             ACOUSTIC = one
-            got[one] = align_one(path, lines, tokenize, separate)
+            got[one] = align_one(path, lines, tokenize, separate, source)
     finally:
         ACOUSTIC = was
     out = got["mms"]
@@ -1993,7 +2033,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
 
     lanes: dict[int, int] = {index: 0 for index in range(len(lines))}
     tries = [("리드", lead), ("서브", back), ("보컬", vocals_of(path)), ("원본", path)]
-    out = align_song(lead, lines, tokenize, separate=False)
+    out = align_song(lead, lines, tokenize, separate=False, source=path)
 
     marks = [(index, one[0]["at"]) for index, one in enumerate(out)
              if one and lines[index].get("at") is not None]
@@ -2001,7 +2041,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             if marks else 0)
 
     for name, stem in tries[1:]:
-        other = align_song(stem, lines, tokenize, separate=False)
+        other = align_song(stem, lines, tokenize, separate=False, source=path)
         for index, got in enumerate(other):
             if not got or got[0].get("stuck"):
                 continue
@@ -2043,7 +2083,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             continue
         only = [lines[index] if index in set(mine) else {**line, "text": ""}
                 for index, line in enumerate(lines)]
-        apart = align_song(back, only, tokenize, separate=False)
+        apart = align_song(back, only, tokenize, separate=False, source=path)
         for index in mine:
             got = apart[index]
             if not got or got[0].get("stuck"):
