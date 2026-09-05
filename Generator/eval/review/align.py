@@ -122,6 +122,17 @@ CLOCK_TIGHT_MS = 300
 #: while catching that.
 CLOCK_APART_LEAST_MS = 500
 CLOCK_APART_TIMES = 5
+#: A character this sure (log-margin against the model's own best guess; 0 is certain) counts as
+#: **heard**. On MMS_FA a healthy line's best character sits around −0.2 ~ −1.0 and a passage the
+#: model cannot hear at all reads −5 and below on every character, so −1.0 separates the two.
+SURE_HEARD = -1.0
+#: How far off the clock a line the model plainly heard may sit and still be left alone (ms).
+#:
+#: A rapper coming in after the beat is a fraction of a bar — 고스트시티 16 번 is 0.6 s late and
+#: right. Four seconds is not a late entry, it is the wrong take of a repeated phrase, and those
+#: are exactly the lines the model places with confidence in the wrong place; the clock has to win
+#: there.
+CLOCK_HEARD_MS = 1500
 #: How many lines must carry an outside time before the clock is judged at all.
 CLOCK_LEAST = 8
 #: How much better per token the backing stem must score before a line is taken as backing.
@@ -540,6 +551,25 @@ def unpack_song(out: list[list[dict]]) -> None:
         for at, one in enumerate(chars):
             one["at"] = int(base + step * at)
             one["end"] = int(base + step * (at + 1))
+
+    #: 외로운 머리. 못이 줄 머리를 바이브 자리에 박으면 첫 낱자만 거기 남고 나머지는 모델이 들은
+    #: 자리로 간다 — 고스트시티 16 번 `근본적인 속부터…` 은 「근」이 64.05 초에 홀로 서고 「본」은
+    #: 0.92 초 뒤에 오며, 확신도가 「근」 −5.8, 「본」 −0.76 이다. 사람은 「근」만 한 박 먼저 켜졌다가
+    #: 멈추는 것으로 본다(「1:04 가 이상하게 처리되었어」). 열 곡에서 열두 줄, 전부 랩이다.
+    #:
+    #: 줄 몸통의 보통 틈보다 세 배 넘게(그리고 0.5 초 넘게) 떨어져 있고 **확신도도 몸통의 가운뎃값
+    #: 아래**인 첫 낱자만 몸통 바로 앞으로 붙인다. 길게 끄는 진짜 첫 음절은 확신도가 세어서 안 걸린다.
+    for chars in mine:
+        if len(chars) < 4:
+            continue
+        gaps = [chars[at + 1]["at"] - chars[at]["at"] for at in range(len(chars) - 1)]
+        rest = sorted(gaps[1:])
+        usual = rest[len(rest) // 2]
+        sures = sorted(one.get("sure", -9.0) for one in chars)
+        if gaps[0] <= max(500, usual * 3) or chars[0].get("sure", -9.0) >= sures[len(sures) // 2]:
+            continue
+        chars[0]["at"] = chars[1]["at"] - max(LEAST_MS, usual)
+        chars[0]["end"] = chars[1]["at"]
 
     for words in out:
         for word in words:
@@ -1091,6 +1121,23 @@ def settle_clock(lines: list[dict], out: list[list[dict]]) -> None:
         return
     limit = max(CLOCK_APART_LEAST_MS, scatter * CLOCK_APART_TIMES)
 
+    #: 시계 맞추기는 **모델이 못 들은 줄**을 위한 것이다. 모델이 확신을 갖고 놓은 줄까지 끌면
+    #: 그 확신을 버리는 셈이다 — 고스트시티 16 번은 「본」이 −0.76 으로 64.97 초에 또렷한데, 외로운
+    #: 머리를 몸통에 붙이자 줄 시작이 시계에서 0.67 초 떨어졌고, 그걸 튄 줄로 보아 통째로 64.04 초로
+    #: 끌어와 「본」이 64.35 초가 됐다. 래퍼가 박자 뒤에 들어온 것이지 우리가 틀린 것이 아니다.
+    #: 「확신도 가운뎃값이 곡의 가운뎃값 이상이면 믿는다」로 먼저 해 봤다가 물렸다. 되풀이 구절은
+    #: **확신 있게 틀린 자리**에 놓이므로 그 문을 63 번(−4.59 초)과 파란달팽이 3·4 번(−14.5 초)까지
+    #: 통과했고, 고스트시티의 튄 줄이 0 에서 16 으로 돌아갔다. 32 번(틀림, +0.60)과 16 번(맞음, +0.6)을
+    #: 실제로 가르는 것은 다르다 — 32 번은 낱자가 전부 바닥에 붙어 있었고 16 번에는 「본」 −0.76,
+    #: 「나」 −0.24 처럼 **거의 확실한** 낱자가 있다. 그런 낱자가 하나라도 있고, 어긋남이 박자 뒤에
+    #: 들어온 만큼(한 박 안)일 때만 제자리를 믿는다. 4 초는 늦게 들어온 것이 아니라 딴 자리다.
+    heard: dict[int, float] = {}
+    for index, words in enumerate(out):
+        got = [one.get("sure", -9.0) for word in words for one in (word.get("chars") or [])
+               if one["at"] is not None]
+        if got:
+            heard[index] = max(got)
+
     order = sorted(edge)
     for spot, index in enumerate(order):
         if lines[index].get("at") is None:
@@ -1098,6 +1145,8 @@ def settle_clock(lines: list[dict], out: list[list[dict]]) -> None:
         since, until = edge[index]
         want = lines[index]["at"] + mid
         if abs(since - want) <= limit:
+            continue
+        if heard.get(index, -9.0) >= SURE_HEARD and abs(since - want) <= CLOCK_HEARD_MS:
             continue
         #: 방의 경계는 옆 줄의 **시계 자리**다. 옆 줄의 지금 자리로 막으면, 한 대목의 여러 줄이 함께
         #: 밀려 있을 때 서로가 서로를 막아 아무도 못 움직인다 — 고스트시티 24 번은 25 번이 0.29 초
