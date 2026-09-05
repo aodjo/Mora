@@ -1956,6 +1956,62 @@ def settle_turns(path: Path, lines: list[dict], out: list[list[dict]],
     return done
 
 
+def guess_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
+    """Invent a rough start time for every line, for songs whose sheet carries none.
+
+    Everything that keeps a long song from drifting — `rethink`'s pins, `settle_clock` — needs a
+    clock to compare against, and a pasted sheet has none. Blind, the aligner holds for the first
+    verse and then wanders: 야해's line 6 ends at 44.2 s and line 7 starts at 61.2 s, seventeen
+    seconds of singing skipped, and the eleven lines after it are crammed into twelve. Over eleven
+    songs, lines landing where they belong fell from 94% with the outside clock to 75% without.
+
+    The diarizer says which stretches are sung. Lines are laid across those stretches in proportion
+    to how many syllables each carries — a fourteen-syllable line is given twice the room of a
+    seven — which is a coarse guess but an honest one: it assumes only that singing is spread
+    through the sung part, not that any particular line sits anywhere.
+
+    It is a **prior, not an answer.** It is handed to the passes that want a clock and never
+    written out; where the audio disagrees, the audio wins, because those passes only move a line
+    when the alignment itself shows it broke.
+
+    @param {Path} path - The original audio, for the cached diarization beside it.
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @returns {list[int] | None} A start in ms for each line, or None when there is nothing to go on.
+    """
+    said = voices_apart(path)
+    if not said.get("쪽"):
+        return None
+    spans = sorted((a, b) for one in said["쪽"] for a, b in one["토막"])
+    room: list[list[float]] = []
+    for a, b in spans:
+        if room and a - room[-1][1] <= 0.5:
+            room[-1][1] = max(room[-1][1], b)
+        else:
+            room.append([a, b])
+    room = [one for one in room if one[1] - one[0] >= 0.5]
+    total = sum(b - a for a, b in room)
+    weight = [sum(len(grains_of(speakable(word))) for word in tokenize(one.get("text", "")))
+              for one in lines]
+    if total <= 0 or sum(weight) <= 0:
+        return None
+
+    out: list[int] = []
+    gone = 0.0
+    step = total / sum(weight)
+    for one in weight:
+        where = gone
+        for a, b in room:
+            if where <= b - a:
+                out.append(int((a + where) * 1000))
+                break
+            where -= b - a
+        else:
+            out.append(int(room[-1][1] * 1000))
+        gone += one * step
+    return out
+
+
 def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     """Align a song against every separated stem and keep the best placement per line.
 
@@ -2035,6 +2091,14 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     @returns {tuple[list[list[dict]], dict[int, int]]} Per-line words, and per-line lane.
     """
     lead, back = voices_of(path)
+
+    #: 밖에서 온 시각이 하나도 없으면 지어서 쓴다. 내보내는 값이 아니라, 시계를 필요로 하는
+    #: 단계들에게만 건네는 밑그림이다 — 그 단계들은 정렬이 스스로 무너졌다고 말할 때만 줄을
+    #: 움직이므로, 밑그림이 틀려도 소리가 이긴다.
+    if not any(one.get("at") is not None for one in lines):
+        guessed = guess_clock(path, lines, tokenize)
+        if guessed:
+            lines = [{**one, "at": at} for one, at in zip(lines, guessed)]
 
     lanes: dict[int, int] = {index: 0 for index in range(len(lines))}
     tries = [("리드", lead), ("서브", back), ("보컬", vocals_of(path)), ("원본", path)]
