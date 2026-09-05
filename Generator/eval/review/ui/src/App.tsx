@@ -263,7 +263,8 @@ export default function App() {
    * @returns {number} Start of the line in lyric-clock milliseconds.
    */
   const startOf = useCallback(
-    (line: Line) => line.words?.find((word) => word?.at != null)?.at ?? line.at,
+    //: 밖에서 온 시각은 없을 수 있다 — 붙여 넣은 가사가 그렇다. 맞춘 낱말이 유일한 자리가 된다.
+    (line: Line) => line.words?.find((word) => word?.at != null)?.at ?? line.at ?? null,
     []);
 
   /**
@@ -315,7 +316,8 @@ export default function App() {
     }
     let found = -1;
     for (let i = 0; i < lines.length; i++) {
-      if (startOf(lines[i]) <= at) found = i;
+      const head = startOf(lines[i]);
+      if (head != null && head <= at) found = i;
     }
     return { singing: found >= 0 ? [found] : [], anchor: found };
   }, [lines, nowMs, offset, startOf, spanOf]);
@@ -447,12 +449,30 @@ export default function App() {
    * @param {{lyric?: LyricHit, audio?: AudioHit}} pick - What the finder handed back.
    * @returns {Promise<void>} Resolves once the pick has been applied.
    */
-  const onPick = useCallback(async ({ lyric, audio: picked }: { lyric?: LyricHit; audio?: AudioHit }) => {
+  const onPick = useCallback(async (
+    { lyric, audio: picked, lines: own, artist, title }:
+    { lyric?: LyricHit; audio?: AudioHit; lines?: Line[]; artist?: string; title?: string },
+  ) => {
     setFinder(null);
     try {
       if (finder === "audio" && picked && song) {
         await patch({ video_id: picked.video_id });
         say("음원 바꿈", "work"); await open(song.id); return;
+      }
+      //: 붙여 넣은 가사. 시각이 없을 수 있으므로 길이는 고른 음원에서 가져온다 — 가사 쪽에는
+      //: 길이랄 것이 없고, 아티스트·제목도 사람이 적은 것을 그대로 쓴다.
+      if (own && picked) {
+        const made = await addSong({
+          video_id: picked.video_id,
+          artist: artist || picked.uploader || "모름",
+          title: title || picked.title,
+          duration: picked.duration, lines: own,
+        });
+        await refresh(); await open(made.id);
+        const timed = own.filter((one) => one.at != null).length;
+        say(`넣었습니다 — ${made.title} · ${own.length}줄` +
+            (timed ? ` (시각 ${timed}줄)` : " (시각 없이)"), "work");
+        return;
       }
       if (!lyric) return;
       let videoId = picked?.video_id;

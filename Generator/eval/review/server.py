@@ -559,6 +559,55 @@ def artist_core(name: str) -> str:
     return hangul or re.sub(r"[^a-z0-9]", "", name.lower())
 
 
+#: Leading track marks a pasted sheet often carries — `1.`, `01)`, `[Verse 1]`, `(Chorus)`.
+PASTED_MARK = re.compile(r"^\s*(?:\d{1,2}\s*[.)]\s+|\[[^\]]{0,24}\]\s*|\((?:verse|chorus|bridge|hook|intro|outro)[^)]{0,12}\)\s*)",
+                         re.I)
+#: A timestamp at the head of a line, in either LRC or plain form — `[01:23.45]` or `01:23`.
+PASTED_STAMP = re.compile(r"^\s*[\[(]?(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?[\])]?\s*")
+
+
+@app.post("/api/paste")
+async def read_pasted(request: Request) -> dict:
+    """Turn a pasted sheet into lines, with times when the paste happens to carry them.
+
+    The tool could only take a sheet a lyric service already held, and most songs have no synced
+    sheet at all — a person has the words and nothing else. The aligner does not need the times;
+    it needs the words in order. Anything the paste does carry is kept, since a rough clock still
+    helps the passes that lean on one, and anything it does not is simply absent.
+
+    What is stripped: blank lines, `[Verse 1]`-style section headings, leading track numbers, and
+    a leading timestamp in either `[01:23.45]` or `01:23` form. What is kept: the words as written,
+    brackets included — brackets are how a sheet marks the backing singer, and the aligner reads
+    them.
+
+    @param {Request} request - Request whose JSON body carries `text`.
+    @returns {dict} `lines` in the shape the aligner takes, and how many carried a time.
+    @throws {HTTPException} 400 when the paste holds no line worth singing.
+    """
+    body = await request.json()
+    lines: list[dict] = []
+    timed = 0
+    for one in (body.get("text") or "").splitlines():
+        one = one.replace("\u3000", " ").strip()
+        if not one:
+            continue
+        at = None
+        stamp = PASTED_STAMP.match(one)
+        if stamp:
+            mins, secs, rest = stamp.group(1), stamp.group(2), stamp.group(3) or "0"
+            at = (int(mins) * 60 + int(secs)) * 1000 + int(rest.ljust(3, "0")[:3])
+            one = one[stamp.end():].strip()
+        one = PASTED_MARK.sub("", one).strip()
+        if not one:
+            continue
+        if at is not None:
+            timed += 1
+        lines.append({"at": at, "text": one})
+    if not any(align_words(one["text"]) for one in lines):
+        raise HTTPException(400, "부를 것이 있는 줄이 없다")
+    return {"lines": lines, "timed": timed}
+
+
 @app.get("/api/lrclib")
 def search_lrclib(q: str = "", artist: str = "", title: str = "") -> list[dict]:
     """Search LRCLIB for lyrics, returning only the entries that carry a sync.

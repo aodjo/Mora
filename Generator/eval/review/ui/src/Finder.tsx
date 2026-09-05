@@ -12,7 +12,7 @@ import type { AudioHit, LyricHit, LyricSource } from "./api";
 import { clock, findAudio, findLyrics } from "./api";
 
 /** Which panes are open: both sides at once, lyrics only, or audio only. */
-export type Mode = "both" | "lyrics" | "audio";
+export type Mode = "both" | "lyrics" | "audio" | "paste";
 
 interface Props {
   mode: Mode;
@@ -21,7 +21,7 @@ interface Props {
   /** When swapping only the audio, the duration to compare candidates against. */
   wantSeconds?: number;
   onClose: () => void;
-  onPick: (picked: { lyric?: LyricHit; audio?: AudioHit }) => void;
+  onPick: (picked: { lyric?: LyricHit; audio?: AudioHit; lines?: Line[]; artist?: string; title?: string }) => void;
 }
 
 /**
@@ -51,6 +51,10 @@ interface Props {
  */
 export function Finder({ mode: initial, seedArtist, seedTitle, wantSeconds, onClose, onPick }: Props) {
   const [mode, setMode] = useState<Mode>(initial);
+  /** A sheet typed or pasted by hand, for songs no service has synced. */
+  const [pasted, setPasted] = useState("");
+  const [own, setOwn] = useState<{ lines: Line[]; timed: number } | null>(null);
+  const [reading, setReading] = useState(false);
   /** Lyric source, defaulting to Vibe: Korean songs go there first, because out of forty songs only five of the LRCLIB sheets were usable. */
   const [source, setSource] = useState<LyricSource>("vibe");
   const [artist, setArtist] = useState(seedArtist ?? "");
@@ -83,7 +87,7 @@ export function Finder({ mode: initial, seedArtist, seedTitle, wantSeconds, onCl
     setBusy(true); setError("");
     try {
       const [got1, got2] = await Promise.allSettled([
-        mode === "audio" ? Promise.resolve([]) : findLyrics(source, { artist, title }),
+        mode === "audio" || mode === "paste" ? Promise.resolve([]) : findLyrics(source, { artist, title }),
         mode === "lyrics" ? Promise.resolve([]) : findAudio(free),
       ]);
       setLyrics(got1.status === "fulfilled" ? (got1.value as LyricHit[]) : []);
@@ -111,7 +115,33 @@ export function Finder({ mode: initial, seedArtist, seedTitle, wantSeconds, onCl
   const audio = pickedAudio === null ? undefined : audios?.[pickedAudio];
   /** Duration every candidate is measured against: the original song's length when only the audio is being swapped, otherwise the length of the chosen lyric sheet. */
   const reference = wantSeconds ?? lyric?.duration;
-  const ready = mode === "audio" ? !!audio : mode === "lyrics" ? !!lyric : !!lyric && !!audio;
+  const ready = mode === "audio" ? !!audio
+    : mode === "lyrics" ? !!lyric
+    : mode === "paste" ? !!audio && pasted.trim().length > 0
+    : !!lyric && !!audio;
+
+  /**
+   * Hands the chosen hits up, reading the pasted sheet first when there is one.
+   *
+   * The read happens here rather than on every keystroke so a long sheet is parsed once, and the
+   * button carries the wait — a paste that turns out to hold nothing singable says so right here
+   * instead of becoming an empty song.
+   *
+   * @returns {Promise<void>} Resolves once the sheet is read and the pick is handed up.
+   */
+  const confirm = useCallback(async () => {
+    if (mode !== "paste") { onPick({ lyric, audio }); return; }
+    setReading(true); setError("");
+    try {
+      const got = own ?? await readPasted(pasted);
+      setOwn(got);
+      onPick({ audio, lines: got.lines, artist: artist.trim(), title: title.trim() });
+    } catch (why) {
+      setError(String((why as Error).message));
+    } finally {
+      setReading(false);
+    }
+  }, [mode, lyric, audio, own, pasted, artist, title, onPick]);
 
   return (
     <motion.div
@@ -129,7 +159,7 @@ export function Finder({ mode: initial, seedArtist, seedTitle, wantSeconds, onCl
         <div className="sheet-head">
           <h2>곡 넣기</h2>
           <div className="modes">
-            {([["both", "통합"], ["lyrics", "가사만"], ["audio", "음원만"]] as const).map(([key, label]) => (
+            {([["both", "통합"], ["lyrics", "가사만"], ["audio", "음원만"], ["paste", "붙여넣기"]] as const).map(([key, label]) => (
               <button key={key} className={`mode ${mode === key ? "on" : ""}`} onClick={() => setMode(key)}>
                 {label}
               </button>
@@ -142,7 +172,22 @@ export function Finder({ mode: initial, seedArtist, seedTitle, wantSeconds, onCl
         </div>
 
         <div className={`panes ${mode === "both" ? "" : "one"}`}>
-          {mode !== "audio" && (
+          {mode === "paste" && (
+            <div className="pane">
+              <div className="pane-top pane-top-row">
+                <span>가사 붙여넣기</span>
+                <span className="src">
+                  {own ? `${own.lines.length}줄 · 시각 ${own.timed}줄` : "시각 없이도 됩니다"}
+                </span>
+              </div>
+              <textarea
+                className="paste-box" autoFocus value={pasted}
+                placeholder={"가사를 그대로 붙여 넣으세요.\n\n[Verse 1] 같은 머리표, 앞의 번호, [01:23.45] 같은 시각은\n알아서 걷어냅니다. 괄호는 그대로 둡니다 — 백보컬 표시니까요."}
+                onChange={(event) => { setPasted(event.target.value); setOwn(null); }}
+              />
+            </div>
+          )}
+          {mode !== "audio" && mode !== "paste" && (
             <div className="pane">
               <div className="pane-top pane-top-row">
                 <span>가사</span>
@@ -208,7 +253,15 @@ export function Finder({ mode: initial, seedArtist, seedTitle, wantSeconds, onCl
         <div className="sheet-foot">
           <div className="picked">
             {error && <span className="picked-bad">못 찾음: {error}</span>}
-            {!error && mode !== "audio" && (
+            {!error && mode === "paste" && (
+              <span className={`picked-one ${pasted.trim() ? "set" : ""}`}>
+                <span className="picked-tag">가사</span>
+                {pasted.trim()
+                  ? `붙여넣은 ${pasted.trim().split("\n").filter((one) => one.trim()).length}줄`
+                  : "붙여 넣으세요"}
+              </span>
+            )}
+            {!error && mode !== "audio" && mode !== "paste" && (
               <span className={`picked-one ${lyric ? "set" : ""}`}>
                 <span className="picked-tag">가사</span>
                 {lyric ? `${lyric.artist} — ${lyric.title} · ${lyric.lines.length}줄` : "고르지 않음"}
@@ -224,8 +277,8 @@ export function Finder({ mode: initial, seedArtist, seedTitle, wantSeconds, onCl
               </span>
             )}
           </div>
-          <button className="go" disabled={!ready} onClick={() => onPick({ lyric, audio })}>
-            {mode === "audio" ? "바꾸기" : "넣기"}
+          <button className="go" disabled={!ready || reading} onClick={confirm}>
+            {reading ? <span className="spin" /> : mode === "audio" ? "바꾸기" : "넣기"}
           </button>
         </div>
       </motion.div>

@@ -45,7 +45,14 @@ export interface Word {
 
 /** One line of lyrics with its start time and, once aligned, its words. */
 export interface Line {
-  at: number;
+  /**
+   * Where the line starts, in ms, as the lyric source gave it.
+   *
+   * Null when the sheet carried no time — a pasted sheet usually does not, and most songs have no
+   * synced sheet anywhere. The aligner does not need it; the passes that lean on a clock simply
+   * stand down when it is absent.
+   */
+  at: number | null;
   /**
    * Which voice this is. 0 = main, 1 = sub (backing vocals, ad-libs).
    *
@@ -177,6 +184,19 @@ export const dropSong = (id: number) =>
 export const addSong = (song: {
   video_id: string; artist: string; title: string; duration: number; lines: Line[];
 }) => ask<Song>("/api/songs", { method: "POST", body: JSON.stringify(song) });
+
+/**
+ * Turns a pasted sheet into lines the aligner can take.
+ *
+ * Most songs have no synced sheet anywhere — a person has the words and nothing else. The aligner
+ * only needs them in order; a time on a line is kept when the paste happens to carry one, because
+ * the passes that lean on a clock still use it, and the rest go in without.
+ *
+ * @param {string} text - The sheet as pasted, newlines and all.
+ * @returns {Promise<{ lines: Line[]; timed: number }>} The lines, and how many carried a time.
+ */
+export const readPasted = (text: string) =>
+  ask<{ lines: Line[]; timed: number }>("/api/paste", { method: "POST", body: JSON.stringify({ text }) });
 
 /** Lyrics source. Vibe is better for Korean songs — many LRCLIB sheets are written in romanized script. */
 export type LyricSource = "vibe" | "lrclib";

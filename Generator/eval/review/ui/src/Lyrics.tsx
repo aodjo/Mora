@@ -302,7 +302,10 @@ export function Lyrics({ lines, offsetMs, anchor, singing, nowMs, onSeek }: Prop
               className={`lyric ${now ? "now" : ""} ${alongside(index) ? "second" : ""}`}
               onClick={() => {
                 setDrift(0);
-                onSeek((line.words?.find((one) => one?.at != null)?.at ?? line.at) + offsetMs);
+                //: 붙여 넣은 가사에는 밖 시각이 없다. 맞추기 전이라면 옮겨 갈 자리도 없으므로
+                //: 아무 일도 하지 않는다 — 0 초로 튀는 것보다 낫다.
+                const head = line.words?.find((one) => one?.at != null)?.at ?? line.at;
+                if (head != null) onSeek(head + offsetMs);
               }}
               initial={false}
               animate={{
@@ -327,7 +330,12 @@ export function Lyrics({ lines, offsetMs, anchor, singing, nowMs, onSeek }: Prop
               whileHover={{ opacity: 1, filter: "blur(0px)" }}
             >
               <Sung line={line} offsetMs={offsetMs} nowMs={now ? nowMs : -1} />
-              <span className="lyric-at">{clock((line.at + offsetMs) / 1000)}</span>
+              <span className="lyric-at">
+                {(() => {
+                  const head = line.words?.find((one) => one?.at != null)?.at ?? line.at;
+                  return head == null ? "—" : clock((head + offsetMs) / 1000);
+                })()}
+              </span>
               {line.words?.[0]?.stuck && (
                 <span className="lyric-stuck" title={line.words[0].stuck}>무너짐</span>
               )}

@@ -705,3 +705,14 @@ input { border: 0; background: none; outline: none; }
 .hit-check { color: var(--good); font-size: 14px; font-weight: 700; width: 12px; flex: none; }
 
 .build-6a5bf9d6 { color: red; }
+
+/* 붙여 넣는 가사. 시각 붙은 가사가 없는 곡이 훨씬 많아, 사람이 가진 글을 그대로 받는 길이다. */
+.paste-box {
+  flex: 1; min-height: 260px; resize: none; width: 100%;
+  padding: 14px 16px; border: 0; outline: none;
+  background: rgba(255, 255, 255, 0.03); color: var(--ink);
+  font-family: var(--sans); font-size: 14px; line-height: 1.65;
+  border-radius: 0 0 12px 12px;
+}
+.paste-box::placeholder { color: var(--dimmer); line-height: 1.8; }
+.paste-box:focus { background: rgba(255, 255, 255, 0.055); }
