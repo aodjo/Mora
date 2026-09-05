@@ -107,8 +107,21 @@ RETHINK_NEXT = True
 #: the two that sit five seconds away are not a different arrangement.
 CLOCK_TIGHT_MS = 300
 #: How far from the song's own offset a line must sit, in a song whose clock is tight, before it is
-#: slid back (ms). Well above `SUSPECT_MS`, because this correction ignores the audio entirely.
-CLOCK_APART_MS = 1500
+#: slid back — the floor (ms), and the multiple of the measured scatter that raises it.
+#:
+#: A fixed 1500 ms was chosen first, well above `SUSPECT_MS`, because this correction ignores the
+#: audio. It was too timid. Measured over ten songs the scatter around the clock is 0.02~0.10 s,
+#: and in that world a line 0.8~1.5 s off is not a close call — 붉은 노을 kept lines at +0.78,
+#: +0.83, +1.33 and +1.57 s, and 고스트시티's refrain a dozen of them, all just under the bar.
+#: The limit is now `max(floor, scatter × times)`: a song whose lines sit within 70 ms of the
+#: clock gets a 500 ms bar, and a looser song a proportionally looser one.
+#:
+#: Eight times the scatter was tried first and left 고스트시티's line 32 at +0.60 s under a 0.72 s
+#: bar — six and a half times the scatter of every other line in the song is not a close call.
+#: Five keeps the bar above `SUSPECT_MS` for any song this will run on (scatter ≤ 0.10 s → ≤ 0.5 s)
+#: while catching that.
+CLOCK_APART_LEAST_MS = 500
+CLOCK_APART_TIMES = 5
 #: How many lines must carry an outside time before the clock is judged at all.
 CLOCK_LEAST = 8
 #: How much better per token the backing stem must score before a line is taken as backing.
@@ -374,7 +387,7 @@ CRAMP_ROOM = 2.0
 SPREAD_MOST_MS = 500
 
 
-def spread_crammed(chars: list[dict]) -> None:
+def spread_crammed(chars: list[dict], roof: int | None = None) -> None:
     """Spread a run of characters stuck at the minimum spacing across the room it actually has.
 
     Characters sitting exactly `CRAMP_MS` apart are not a measurement. They are what is left after
@@ -399,7 +412,17 @@ def spread_crammed(chars: list[dict]) -> None:
     healthy line, on the lead, backing and vocals stems alike. There is no stem where this run can
     be heard, so no better placement is available to find.
 
-    @param {list[dict]} chars - Character dicts carrying "at"/"end", modified in place.
+    **A run never crosses a line.** The song was first handed over as one stream so that a run at
+    the end of a line could see the room before the next line — and then a run that began in the
+    tail of one line and continued into the head of the next was spread as one piece from the
+    earlier line's base, which **moved the later line's first character**. Bigbang's line 14 went
+    from 53.72 s, on the clock, to 55.35 s, 1.7 s late, and six more lines with it; the song had
+    been clean the day before. So the caller now spreads a line at a time and passes the room after
+    it as `roof`, and a line's own first character never moves.
+
+    @param {list[dict]} chars - One line's character dicts carrying "at"/"end", modified in place.
+    @param {int | None} [roof=None] - Where the next line's first character starts, in ms; the
+        room a run at the end of this line may spread into. None means the line's own end.
     @returns {None}
     """
     if any(one["at"] is None for one in chars):
@@ -411,14 +434,23 @@ def spread_crammed(chars: list[dict]) -> None:
         while last + 1 < total and chars[last + 1]["at"] - chars[last]["at"] <= PACKED_MS:
             last += 1
         count = last - spot + 1
-        if count >= CRAMP_RUN:
+        #: 여섯 개 넘게 붙은 덩어리만 보면 두 가지를 놓친다. 다섯 음절짜리 줄(고스트시티의 `소외된
+        #: 노예`)은 통째로 바닥에 붙어도 영영 여섯이 안 되고, 시계 맞추기가 꼬리를 자르며 한 순간에
+        #: 포개 놓은 낱자들(사이 0 ms — 정렬기는 `CRAMP_MS` 아래로는 절대 안 놓는다)은 넷이면 넷인
+        #: 채로 남았다. 줄 전체가 붙었거나 사이가 0 인 것이 있으면 셋만 돼도 덩어리로 친다.
+        stuck_flat = any(chars[one + 1]["at"] - chars[one]["at"] <= 0 for one in range(spot, last))
+        if count >= CRAMP_RUN or (count >= 3 and (count == total or stuck_flat)):
             # The room reaches to where the next character starts. The crammed run's own end is
             # not a bound — it was derived from the cramming, so taking the smaller of the two
             # would always hand back the very number being corrected.
-            roof = (chars[last + 1]["at"] if last + 1 < total
-                    else (chars[last]["end"] or chars[last]["at"]))
+            if last + 1 < total:
+                edge = chars[last + 1]["at"]
+            elif roof is not None:
+                edge = roof
+            else:
+                edge = chars[last]["end"] or chars[last]["at"]
             base = chars[spot]["at"]
-            room = min(roof - base, count * SPREAD_MOST_MS)
+            room = min(edge - base, count * SPREAD_MOST_MS)
             if room > max(count * CRAMP_MS, chars[last]["at"] - base) * CRAMP_ROOM:
                 step = room / count
                 for at in range(count):
@@ -435,10 +467,14 @@ def packed_run(chars: list[dict]) -> bool:
     """
     run = 1
     for before, now in zip(chars, chars[1:]):
+        #: 같은 순간에 포개진 낱자는 정렬기가 놓은 것이 아니라 잘라 낸 자국이다. 하나만 있어도
+        #: 그 줄의 읽기는 못 믿는다.
+        if now["at"] - before["at"] <= 0:
+            return True
         run = run + 1 if now["at"] - before["at"] <= PACKED_MS else 1
         if run >= CRAMP_RUN:
             return True
-    return False
+    return len(chars) >= 3 and run == len(chars)
 
 
 def unpack_song(out: list[list[dict]]) -> None:
@@ -479,11 +515,20 @@ def unpack_song(out: list[list[dict]]) -> None:
     """
     mine = [[one for word in words for one in (word.get("chars") or []) if one["at"] is not None]
             for words in out]
-    spread_crammed([one for chars in mine for one in chars])
-
     after = [chars[0]["at"] for chars in mine if chars]
+    #: 줄마다 따로 편다. 곡을 한 줄기로 넘기면 앞줄 꼬리와 붙은 덩어리가 줄 경계를 넘어 다음 줄
+    #: 첫 낱자를 뒤로 밀어낸다 — 붉은 노을 14 번이 그렇게 1.7 초 늦어졌다. 방은 다음 줄이 시작하는
+    #: 데까지로 그대로 주되, 줄의 첫 낱자는 절대 안 움직인다.
     for chars in mine:
-        if len(chars) < CRAMP_RUN or not packed_run(chars):
+        if not chars:
+            continue
+        later = [one for one in after if one > chars[0]["at"]]
+        spread_crammed(chars, min(later) if later else None)
+    for chars in mine:
+        #: 여기도 여섯 개 문이 있었다. 고스트시티 67 번 `소외된 노예` 는 낱자 다섯 — 첫 낱자 뒤 2.1 초가
+        #: 비고 나머지 넷이 한 순간에 포개져 있는데, 다섯이라 줄째 나누는 길에 못 들어와 그대로 남았다.
+        #: 붙었는지는 `packed_run` 이 가리고, 여기서는 나눌 만한 수(셋)만 본다.
+        if len(chars) < 3 or not packed_run(chars):
             continue
         base = chars[0]["at"]
         later = [one for one in after if one > base]
@@ -1041,8 +1086,10 @@ def settle_clock(lines: list[dict], out: list[list[dict]]) -> None:
         return
     mid = sorted(off)[len(off) // 2]
     apart = sorted(abs(one - mid) for one in off)
-    if apart[len(apart) // 2] > CLOCK_TIGHT_MS:
+    scatter = apart[len(apart) // 2]
+    if scatter > CLOCK_TIGHT_MS:
         return
+    limit = max(CLOCK_APART_LEAST_MS, scatter * CLOCK_APART_TIMES)
 
     order = sorted(edge)
     for spot, index in enumerate(order):
@@ -1050,23 +1097,50 @@ def settle_clock(lines: list[dict], out: list[list[dict]]) -> None:
             continue
         since, until = edge[index]
         want = lines[index]["at"] + mid
-        if abs(since - want) <= CLOCK_APART_MS:
+        if abs(since - want) <= limit:
             continue
+        #: 방의 경계는 옆 줄의 **시계 자리**다. 옆 줄의 지금 자리로 막으면, 한 대목의 여러 줄이 함께
+        #: 밀려 있을 때 서로가 서로를 막아 아무도 못 움직인다 — 고스트시티 24 번은 25 번이 0.29 초
+        #: 일찍 놓여 있어서 제자리로 못 갔고, 25 번은 24 번 꼬리에 막혔다. 시계가 좁다고 이미 판정한
+        #: 곡이므로 옆 줄이 진짜로 시작하는 자리는 그 줄의 시계 자리다. 시각이 없는 줄만 지금 자리를 쓴다.
         before = order[spot - 1] if spot else None
-        floor = edge[before][0] + LEAST_MS if before is not None else 0
-        roof = edge[order[spot + 1]][0] - LEAST_MS if spot + 1 < len(order) else want + (until - since)
-        want = max(floor, min(want, roof - (until - since)))
-        if want < floor or want + (until - since) > roof or abs(want - since) <= CLOCK_APART_MS:
+        after = order[spot + 1] if spot + 1 < len(order) else None
+        floor = 0
+        if before is not None:
+            floor = (lines[before]["at"] + mid if lines[before].get("at") is not None
+                     else edge[before][0]) + LEAST_MS
+        roof = want + (until - since)
+        if after is not None:
+            roof = (lines[after]["at"] + mid if lines[after].get("at") is not None
+                    else edge[after][0]) - LEAST_MS
+        #: 늘어난 줄은 늘어난 채로는 방에 안 들어간다. 고스트시티 24 번 `소외된 노예` 는 2.12 초로
+        #: 잡혀 있었고(다른 열한 번은 0.4~1.6 초) 바이브 자리로 옮기면 꼬리가 다음 줄을 덮어 못
+        #: 옮겼다 — 그러면서 앞뒤 세 줄이 같이 틀린 채 남았다. 그 꼬리는 `flag_stuck` 이 「늘어남」
+        #: 이라 부르는 바로 그것이라 증거가 아니다. 방에 맞게 잘라 넣고, 몰린 것은 뒤의 `unpack_song`
+        #: 이 편다.
+        #: 방은 **시계 자리에서** 다음 줄의 시계 자리까지다. 동네 전체(앞줄부터 뒷줄까지)로 재면
+        #: 늘어난 길이가 그대로 통과한다 — 24 번은 2.12 초가 2.8 초 방에 들어가니 자르지 않았고,
+        #: 그 길이로는 시계 자리(다음 줄까지 1.27 초)에 못 들어가 다시 뒤로 밀려 제자리에 남았다.
+        want = max(floor, want)
+        span = min(until - since, max(LEAST_MS, roof - want))
+        want = max(floor, min(want, roof - span))
+        if want < floor or abs(want - since) <= limit:
             continue
         move = want - since
+        stop = want + span
         for word in out[index]:
-            word["at"] += move
-            word["end"] += move
             for grain in word.get("chars") or []:
-                grain["at"] += move
+                grain["at"] = min(grain["at"] + move, stop - 20)
                 if grain["end"] is not None:
-                    grain["end"] += move
-        edge[index] = (since + move, until + move)
+                    grain["end"] = max(grain["at"] + 20, min(grain["end"] + move, stop))
+            got = word.get("chars") or []
+            if got:
+                word["at"] = got[0]["at"]
+                word["end"] = max(one["end"] for one in got)
+            else:
+                word["at"] += move
+                word["end"] += move
+        edge[index] = (want, stop)
 
         if before is not None and edge[before][1] > want:
             for word in out[before]:
@@ -1079,6 +1153,47 @@ def settle_clock(lines: list[dict], out: list[list[dict]]) -> None:
                     word["at"] = got[0]["at"]
                     word["end"] = max(one["end"] for one in got)
             edge[before] = (edge[before][0], want)
+
+    #: 시작이 다 제자리에 온 뒤에도 **끝**이 다음 줄을 넘어 늘어난 줄이 남는다. 고스트시티의
+    #: 후렴 `소외된 노예` 는 열두 번 가운데 0.4 초짜리와 2.24 초짜리가 같이 있었고, 늘어난 쪽은
+    #: 꼬리가 다음 줄 시계 자리를 덮고 있었다. 되풀이 짝의 가운뎃값보다 `STRETCH` 배 넘게 길고
+    #: **동시에** 꼬리가 다음 줄의 시계 자리를 넘는 줄만 거기서 자른다 — 증거 둘이 같은 말을 할
+    #: 때만이라, 다른 목소리와 겹쳐 길게 끄는 진짜 이중창 줄은 짝과 어긋나지 않는 한 안 건드린다.
+    #: 길이는 `flag_stuck` 과 같은 자로 잰다 — 첫 낱자 시작에서 **끝 낱자 시작**까지. 끝 낱자의 끝까지
+    #: 재면 `loosen_chars` 가 다음 낱자까지 늘려 둔 꼬리가 다 들어가 짝의 가운뎃값이 부풀고, 2.0 배로
+    #: 잡힌 줄이 1.8 배 문턱을 통과해 하나도 안 잘렸다.
+    said_text = [" ".join(one.get("text", "").split()) for one in lines]
+    reach: dict[int, int] = {}
+    for index, words in enumerate(out):
+        chars = [one for word in words for one in (word.get("chars") or []) if one["at"] is not None]
+        if chars:
+            reach[index] = chars[-1]["at"] - chars[0]["at"]
+    twins: dict[str, list[int]] = {}
+    for index in reach:
+        if said_text[index]:
+            twins.setdefault(said_text[index], []).append(index)
+    for spot, index in enumerate(order):
+        mates = [one for one in twins.get(said_text[index], []) if one != index and one in reach]
+        if len(mates) < 2 or spot + 1 >= len(order) or index not in reach:
+            continue
+        after = order[spot + 1]
+        if lines[after].get("at") is None:
+            continue
+        widths = sorted(reach[one] for one in mates)
+        typical = widths[len(widths) // 2]
+        since, until = edge[index]
+        stop = lines[after]["at"] + mid - LEAST_MS
+        if typical <= 0 or reach[index] <= typical * STRETCH or until <= stop or stop <= since + LEAST_MS:
+            continue
+        for word in out[index]:
+            for grain in word.get("chars") or []:
+                grain["at"] = min(grain["at"], stop - 20)
+                grain["end"] = max(grain["at"] + 20, min(grain["end"] or grain["at"], stop))
+            got = word.get("chars") or []
+            if got:
+                word["at"] = got[0]["at"]
+                word["end"] = max(one["end"] for one in got)
+        edge[index] = (since, stop)
 
 
 def pinned(log_probs, tokens: list[int], pins):
@@ -1339,6 +1454,39 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -
     return out
 
 
+def in_order(out: list[list[dict]], index: int, now: list[dict]) -> bool:
+    """Say whether a candidate placement for one line keeps the song in order.
+
+    A single alignment is monotonic by construction. Choosing each line from **four** of them
+    is not: line 85 of 고스트시티 came from one stem at 202.94 s and line 86 from another at
+    200.22 s, so the refrain read backwards. The distance guards let it through — 4 s of reach is
+    plenty of room to land a short line on the wrong side of its neighbour — and nothing after
+    the choice puts lines back in order. `settle_clock` then worked from neighbours taken by
+    index, bounding a line by another that was itself out of place.
+
+    The rule is the one every alignment already obeys: a line starts no earlier than the line
+    before it and no later than the line after it. The base alignment is in order, and every
+    swap is checked against the state as it stands, so the order holds by induction.
+
+    @param {list[list[dict]]} out - Per-line word dicts as they stand.
+    @param {int} index - Which line the candidate is for.
+    @param {list[dict]} now - The candidate's characters, in order.
+    @returns {bool} True when the candidate sits between its neighbours.
+    """
+    since = now[0]["at"]
+    for before in range(index - 1, -1, -1):
+        chars = [one for word in out[before] for one in (word.get("chars") or [])]
+        if chars:
+            if since < chars[0]["at"]:
+                return False
+            break
+    for after in range(index + 1, len(out)):
+        chars = [one for word in out[after] for one in (word.get("chars") or [])]
+        if chars:
+            return since <= chars[0]["at"]
+    return True
+
+
 def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     """Align a song against every separated stem and keep the best placement per line.
 
@@ -1455,6 +1603,8 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             before = min((one.get("sure", -9.0) for one in was), default=-9.0)
             if after - before <= VOICE_EDGE:
                 continue
+            if not in_order(out, index, now):
+                continue
             out[index] = got
 
     who = who_sings(lead, path, lines, out, title)
@@ -1487,9 +1637,15 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             held = (was[-1]["at"] - was[0]["at"]) if len(was) > 1 else span
             if len(now) > 1 and held > 0 and span > held * STRETCH:
                 continue
+            if not in_order(out, index, now):
+                continue
             out[index] = got
 
     settle_lanes(out, lanes)
+    #: 시계 맞추기는 갈래마다의 `align_song` 안에서 돌지만, 그 뒤에 네 갈래에서 줄을 골라 섞으면
+    #: 그때 새로 튀는 줄이 생긴다 — 고스트시티 63 번이 −4.59 초로 남아 있었다(`RESCUE_REACH_MS`
+    #: 4 초 안이라 고르기는 통과한다). 섞은 뒤의 최종 결과에 한 번 더 건다.
+    settle_clock(lines, out)
     unpack_song(out)
 
     for words in out:

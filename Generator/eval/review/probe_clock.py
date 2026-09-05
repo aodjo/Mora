@@ -62,7 +62,7 @@ for row in rows[:how_many]:
     mid = sorted(one for _, one in off)[len(off) // 2]
     apart = sorted(abs(one - mid) for _, one in off)
     spread = apart[len(apart) // 2]
-    stray = [(index, one - mid) for index, one in off if abs(one - mid) > align.CLOCK_APART_MS]
+    stray = [(index, one - mid) for index, one in off if abs(one - mid) > max(align.CLOCK_APART_LEAST_MS, spread * align.CLOCK_APART_TIMES)]
 
     tight = spread <= align.CLOCK_TIGHT_MS
     total += len(off)
