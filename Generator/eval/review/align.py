@@ -380,6 +380,11 @@ def speakable(text: str) -> str:
     @param {str} text - Raw lyric text.
     @returns {str} The text with bracketed spans and punctuation replaced by spaces.
     """
+    #: 자모가 갈라진 한글(NFD)을 먼저 하나로 모은다. 맥에서 복사한 글은 흔히 그 꼴이고, 그러면
+    #: 「조」 가 「ㅈ+ㅗ」 라 아래 거르개의 `가-힣` 에 안 걸려 **통째로 지워진다.** 붙여 넣은 가사
+    #: 한 곡이 글자 0 개로 나와 스물여덟 줄을 하나도 못 맞췄다. `grains_of` 안에도 같은 정규화가
+    #: 있었지만 그것은 여기 **뒤에** 돌므로 이미 빈 글을 받고 있었다.
+    text = unicodedata.normalize("NFC", text)
     text = re.sub(r"[\(（\[].*?[\)）\]]", " ", text)
     return re.sub(r"[^0-9A-Za-z가-힣\s]", " ", text)
 

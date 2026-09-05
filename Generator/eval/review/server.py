@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -588,7 +589,9 @@ async def read_pasted(request: Request) -> dict:
     lines: list[dict] = []
     timed = 0
     for one in (body.get("text") or "").splitlines():
-        one = one.replace("\u3000", " ").strip()
+        #: 자모가 갈라진 한글(NFD)을 하나로 모은다. 맥에서 복사한 글이 흔히 그 꼴이고, 그대로
+        #: 두면 정렬기가 「조」 를 「ㅈ+ㅗ」 로 보아 한 글자도 못 읽는다.
+        one = unicodedata.normalize("NFC", one).replace("\u3000", " ").strip()
         if not one:
             continue
         at = None
