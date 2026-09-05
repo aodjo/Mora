@@ -19,6 +19,7 @@ pyannote 쪽(3.1·community-1)이 먼저였는데 무게가 전부 문 뒤에 �
   ~/dia/bin/python diarize.py audio/UIBmWmDP1RU.vocals.wav out.json
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -28,6 +29,13 @@ SINGING = 0.5
 LEAST = 0.30
 #: 모델은 16 kHz 홑소리를 받는다.
 RATE = 16_000
+#: 어느 Sortformer 를 쓰나. `MORA_DIARIZER` 로 바꿔 재 볼 수 있다.
+#:
+#: v1 은 **비상업용**(cc-by-nc-4.0)이다. Mora 를 팔 거라면 그대로 둘 수 없다. v2 는 cc-by-4.0,
+#: v2.1 은 NVIDIA Open Model License 이고 둘 다 토큰 없이 받아진다. 셋 다 겹침을 그대로 내므로
+#: 갈아 끼우는 값은 허가뿐이 아니라 정확도로도 재야 한다 — 사람이 짚어 준 Small girl 여섯 줄과
+#: 솔로 곡이 한 명으로 나오는가로.
+WHICH = os.environ.get("MORA_DIARIZER", "nvidia/diar_sortformer_4spk-v1")
 
 
 def runs_of(marks, per_frame: float, who: int) -> list[tuple[float, float]]:
@@ -71,7 +79,7 @@ def main() -> int:
 
     from nemo.collections.asr.models import SortformerEncLabelModel
 
-    model = SortformerEncLabelModel.from_pretrained("nvidia/diar_sortformer_4spk-v1")
+    model = SortformerEncLabelModel.from_pretrained(WHICH)
     model.eval()
 
     got = model.diarize(audio=[str(audio)], batch_size=1, include_tensor_outputs=True)
