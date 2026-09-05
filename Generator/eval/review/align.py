@@ -28,6 +28,7 @@ against that ground truth. A human has to actually fix it.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import unicodedata
@@ -198,6 +199,18 @@ def device():
     return "cpu"
 
 
+#: Which acoustic model aligns: `"mms"` (torchaudio MMS_FA, romanised) or `"kresnik"`
+#: (`kresnik/wav2vec2-large-xlsr-korean`, Hangul syllables). Read from `MORA_ACOUSTIC` so the
+#: probes can run both sides on the same songs without touching code.
+#:
+#: kresnik was the **first** model here and lost to MMS_FA on three songs (Trip: 21 broken lines
+#: against 1) — see `load`. That was before the second pass, the clock, the spreading and the
+#: rest existed, and on 고스트시티 line 16 it now places nine of fourteen syllables within 30 ms of a
+#: measured loudness onset where MMS_FA hears three syllables at all. So it is being measured again,
+#: over ten songs, with the old result kept as the warning it is.
+ACOUSTIC = os.environ.get("MORA_ACOUSTIC", "mms")
+
+
 def load():
     """Load the alignment model once and hand back the cached copy.
 
@@ -223,15 +236,25 @@ def load():
     """
     if not _bundle:
         import torch
-        import torchaudio
-        import uroman
         torch.set_num_threads(8)
         where = device()
-        bundle = torchaudio.pipelines.MMS_FA
         _bundle["where"] = where
-        _bundle["table"] = bundle.get_dict()
-        _bundle["roman"] = uroman.Uroman()
-        _bundle["model"] = bundle.get_model().eval().to(where)
+        if ACOUSTIC == "kresnik":
+            from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+            name = "kresnik/wav2vec2-large-xlsr-korean"
+            proc = Wav2Vec2Processor.from_pretrained(name)
+            _bundle["table"] = proc.tokenizer.get_vocab()
+            _bundle["blank"] = proc.tokenizer.pad_token_id
+            _bundle["unk"] = proc.tokenizer.unk_token_id
+            _bundle["model"] = Wav2Vec2ForCTC.from_pretrained(name).eval().to(where)
+        else:
+            import torchaudio
+            import uroman
+            bundle = torchaudio.pipelines.MMS_FA
+            _bundle["table"] = bundle.get_dict()
+            _bundle["blank"] = 0
+            _bundle["roman"] = uroman.Uroman()
+            _bundle["model"] = bundle.get_model().eval().to(where)
     return _bundle["table"], _bundle["model"]
 
 
@@ -283,6 +306,13 @@ def letters(grain: str) -> list[int]:
     @returns {list[int]} Vocabulary ids for that grain; empty when nothing maps.
     """
     table, _ = load()
+    if ACOUSTIC == "kresnik":
+        #: One Hangul syllable is one token here, so a grain maps straight through. The
+        #: vocabulary holds 1202 syllables and nothing else — no Latin, no digits — so a grain
+        #: with no Hangul in it (`drug`, `24`) becomes a single `[UNK]` rather than one per letter,
+        #: which would ask the model to hear four unknown things in a row.
+        ids = [table[one] for one in grain if one in table]
+        return ids if ids else [_bundle["unk"]]
     memo = _bundle.setdefault("said", {})
     if grain not in memo:
         memo[grain] = _bundle["roman"].romanize_string(grain).lower()
@@ -661,7 +691,10 @@ def whole_logits(audio):
         left = max(0, at - edge)
         right = min(total, stop + edge)
         with torch.inference_mode():
-            got = model(voice[..., left:right].to(where))[0].cpu()
+            fed = voice[..., left:right].to(where)
+            #: torchaudio's model hands back `(probabilities, lengths)`; the transformers build
+            #: hands back an object whose `.logits` is the same tensor. Both are 20 ms a frame.
+            got = (model(fed).logits if ACOUSTIC == "kresnik" else model(fed)[0]).cpu()
         head = (at - left) // stride
         tail = (right - stop) // stride
         pieces.append(got[:, head: got.shape[1] - tail if tail else None])
@@ -899,10 +932,10 @@ def weigh(log_probs, tokens: list[int], since: int, until: int):
     if piece.shape[1] < len(tokens) or not tokens:
         return None
     try:
-        paths, scores = F.forced_align(piece, torch.tensor([tokens]), blank=0)
+        paths, scores = F.forced_align(piece, torch.tensor([tokens]), blank=_bundle.get("blank", 0))
     except Exception:
         return None
-    merged = F.merge_tokens(paths[0], scores[0], blank=0)
+    merged = F.merge_tokens(paths[0], scores[0], blank=_bundle.get("blank", 0))
     if len(merged) != len(tokens):
         return None
     return float(scores[0].sum()) / len(tokens), since + merged[0].start
@@ -1274,10 +1307,10 @@ def pinned(log_probs, tokens: list[int], pins):
         if piece.shape[1] < len(piece_tokens):
             return None
         try:
-            paths, scores = F.forced_align(piece, torch.tensor([piece_tokens]), blank=0)
+            paths, scores = F.forced_align(piece, torch.tensor([piece_tokens]), blank=_bundle.get("blank", 0))
         except Exception:
             return None
-        got = F.merge_tokens(paths[0], scores[0], blank=0)
+        got = F.merge_tokens(paths[0], scores[0], blank=_bundle.get("blank", 0))
         if len(got) != len(piece_tokens):
             return None
         for span in got:
@@ -1387,7 +1420,7 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -
 
     audio = read_audio(vocals_of(path) if separate else path)
     load()
-    blank = 0
+    blank = _bundle.get("blank", 0)
 
     tokens: list[int] = []
     plan: list[list[list[tuple[str, int]]]] = []
