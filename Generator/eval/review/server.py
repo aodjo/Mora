@@ -349,7 +349,10 @@ def run_align(song_id: int, fresh: bool = False) -> None:
         note(song_id, f"갈랐음 · {time.time() - step:.0f}초 · {lead.name} · {back.name}")
 
         step = time.time()
-        note(song_id, f"소리에 맞추는 중 (MMS_FA, {aligner.device()})")
+        #: 다듬기(Qwen3)는 `align_voices` 안에서 마지막에 돈다. 살림이 있을 때만 이름을 적는다 —
+        #: 없는 기계에서는 조용히 건너뛰므로, 적어 두면 「돌았다」로 읽힌다.
+        how = "MMS_FA + Qwen3" if aligner.POLISH and aligner.POLISH_PY.exists() else "MMS_FA"
+        note(song_id, f"소리에 맞추고 음절 다듬는 중 ({how}, {aligner.device()})")
         got, lanes = aligner.align_voices(path, lines, align_words, row["title"])
         note(song_id, f"맞췄음 · {time.time() - step:.0f}초")
 
@@ -798,7 +801,10 @@ def search_youtube(q: str, want: int = 8) -> list[dict]:
 
 #: Suffixes of the sounds **made from** the original. They sit next to the original under the
 #: same name, so they have to be filtered out when picking the original.
-MADE_FROM = (".vocals.wav", ".lead.wav", ".back.wav")
+#: Taken from the aligner rather than kept here. Two copies of this list is how `.lead16.wav` —
+#: the refiner's cache — got past the server's filter while the aligner's own already knew it:
+#: the server would have handed the 16 kHz lead stem out as the song. The list lives in one place.
+from align import MADE_FROM  # noqa: E402
 
 
 def audio_path(video_id: str) -> Path | None:

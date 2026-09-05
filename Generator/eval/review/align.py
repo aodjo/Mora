@@ -150,7 +150,10 @@ RESCUE_REACH_MS = 4000
 
 #: Stems we **produced** from the source. They sit beside the source under the same stem name,
 #: so they have to be filtered out when picking the source.
-MADE_FROM = (".vocals.wav", ".lead.wav", ".back.wav")
+#: `.lead16.wav` is the refiner's 16 kHz copy of the lead stem. It was left off this list once,
+#: and `source_in` took it for the song itself — the third time this trap has caught someone —
+#: and separated the separated stem again, eleven progress bars deep into a benchmark.
+MADE_FROM = (".vocals.wav", ".lead.wav", ".back.wav", ".lead16.wav")
 
 
 def source_in(folder: Path, video_id: str) -> Path | None:
@@ -1633,6 +1636,103 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True) -
     return out
 
 
+#: Where the syllable refiner lives — Qwen3-ForcedAligner in its own environment, because
+#: `qwen-asr` pulls torch 2.14 and the aligner sits on 2.13. Missing means the stage is skipped.
+POLISH_PY = Path.home() / "qwen/bin/python"
+#: Whether the refiner runs at all. Read from the environment so the probes can measure both sides.
+POLISH = os.environ.get("MORA_POLISH", "1") != "0"
+#: Room added on each side of a line's own span when it is cut out for the refiner (ms). The refiner
+#: only ever places syllables inside the window, so the window has to hold the whole line even when
+#: the line's edges are a little off.
+POLISH_EDGE_MS = 300
+#: How far past a line's **last syllable start** its window reaches (ms). The line's recorded end
+#: is not used: `loosen_chars` runs a last character out toward the next line, up to `HOLD_MS`, so
+#: the end marks where the next line begins rather than where this one stops singing. A window
+#: cut to that end handed the refiner seconds of someone else's sound, and it anchored a syllable
+#: there — 너와 나 line 3 came back with an 8.3 s gap inside a five-word line.
+POLISH_TAIL_MS = 1500
+
+
+def polish(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
+    """Re-place the syllables of every line with Qwen3-ForcedAligner, inside the line's own window.
+
+    The aligner is good at **where a line is** — the whole-song CTC path, the second pass, the clock
+    — and bad at where the syllables fall inside a fast line: on 고스트시티 line 16 it heard three of
+    fourteen syllables and spread the rest evenly over the slot. Qwen3-ForcedAligner is the other
+    way round. Fed a whole song it collapses (139 s came back as 128 units, the lines 9.7 s early);
+    fed one line's window with the syllables spaced out, it puts all fourteen within 40 ms of a
+    measured loudness onset. Over ten songs the share of syllables within 50 ms of an onset went
+    46% → 56%, and it won on every Korean-only song.
+
+    So the two are stacked. This runs last: the line spans are taken as they stand, each line is
+    cut out with `POLISH_EDGE_MS` on either side, and the refiner answers with one span per grain.
+    Only the syllable times move — a line's window is bounded, so a line cannot leave its place —
+    and a line whose answer does not match its grains one for one keeps what it had.
+
+    The refiner runs in its own environment through `refine.py`, the way `diarize.py` does, and the
+    conversation is JSON on standard in and out. A missing environment skips the stage.
+
+    @param {Path} path - The original audio; the lead stem beside it is what gets read.
+    @param {list[dict]} lines - Lyric lines, for their count only.
+    @param {list[list[dict]]} out - Per-line word dicts, whose character times are rewritten.
+    @returns {int} How many lines were re-placed.
+    """
+    if not POLISH or not POLISH_PY.exists():
+        return 0
+    lead = path.with_suffix(".lead.wav")
+    if not lead.exists():
+        return 0
+    small = path.with_suffix(".lead16.wav")
+    if not small.exists():
+        write_audio(read_audio(lead, SAMPLE_RATE, 1), small, SAMPLE_RATE)
+
+    ask = []
+    for index, words in enumerate(out):
+        chars = [one for word in words for one in (word.get("chars") or []) if one.get("at") is not None]
+        if not chars:
+            continue
+        ask.append({"index": index, "since": max(0, chars[0]["at"] - POLISH_EDGE_MS),
+                    "until": chars[-1]["at"] + POLISH_TAIL_MS,
+                    "grains": [one["text"] for one in chars]})
+    if not ask:
+        return 0
+    try:
+        got = subprocess.run([str(POLISH_PY), str(Path(__file__).parent / "refine.py")],
+                             input=json.dumps({"audio": str(small), "lines": ask}),
+                             capture_output=True, text=True, timeout=1800)
+        said = json.loads(got.stdout or "{}")
+    except Exception:
+        return 0
+
+    done = 0
+    for one in ask:
+        spans = said.get(str(one["index"]))
+        if not spans:
+            continue
+        words = out[one["index"]]
+        chars = [two for word in words for two in (word.get("chars") or []) if two.get("at") is not None]
+        if len(spans) != len(chars):
+            continue
+        if any(not (one["since"] <= a <= one["until"]) for a, _ in spans):
+            continue
+        #: A hole wider than `STUCK_HOLE_MS` between two syllables is not a reading of the line, it
+        #: is one syllable caught on another sound in the window. Keep what the aligner had.
+        if any(b - a > STUCK_HOLE_MS for (a, _), (b, _) in zip(spans, spans[1:])):
+            continue
+        for grain, (since, until) in zip(chars, spans):
+            grain["at"] = since
+            grain["end"] = max(since + 20, until)
+        for before, after in zip(chars, chars[1:]):
+            before["end"] = max(before["at"] + 20, min(before["end"], after["at"]))
+        for word in words:
+            held = [two for two in (word.get("chars") or []) if two.get("at") is not None]
+            if held:
+                word["at"] = held[0]["at"]
+                word["end"] = max(max(two["end"] for two in held), held[0]["at"] + LEAST_MS)
+        done += 1
+    return done
+
+
 def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     """Align a song against every separated stem and keep the best placement per line.
 
@@ -1793,6 +1893,9 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 4 초 안이라 고르기는 통과한다). 섞은 뒤의 최종 결과에 한 번 더 건다.
     settle_clock(lines, out)
     unpack_song(out)
+    #: 줄 자리가 다 잡힌 뒤에, 그 창 안에서 음절만 Qwen3 로 다시 놓는다. 펴기 뒤여야 한다 —
+    #: 펴기는 「모델이 못 들은 줄」의 마지막 수단이고, 여기서는 그 줄을 실제로 듣는다.
+    polish(path, lines, out)
 
     for words in out:
         for word in words:
