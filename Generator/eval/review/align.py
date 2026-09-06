@@ -607,7 +607,11 @@ def unpack_song(out: list[list[dict]]) -> None:
             continue
         base = chars[0]["at"]
         later = [one for one in after if one > base]
-        roof = min([one for one in later] + [chars[-1]["end"] or chars[-1]["at"]])
+        #: 방은 **다음 줄이 시작하는 데까지**다. 이 줄의 끝을 함께 재면 안 된다 — 몰린 줄의 끝은
+        #: 몰림에서 나온 값이라, 그것으로 방을 재면 늘 고치려는 그 숫자를 도로 받는다. 덩어리
+        #: 단위에서 한 번 밟은 함정을 줄 단위에 그대로 남겨 두었다: 붉은 노을 23 번은 4.18 초가
+        #: 비어 있는데 열네 자를 0.82 초에 담은 채였다.
+        roof = min(later) if later else (chars[-1]["end"] or chars[-1]["at"])
         room = min(roof - base, len(chars) * SPREAD_MOST_MS)
         if room <= 0:
             continue
@@ -1816,6 +1820,13 @@ def polish(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
 
 
 #: 화자 토막 둘 사이가 이보다 좁으면 한 번 부른 것으로 잇는다(ms). 숨 한 번은 쉼이 아니다.
+#: How far a take's length must sit from its siblings' median, on top of the `STRETCH` ratio,
+#: before it counts as broken (ms).
+#:
+#: Measured on the lines a person listened to and called fine, the spread ran to 1.41 s — a
+#: five-syllable refrain sung twelve times lands anywhere from 0.56 s to 2.80 s, and that is
+#: singing, not breakage. The failure this test exists for was 0.88 s against 10.23 s.
+TWIN_APART_MS = 2000
 #: How much a hole must overlap a rest before the two count as the same place (ms).
 REST_TOUCH_MS = 200
 TURN_JOIN_MS = 250
@@ -1933,8 +1944,12 @@ def settle_turns(path: Path, lines: list[dict], out: list[list[dict]],
                     continue
             elif not any(b - a > TURN_REST_MS for (_, a), (b, _) in zip(room, room[1:])):
                 continue
+            #: 담을 수 없는 토막에는 넣지 않는다. `LEAST_MS`(60) 로 재던 동안 열네 자가 0.82 초
+            #: 토막에 들어가 낱자 사이가 63 ms 가 됐고 — 정렬기가 절대 안 만드는 촘촘함이다 —
+            #: 그 줄이 「최소 간격에 붙음」으로 찍혔다. 이 자 뒤에는 펴 주는 단계가 없으므로
+            #: 여기서 막아야 한다. 못 담으면 정렬기가 놓은 자리를 그대로 둔다.
             total = sum(b - a for a, b in room)
-            if total < len(chars) * LEAST_MS:
+            if total < len(chars) * CRAMP_MS:
                 continue
             floor = max(floor, room[-1][1])
 
@@ -2938,6 +2953,12 @@ def flag_stuck(lines: list[dict], out: list[list[dict]],
             continue
         for index in group:
             ratio = shape[index][1] / mid
+            #: 배수만으로는 짧은 구절에서 과민하다. 고스트시티의 `소외된 노예` 는 다섯 음절인데
+            #: 열두 번이 0.56~2.80 초로 흩어지고, 사람이 들어 보고 **안 어긋난다**고 했다 — 짧은
+            #: 구절은 원래 그만큼 늘였다 줄였다 부른다. 이 자를 만든 까닭이던 진짜 사고는 같은
+            #: 글월이 0.88 초와 10.23 초에 놓인 것이었다. 그러니 절대 차이도 함께 본다.
+            if abs(shape[index][1] - mid) < TWIN_APART_MS:
+                continue
             if ratio > STRETCH:
                 doubt[index].append(f"같은 글월의 {ratio:.1f}배로 늘어남")
             elif ratio < 1 / STRETCH:
