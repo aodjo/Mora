@@ -108,6 +108,14 @@ RETHINK_NEXT = True
 #: **every** line together. When sixty lines of a song sit within a fifth of a second of the clock,
 #: the two that sit five seconds away are not a different arrangement.
 CLOCK_TIGHT_MS = 300
+#: The same gate when the clock is one we read off this song's own transcript. It can be looser
+#: because a wide scatter there cannot mean a different arrangement, only a loose alignment.
+CLOCK_OURS_TIGHT_MS = int(os.environ.get("MORA_OURS_TIGHT", "1200"))
+#: How far a line must sit from a clock of our own making before it is pulled back (ms). Swept
+#: blind over thirteen songs, lines landing in place: 400 ms 80% · 500 ms 82% · **600 ms 83%** ·
+#: 800 ms 81% · 1200 ms 81%. Too tight and lines the model placed well get dragged onto a clock
+#: that is itself only good to a few hundred ms; too loose and the strays are left where they are.
+CLOCK_OURS_APART_MS = int(os.environ.get("MORA_OURS_APART", "600"))
 #: How far from the song's own offset a line must sit, in a song whose clock is tight, before it is
 #: slid back — the floor (ms), and the multiple of the measured scatter that raises it.
 #:
@@ -1142,8 +1150,16 @@ def rethink(log_probs, tokens, heads, spans, lines, merged, per_frame):
     return kept
 
 
-def settle_clock(lines: list[dict], out: list[list[dict]]) -> None:
+def settle_clock(lines: list[dict], out: list[list[dict]], ours: bool = False) -> None:
     """Slide a stray line back onto the song's own clock. Edits `out` in place.
+
+    The scatter gate below was written for **outside** times, and `ours` turns it down when the
+    clock is one we made from this very audio. A wide scatter against a sheet from elsewhere means
+    the two clocks are different takes and nothing should be touched. A wide scatter against a
+    clock read off this song's own transcript cannot mean that — it means our alignment is loose,
+    which is the thing to fix, not a reason to stand back. 하치와레girl scattered 495 ms against
+    the 300 ms gate, so nothing was corrected at all, and it came out at 28% of lines in place
+    from a clock whose own lines were 62% right.
 
     Measuring against the outside line times was ruled out early and for a good reason: confronting
     fifteen badly-off lines with the audio showed **only one** where the outside position was
@@ -1189,9 +1205,12 @@ def settle_clock(lines: list[dict], out: list[list[dict]]) -> None:
     mid = sorted(off)[len(off) // 2]
     apart = sorted(abs(one - mid) for one in off)
     scatter = apart[len(apart) // 2]
-    if scatter > CLOCK_TIGHT_MS:
+    if scatter > (CLOCK_OURS_TIGHT_MS if ours else CLOCK_TIGHT_MS):
         return
-    limit = max(CLOCK_APART_LEAST_MS, scatter * CLOCK_APART_TIMES)
+    #: 되돌릴 기준을 흩어짐에 비례시키면 흩어진 곡일수록 아무 줄도 안 옮긴다 — 하치와레girl 은
+    #: 495 × 5 = 2475 ms 라 손댈 줄이 없었다. 우리가 만든 시계에서는 그 시계와의 거리 자체로 잰다.
+    limit = (max(CLOCK_OURS_APART_MS, scatter)
+             if ours else max(CLOCK_APART_LEAST_MS, scatter * CLOCK_APART_TIMES))
 
     #: 시계 맞추기는 **모델이 못 들은 줄**을 위한 것이다. 모델이 확신을 갖고 놓은 줄까지 끌면
     #: 그 확신을 버리는 셈이다 — 고스트시티 16 번은 「본」이 −0.76 으로 64.97 초에 또렷한데, 외로운
@@ -2527,10 +2546,12 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 밖에서 온 시각이 하나도 없으면 지어서 쓴다. 내보내는 값이 아니라, 시계를 필요로 하는
     #: 단계들에게만 건네는 밑그림이다 — 그 단계들은 정렬이 스스로 무너졌다고 말할 때만 줄을
     #: 움직이므로, 밑그림이 틀려도 소리가 이긴다.
+    ours = False
     if not any(one.get("at") is not None for one in lines):
         guessed = heard_clock(path, lines, tokenize)
         if guessed:
             lines = [{**one, "at": at} for one, at in zip(lines, guessed)]
+            ours = True
 
     lanes: dict[int, int] = {index: 0 for index in range(len(lines))}
     tries = [("리드", lead), ("서브", back), ("보컬", vocals_of(path)), ("원본", path)]
@@ -2610,7 +2631,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 시계 맞추기는 갈래마다의 `align_song` 안에서 돌지만, 그 뒤에 네 갈래에서 줄을 골라 섞으면
     #: 그때 새로 튀는 줄이 생긴다 — 고스트시티 63 번이 −4.59 초로 남아 있었다(`RESCUE_REACH_MS`
     #: 4 초 안이라 고르기는 통과한다). 섞은 뒤의 최종 결과에 한 번 더 건다.
-    settle_clock(lines, out)
+    settle_clock(lines, out, ours)
     unpack_song(out)
     #: 줄 자리가 다 잡힌 뒤에, 그 창 안에서 음절만 Qwen3 로 다시 놓는다. 펴기 뒤여야 한다 —
     #: 펴기는 「모델이 못 들은 줄」의 마지막 수단이고, 여기서는 그 줄을 실제로 듣는다.

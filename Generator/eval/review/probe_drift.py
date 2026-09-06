@@ -74,6 +74,22 @@ def main() -> int:
               f"{a / 1000 if a is not None else 0:+8.2f}s {b / 1000 if b is not None else 0:+7.2f}s "
               f"{mark} {line.get('text', '')[:30]}")
 
+    #: `settle_clock` 이 실제로 손을 대는지. 그것은 우리 시작과 시계 사이 거리의 가운뎃값을 곡의
+    #: 어긋남으로 보고, 그 둘레 흩어짐이 `CLOCK_TIGHT_MS` 를 넘으면 통째로 물러선다.
+    off = [b - a for a, b in rows]
+    if off:
+        mid = sorted(off)[len(off) // 2]
+        apart = sorted(abs(one - mid) for one in off)
+        scatter = apart[len(apart) // 2]
+        print(f"\n  ── 시계 맞추기 ──")
+        print(f"    곡의 어긋남 {mid / 1000:+.2f}s · 흩어짐 {scatter}ms · 문턱 {align.CLOCK_TIGHT_MS}ms"
+              f" · 잰 줄 {len(off)} (적어도 {align.CLOCK_LEAST})")
+        why = ("줄이 모자라 물러섬" if len(off) < align.CLOCK_LEAST
+               else "흩어져서 물러섬 — 아무 줄도 안 고침" if scatter > align.CLOCK_TIGHT_MS
+               else f"손댐 · 이보다 먼 줄만 되돌림 "
+                    f"{max(align.CLOCK_APART_LEAST_MS, scatter * align.CLOCK_APART_TIMES)}ms")
+        print(f"    → {why}")
+
     if rows:
         for name, at in (("밑그림", 0), ("나온값", 1)):
             gaps = sorted(abs(one[at]) for one in rows)
