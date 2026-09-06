@@ -44,7 +44,9 @@ BASE = "http://127.0.0.1:8787"
 NEAR = (500, 1000, 2000)
 #: 짝이 이만큼(자모) 길어야 믿는다. 두어 자 우연히 겹치는 것으로 닻을 삼으면 되풀이되는 가사가
 #: 엉뚱한 되풀이 자리에 붙어 곡이 통째로 밀린다.
-SOLID = int(os.environ.get("MORA_SOLID", "8"))
+SOLID = int(os.environ.get("MORA_SOLID", "6"))
+#: 닻이 거친 짐작에서 이보다 멀면 엉뚱한 되풀이를 잡은 것으로 보고 버린다(ms).
+APART = int(os.environ.get("MORA_APART", "15000"))
 #: 소리 없는 표시. 정렬기가 버리는 것과 같은 것을 버려야 낱자 셈이 어긋나지 않는다.
 NOT_A_WORD = re.compile(r"^[♪♫🎵🎶~\-–—…·.,()\[\]{}\"'“”‘’!?]+$")
 
@@ -104,7 +106,8 @@ def jamo(rows: list[tuple[str, int]]) -> tuple[str, list[int]]:
     return "".join(letters), came
 
 
-def anchors(lines: list[dict], said: list[tuple[str, int]]) -> list[int | None]:
+def anchors(lines: list[dict],
+            said: list[tuple[str, int]]) -> tuple[list[int | None], set[int]]:
     """Give each lyric line the time of the sound that best matches its syllables.
 
     A bad transcript still matches the sheet in scattered places by accident — two letters shared
@@ -119,7 +122,8 @@ def anchors(lines: list[dict], said: list[tuple[str, int]]) -> list[int | None]:
 
     @param {list[dict]} lines - Lyric lines, in order.
     @param {list[tuple[str, int]]} said - What the model heard, and when.
-    @returns {list[int | None]} A start in ms per line, None where nothing could be placed.
+    @returns {tuple[list[int | None], set[int]]} A start in ms per line (None where nothing could
+      be placed), and which of those the audio vouched for directly rather than filled in.
     """
     sheet: list[tuple[str, int]] = []
     for at, line in enumerate(lines):
@@ -129,7 +133,7 @@ def anchors(lines: list[dict], said: list[tuple[str, int]]) -> list[int | None]:
     mine, from_mine = jamo(sheet)
     yours, from_yours = jamo(said)
     if not mine or not yours:
-        return [None] * len(lines)
+        return [None] * len(lines), set()
 
     #: autojunk 은 흔한 자모를 통째로 버려서 긴 노래에서 짝을 못 찾는다.
     blocks = difflib.SequenceMatcher(None, mine, yours, autojunk=False).get_matching_blocks()
@@ -154,7 +158,33 @@ def anchors(lines: list[dict], said: list[tuple[str, int]]) -> list[int | None]:
             out[at] = None
         else:
             seen = one
-    return fill_between(lines, out)
+    pinned = {at for at, one in enumerate(out) if one is not None}
+    return fill_between(lines, out), pinned
+
+
+def vouched(sharp: list[int | None], coarse: list[int | None] | None,
+            apart: int) -> list[int | None]:
+    """Drop the sharp guesses that the coarse one will not vouch for.
+
+    The two guesses fail in different ways, which is what makes them worth crossing. Spreading
+    lines evenly through the sung stretches is never wildly wrong — over eleven songs its worst
+    line sat 7 s out — but it is never sharp either. Matching a transcript is sharp where it lands
+    and catastrophic where it does not: a repeated lyric caught the wrong repeat and put three
+    songs 70–85 s out, which no amount of demanding longer matches fixed, because the match really
+    was long — just in the wrong place.
+
+    So a match is kept only where the spread agrees to within `apart`. A wrong repeat is wrong by
+    the distance between repeats, which is far larger than anything the spread is wrong by.
+
+    @param {list[int | None]} sharp - Times matched from the transcript.
+    @param {list[int | None]} coarse - Times spread through the sung stretches.
+    @param {int} apart - How far apart the two may sit before the match is disbelieved (ms).
+    @returns {list[int | None]} The sharp times, with the unvouched-for ones removed.
+    """
+    if not coarse:
+        return sharp
+    return [one if one is not None and two is not None and abs(one - two) <= apart else None
+            for one, two in zip(sharp, coarse)]
 
 
 def fill_between(lines: list[dict], out: list[int | None]) -> list[int | None]:
@@ -196,8 +226,8 @@ def main() -> int:
     want = {int(one) for one in sys.argv[1:]}
     with urllib.request.urlopen(f"{BASE}/api/songs", timeout=60) as got:
         songs = sorted(json.load(got), key=lambda one: one["id"])
-    every: dict[str, list[int]] = {"들은 닻": [], "지금 짐작": []}
-    print(f"  {'곡':<24} {'줄':>4} {'들은 닻':>18} {'지금 짐작':>18}")
+    every: dict[str, list[int]] = {"검문 통과": [], "검문+메움": [], "지금 짐작": [], "합친 시계": []}
+    print(f"  {'곡':<22} {'줄':>4} {'검문 통과':>14} {'검문+메움':>14} {'지금 짐작':>14} {'합친 시계':>14}")
     for song in songs:
         if want and song["id"] not in want:
             continue
@@ -210,16 +240,28 @@ def main() -> int:
         if sum(1 for one in truth if one is not None) < 4:
             continue
 
-        mine = anchors(lines, heard(found.with_suffix(".lead.wav")))
+        mine, pinned = anchors(lines, heard(found.with_suffix(".lead.wav")))
         old = align.guess_clock(found, lines, words_of)
-        rows = {"들은 닻": mine, "지금 짐작": old or [None] * len(lines)}
+        #: 검문을 통과한 못만 남기고, 그 사이를 다시 메운다.
+        kept = vouched([one if at in pinned else None for at, one in enumerate(mine)], old, APART)
+        held = {at for at, one in enumerate(kept) if one is not None}
+        both = fill_between(lines, list(kept))
+        #: 실제로 쓸 시계. 닻이 선 줄은 닻, 안 선 줄은 지금의 짐작을 그대로 둔다.
+        joined = [one if one is not None else (old[at] if old else None)
+                  for at, one in enumerate(both)]
+        rows = {
+            "검문 통과": [one if at in held else None for at, one in enumerate(both)],
+            "검문+메움": [one if at not in held else None for at, one in enumerate(both)],
+            "지금 짐작": old or [None] * len(lines),
+            "합친 시계": joined,
+        }
         say = []
         for name, guess in rows.items():
             hit, gaps = score(guess, truth)
             every[name].extend(gaps)
-            say.append(f"{hit:>3}줄 {gaps[len(gaps) // 2] if gaps else 0:>6}ms" if gaps else "  못 잼")
-        print(f"  [{song['id']:>2}] {song['title'][:16]:<18} {len(lines):>4} "
-              + "  ".join(f"{one:>18}" for one in say))
+            say.append(f"{hit:>3}줄 {gaps[len(gaps) // 2] if gaps else 0:>6}ms" if gaps else "    못 잼")
+        print(f"  [{song['id']:>2}] {song["title"][:14]:<16} {len(lines):>4} "
+              + " ".join(f"{one:>14}" for one in say))
         with torch.no_grad():
             torch.mps.empty_cache()
 

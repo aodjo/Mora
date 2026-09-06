@@ -27,6 +27,7 @@ against that ground truth. A human has to actually fix it.
 """
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -1829,6 +1830,19 @@ def polish(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
 TWIN_APART_MS = 2000
 #: The longest a line's last syllable may hold when no rest is found to stop it (ms).
 TAIL_MOST_MS = 700
+#: Whether a free transcript may sharpen the invented clock. Read from `MORA_HEARD` so the probes
+#: can measure the blind path with it and without it on the same songs.
+HEARD = os.environ.get("MORA_HEARD", "1") != "0"
+#: How many letters a transcript match must run before `heard_clock` believes it. Two letters
+#: shared by chance are enough to drag a repeated lyric to the wrong repeat.
+HEARD_SOLID = 6
+#: How far a transcript match may sit from the even spread before it is disbelieved (ms). A wrong
+#: repeat is wrong by the distance between repeats; the spread is never wrong by anything like it.
+HEARD_APART_MS = 8000
+#: What percent of a song's lines must survive as anchors before any of them are used, rounded up.
+#: Two pins in a sixty-two-line song drag every line between them, and end-to-end that was worse
+#: than the even spread: Trip, anchored on 3% of its lines, fell from 53% of lines in place to 21%.
+HEARD_LEAST_PCT = 15
 #: How much a hole must overlap a rest before the two count as the same place (ms).
 REST_TOUCH_MS = 200
 TURN_JOIN_MS = 250
@@ -2092,6 +2106,154 @@ def guess_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     return out
 
 
+def heard_song(path: Path) -> list[tuple[str, int]]:
+    """Let the model say freely what it hears in the lead stem, and when.
+
+    Greedy CTC — the likeliest token per frame, repeats collapsed, blanks dropped. The blanks are
+    the point: they are the model saying **nothing is being sung here**, which is the one thing
+    forced alignment cannot say, because it must spread the words it was given across all the
+    audio. That is why a long song drifts into its instrumental and never comes back.
+
+    The transcript itself is poor — 야해's `조용히 숨을 셔 … 맞춰` comes back as `조이스쉬 마기
+    시내 화치화` — and is never shown to anyone. It is only ever asked *where* a sound like this
+    one happened, and for that it does not have to be right, only similar.
+
+    Hangul has to come out whole, so this runs on kresnik whatever `ACOUSTIC` says; MMS_FA's
+    twenty-nine Latin letters cannot spell what was sung. The swap is the one `align_song` already
+    makes for the hybrid, and `_bundles` is keyed per backend so both models can sit side by side.
+
+    @param {Path} path - The lead vocal stem.
+    @returns {list[tuple[str, int]]} Each syllable heard, and the ms at which it starts.
+    """
+    global ACOUSTIC
+    was = ACOUSTIC
+    try:
+        ACOUSTIC = "kresnik"
+        audio = read_audio(path, SAMPLE_RATE, 1)[0].unsqueeze(0)
+        log_probs = whole_logits(audio)
+        table, _ = load()
+        blank = _bag()["blank"]
+    finally:
+        ACOUSTIC = was
+    per_frame = audio.shape[-1] / log_probs.shape[1] / SAMPLE_RATE * 1000
+    name = {two: one for one, two in table.items()}
+    out: list[tuple[str, int]] = []
+    last = -1
+    for at, one in enumerate(log_probs[0].argmax(dim=-1).tolist()):
+        if one != last and one != blank:
+            said = name.get(one, "")
+            if said and not said.startswith("<") and said not in "|[]":
+                out.append((said, int(at * per_frame)))
+        last = one
+    return out
+
+
+def jamo_of(rows: list) -> tuple[str, list[int]]:
+    """Break syllables into their letters, keeping where each letter came from.
+
+    A syllable rarely survives a bad transcript intact, but its letters often do — 조이 and 조용
+    share ㅈㅗ. Matching letter by letter lets a half-heard syllable still count for something.
+
+    @param {list} rows - Syllables, each paired with whatever it carries.
+    @returns {tuple[str, list[int]]} The letters, and each letter's index back into `rows`.
+    """
+    letters: list[str] = []
+    came: list[int] = []
+    for at, row in enumerate(rows):
+        for letter in unicodedata.normalize("NFD", row[0]):
+            letters.append(letter)
+            came.append(at)
+    return "".join(letters), came
+
+
+def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
+    """Place each line where the audio sounds most like it, falling back on the even spread.
+
+    `guess_clock` lays the lines through the sung stretches in proportion to their syllables. It
+    knows *who* sings and never *what*, so it is never far wrong and never sharp: over eleven songs
+    its median line sat 2.45 s from the truth.
+
+    Matching a free transcript is the opposite — sharp where it lands and catastrophic where it
+    does not. A repeated lyric caught the wrong repeat and put three songs 70–85 s out, and
+    demanding longer matches did not help, because the match really was long, just in the wrong
+    place. So the two check each other: a match is kept only where the spread agrees to within
+    `HEARD_APART_MS`. A wrong repeat is wrong by the distance between repeats, far more than the
+    spread is ever wrong by; the three ruined songs fall back to the spread untouched.
+
+    Lines with no surviving match are laid between the ones that have them, by syllable count —
+    the same spreading, but between two points the audio vouches for rather than across a song.
+
+    Over thirteen songs and 678 lines, against the sheets' own times:
+
+      지금 짐작   가운뎃값 2454 ms · 1 초 안 24% · 2 초 안 40%
+      합친 시계   가운뎃값 1597 ms · 1 초 안 34% · 2 초 안 58%
+
+    Like `guess_clock` this is a **prior, not an answer**: it is handed to the passes that want a
+    clock and never written out, and where the audio disagrees the audio wins.
+
+    @param {Path} path - The original audio; the lead stem and diarization sit beside it.
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @returns {list[int] | None} A start in ms for each line, or None when there is nothing to go on.
+    """
+    coarse = guess_clock(path, lines, tokenize)
+    #: `with_suffix` 는 마지막 자락만 갈아 끼우므로 `song.lead.wav` 에서 원본을 되찾지 못한다.
+    lead = path.parent / (path.name.rsplit(".", 1)[0] + ".lead.wav")
+    if not HEARD or not coarse or not lead.exists():
+        return coarse
+
+    sheet: list[tuple[str, int]] = []
+    for at, line in enumerate(lines):
+        for word in tokenize(line.get("text", "")):
+            for grain in grains_of(speakable(word)):
+                sheet.append((grain, at))
+    said = heard_song(lead)
+    mine, from_mine = jamo_of(sheet)
+    yours, from_yours = jamo_of(said)
+    if not mine or not yours:
+        return coarse
+
+    #: autojunk 은 흔한 자모를 통째로 버려서 긴 노래에서는 짝을 아예 못 찾는다.
+    blocks = difflib.SequenceMatcher(None, mine, yours, autojunk=False).get_matching_blocks()
+    best: dict[int, tuple[int, int]] = {}
+    for a, b, size in blocks:
+        if size < HEARD_SOLID:
+            continue
+        for step in range(size):
+            line = sheet[from_mine[a + step]][1]
+            when = said[from_yours[b + step]][1]
+            was = best.get(line)
+            #: 긴 짝일수록 우연히 맞을 수 없다. 같은 길이면 이른 쪽이 줄의 시작이다.
+            if was is None or size > was[0] or (size == was[0] and when < was[1]):
+                best[line] = (size, when)
+
+    out: list[int | None] = [best[at][1] if at in best else None for at in range(len(lines))]
+    seen = -1
+    for at, one in enumerate(out):
+        if one is None:
+            continue
+        #: 거친 짐작이 보증하지 않는 못은 엉뚱한 되풀이를 잡은 것이다. 뒤로 가는 못도 버린다.
+        if one < seen or abs(one - coarse[at]) > HEARD_APART_MS:
+            out[at] = None
+        else:
+            seen = one
+
+    pinned = [at for at, one in enumerate(out) if one is not None]
+    #: 못이 몇 개 없으면 그 사이를 메우는 것이 고른 짐작보다 나쁘다. 통째로 물러선다.
+    #: 「적어도 몇 할」이니 올림이다 — 서른한 줄에 넷은 15% 에 못 미친다.
+    if len(pinned) < max(2, -(-len(lines) * HEARD_LEAST_PCT // 100)):
+        return coarse
+
+    weight = [max(1, sum(len(grains_of(speakable(word)))
+                         for word in tokenize(one.get("text", "")))) for one in lines]
+    for left, right in zip(pinned, pinned[1:]):
+        room, total, gone = out[right] - out[left], sum(weight[left:right]) or 1, 0
+        for at in range(left + 1, right):
+            gone += weight[at - 1]
+            out[at] = out[left] + int(room * gone / total)
+    return [one if one is not None else coarse[at] for at, one in enumerate(out)]
+
+
 def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     """Align a song against every separated stem and keep the best placement per line.
 
@@ -2179,7 +2341,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 단계들에게만 건네는 밑그림이다 — 그 단계들은 정렬이 스스로 무너졌다고 말할 때만 줄을
     #: 움직이므로, 밑그림이 틀려도 소리가 이긴다.
     if not any(one.get("at") is not None for one in lines):
-        guessed = guess_clock(path, lines, tokenize)
+        guessed = heard_clock(path, lines, tokenize)
         if guessed:
             lines = [{**one, "at": at} for one, at in zip(lines, guessed)]
 
