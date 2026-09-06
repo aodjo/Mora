@@ -171,7 +171,10 @@ RESCUE_REACH_MS = 4000
 #: `.lead16.wav` is the refiner's 16 kHz copy of the lead stem. It was left off this list once,
 #: and `source_in` took it for the song itself — the third time this trap has caught someone —
 #: and separated the separated stem again, eleven progress bars deep into a benchmark.
-MADE_FROM = (".vocals.wav", ".lead.wav", ".back.wav", ".lead16.wav")
+#: 음원 옆에 우리가 만들어 둔 것들. `source_in` 이 곡을 고를 때 건너뛴다 — 여기 빠뜨리면 그것을
+#: 곡으로 알고 ffmpeg 에 넘긴다. `.lead16.wav` 로 한 번, `.heard.json` 으로 또 한 번 그랬다.
+MADE_FROM = (".vocals.wav", ".lead.wav", ".back.wav", ".lead16.wav",
+             ".dia.json", ".heard.json", ".clock.json")
 
 
 def source_in(folder: Path, video_id: str) -> Path | None:
@@ -1880,6 +1883,10 @@ HEARD_APART_MS = int(os.environ.get("MORA_APART_MS", "20000"))
 HEARD_HINT = os.environ.get("MORA_HINT", "0") != "0"
 #: How much of the sheet's vocabulary to hand over. Whisper's prompt window is small.
 HEARD_HINT_CHARS = int(os.environ.get("MORA_HINT_CHARS", "300"))
+#: What the saved artefacts were made by. A file whose stamp does not match this is remade rather
+#: than trusted — otherwise changing the model or the way of listening would be silently ignored.
+#: Bump `판` whenever `best_heard` changes what it produces.
+HEARD_STAMP = {"판": 1}
 #: Once a transcript recovers this much of the sheet, no other way of listening is tried. Ten of
 #: thirteen songs reach it on the first pass, so the extra ways cost nothing on most songs.
 HEARD_ALIKE_GOOD = 0.50
@@ -2314,6 +2321,55 @@ def hint_of(lines: list[dict], tokenize) -> str:
     return out[:HEARD_HINT_CHARS]
 
 
+
+def beside(path: Path, tail: str) -> Path:
+    """A sibling file named after the song.
+
+    `Path.with_suffix` swaps only the last suffix, so `song.lead.wav` would become `song.lead.json`
+    and the original could not be found again — a mistake this file has already made twice.
+
+    @param {Path} path - The original audio.
+    @param {str} tail - Suffix to hang on the bare name, e.g. `".heard.json"`.
+    @returns {Path} The sibling path.
+    """
+    return path.parent / (path.name.rsplit(".", 1)[0] + tail)
+
+
+def kept(where: Path) -> dict | None:
+    """Read an artefact back, but only if this build made it.
+
+    @param {Path} where - The artefact file.
+    @returns {dict | None} What it holds, or None when missing, broken or stale.
+    """
+    if not where.exists():
+        return None
+    try:
+        got = json.loads(where.read_text(encoding="utf-8"))
+    except Exception:
+        where.unlink(missing_ok=True)
+        return None
+    return got if got.get("만든 것") == HEARD_STAMP else None
+
+
+def keep(where: Path, what: dict) -> None:
+    """Write an artefact out, stamped with what made it.
+
+    Each step of this pipeline used to throw its working away — the transcript above all, which
+    costs ten to twenty seconds a song and is the one place to look when an anchor lands wrong.
+    Separation and diarization already leave their answers beside the audio; these do the same, so
+    a song is only ever heard once and a person can read what the model actually heard.
+
+    @param {Path} where - Where to write.
+    @param {dict} what - What to write; the stamp is added here.
+    @returns {None}
+    """
+    try:
+        where.write_text(json.dumps({**what, "만든 것": HEARD_STAMP}, ensure_ascii=False, indent=1),
+                         encoding="utf-8")
+    except Exception:
+        pass
+
+
 def best_heard(path: Path, mine: str, lines: list[dict],
                tokenize) -> tuple[list[tuple[str, int]], float]:
     """Transcribe the song several ways and keep whichever recovered the most of the sheet.
@@ -2350,6 +2406,13 @@ def best_heard(path: Path, mine: str, lines: list[dict],
     @param {callable} tokenize - Splits a line into words.
     @returns {tuple[list[tuple[str, int]], float]} What was heard, and how much of the sheet it got.
     """
+    #: 한 번 들은 곡은 다시 안 듣는다. 곡마다 열에서 스무 초가 들고, 무엇을 들었는지는 닻이
+    #: 엉뚱한 데 섰을 때 가장 먼저 봐야 할 자리다.
+    into = beside(path, ".heard.json")
+    was = kept(into)
+    if was and was.get("낱말"):
+        return [(one, at) for one, at in was["낱말"]], float(was.get("닮은 만큼", 0.0))
+
     stem = path.parent / (path.name.rsplit(".", 1)[0] + ".lead.wav")
     whole = vocals_of(path)
     tongue = tongue_of(lines, tokenize)
@@ -2364,6 +2427,7 @@ def best_heard(path: Path, mine: str, lines: list[dict],
 
     said: list[tuple[str, int]] = []
     alike = 0.0
+    how: dict = {}
     seen: set[tuple[str, str | None, bool]] = set()
     for where, tongue_now, vad in tries:
         key = (str(where), tongue_now, vad)
@@ -2375,10 +2439,15 @@ def best_heard(path: Path, mine: str, lines: list[dict],
             continue
         got = alike_of(mine, jamo_of(now)[0])
         if got > alike:
-            said, alike = now, got
+            said, alike, how = now, got, {"갈래": where.name, "말": tongue_now, "문": vad}
         #: 이만큼 건졌으면 더 들어 볼 값어치가 없다. 열세 곡 가운데 열은 첫 판에 여기 닿는다.
         if alike >= HEARD_ALIKE_GOOD:
             break
+
+    if said:
+        keep(into, {"낱말": [[one, at] for one, at in said], "어떻게": how,
+                    "닮은 만큼": round(alike, 4), "들어 본 갈래": len(seen),
+                    "가사가 말하는 말": tongue})
     return said, alike
 
 
@@ -2502,7 +2571,19 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
             out[at] = None
         else:
             seen = one
-    return [one if one is not None else coarse[at] for at, one in enumerate(out)]
+
+    made = [one if one is not None else coarse[at] for at, one in enumerate(out)]
+    #: 시계도 남긴다. 어느 줄이 소리로 못박힌 것이고 어느 줄이 고른 짐작에서 온 것인지가
+    #: 정렬이 어긋났을 때 어디를 봐야 하는지를 바로 말해 준다.
+    keep(beside(path, ".clock.json"), {
+        "시계": made,
+        "못박힌 줄": [at for at, one in enumerate(out) if one is not None],
+        "고른 짐작": coarse,
+        "닮은 만큼": round(alike, 4),
+        "받아쓰기를 믿나": trust,
+        "짝 지은 음절": len(pairs),
+    })
+    return made
 
 
 def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
