@@ -63,7 +63,8 @@ def main() -> int:
 
     @returns {int} 0 always.
     """
-    conn = sqlite3.connect(HERE / "review.db")
+    #: 다른 기계에서 잴 때는 그 기계의 검수 기록을 덮지 않고 옮겨 온 사본을 따로 읽는다.
+    conn = sqlite3.connect(HERE / os.environ.get("MORA_DB", "review.db"))
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT id, artist, title, video_id, lines FROM songs ORDER BY id").fetchall()
     how_many = int(sys.argv[1]) if len(sys.argv) > 1 else 11
