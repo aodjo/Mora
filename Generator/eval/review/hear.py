@@ -56,12 +56,16 @@ except ImportError:
 _it: dict = {}
 
 
-def by_mlx(path: str, which: str, language: str | None) -> list:
+def by_mlx(path: str, which: str, language: str | None, vad: bool = False) -> list:
     """Transcribe on Apple silicon.
+
+    mlx-whisper has no voice-activity gate, so `vad` is taken and ignored rather than making the
+    caller ask which machine it is talking to.
 
     @param {str} path - The audio to read.
     @param {str} which - Which weights to use.
     @param {str | None} language - The language to force, or None to let it choose.
+    @param {bool} [vad=False] - Ignored here.
     @returns {list} Each word heard, paired with the ms at which it starts.
     """
     said = mlx_whisper.transcribe(path, path_or_hf_repo=which, language=language,
@@ -71,21 +75,26 @@ def by_mlx(path: str, which: str, language: str | None) -> list:
             if one.get("word", "").strip()]
 
 
-def by_cuda(path: str, which: str, language: str | None) -> list:
+def by_cuda(path: str, which: str, language: str | None, vad: bool = False) -> list:
     """Transcribe on an NVIDIA card.
 
     The laptop 3060 has 6 GB and the alignment pipeline wants most of it, so the weights go in at
     `int8_float16` — a third of the memory for no difference that this measurement can see.
 
+    The voice-activity gate is what stops whisper writing words over silence. Left off it ends
+    songs with things nobody sang — `한글자막 by 한효주`, `안녕하세요 그런데요 저 안녕` — and an
+    anchor can be driven onto one of those.
+
     @param {str} path - The audio to read.
     @param {str} which - Which weights to use.
     @param {str | None} language - The language to force, or None to let it choose.
+    @param {bool} [vad=False] - Whether to drop stretches with no voice in them.
     @returns {list} Each word heard, paired with the ms at which it starts.
     """
     if "it" not in _it:
         _it["it"] = WhisperModel(which, device="cuda", compute_type="int8_float16")
     chunks, _ = _it["it"].transcribe(path, language=language, word_timestamps=True,
-                                     condition_on_previous_text=False)
+                                     condition_on_previous_text=False, vad_filter=vad)
     return [(one.word.strip(), int(one.start * 1000))
             for chunk in chunks for one in (chunk.words or []) if one.word.strip()]
 
@@ -100,7 +109,8 @@ def main() -> int:
         #: 말을 안 박으면 whisper 가 스스로 고른다. 한국어로 박았더니 영어가 주인 곡
         #: (Small girl)이 자모 17% 밖에 안 닮았다 — 한글로 받아 적으려 애쓴 탓이다.
         speak = by_mlx if mlx_whisper else by_cuda
-        out = speak(asked["path"], asked.get("which", WHICH), asked.get("language"))
+        out = speak(asked["path"], asked.get("which", WHICH), asked.get("language"),
+                    bool(asked.get("vad")))
     except Exception as trouble:  # noqa: BLE001
         json.dump({"안 됨": str(trouble)}, sys.stdout)
         return 1

@@ -2337,19 +2337,65 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
 
     #: autojunk 은 흔한 자모를 통째로 버려서 긴 노래에서는 짝을 아예 못 찾는다.
     blocks = difflib.SequenceMatcher(None, mine, yours, autojunk=False).get_matching_blocks()
-    best: dict[int, tuple[int, int]] = {}
+    #: 짝이 맞은 자리를 **음절 자리 → 시각** 으로 모은다. 줄마다 한 점을 찍으면 그 점은 그
+    #: 줄에서 처음 **알아들은** 음절의 시각이지 줄이 시작하는 시각이 아니다. 받아쓰기가 줄
+    #: 앞머리를 놓치면 딱 그만큼 늦는데, 하치와레girl 에서 그 늦음이 줄마다 +0.1 초에서 +3.9
+    #: 초까지 들쭉날쭉했다 — 어긋남이 하나도 빠짐없이 양수였던 것이 그 자국이다.
+    marks: dict[int, int] = {}
+    said_lines: set[int] = set()
     for a, b, size in blocks:
         if size < HEARD_SOLID:
             continue
         for step in range(size):
-            line = sheet[from_mine[a + step]][1]
+            grain = from_mine[a + step]
             when = said[from_yours[b + step]][1]
-            was = best.get(line)
-            #: 긴 짝일수록 우연히 맞을 수 없다. 같은 길이면 이른 쪽이 줄의 시작이다.
-            if was is None or size > was[0] or (size == was[0] and when < was[1]):
-                best[line] = (size, when)
+            if grain not in marks or when < marks[grain]:
+                marks[grain] = when
+            said_lines.add(sheet[grain][1])
 
-    out: list[int | None] = [best[at][1] if at in best else None for at in range(len(lines))]
+    #: 못이 몇 개 없으면 그 사이를 메우는 것이 고른 짐작보다 나쁘다. 통째로 물러선다.
+    #: 「적어도 몇 할」이니 올림이다 — 서른한 줄에 넷은 15% 에 못 미친다.
+    if len(said_lines) < max(2, -(-len(lines) * HEARD_LEAST_PCT // 100)):
+        return coarse
+
+    #: 뒤로 가는 짝은 버린다. 짝은 차례대로 나오지만 한 음절이 여러 짝에 걸릴 수 있다.
+    pairs: list[tuple[int, int]] = []
+    for grain in sorted(marks):
+        if not pairs or marks[grain] >= pairs[-1][1]:
+            pairs.append((grain, marks[grain]))
+    if len(pairs) < 2:
+        return coarse
+
+    #: 줄이 시작하는 음절 자리.
+    starts: list[int | None] = [None] * len(lines)
+    for grain, (_, line) in enumerate(sheet):
+        if starts[line] is None:
+            starts[line] = grain
+
+    #: 표 밖으로 나간 줄은 표의 기울기로 늘여 잡는다. 거친 짐작으로 되돌리면 안 된다 — 그
+    #: 짐작이야말로 앞머리 중얼거림에 끌려 있고, 첫 줄이 거기로 떨어지면 `align_one` 의 앞머리
+    #: 막기가 「첫 줄이 3 초」로 읽어 아무것도 못 막는다. 곡이 통째로 14 초 앞으로 밀렸다.
+    span = max(1, pairs[-1][0] - pairs[0][0])
+    rate = (pairs[-1][1] - pairs[0][1]) / span
+
+    out: list[int | None] = []
+    for at in range(len(lines)):
+        here = starts[at]
+        if here is None:
+            out.append(None)
+        elif here < pairs[0][0]:
+            out.append(pairs[0][1] - int((pairs[0][0] - here) * rate))
+        elif here > pairs[-1][0]:
+            out.append(pairs[-1][1] + int((here - pairs[-1][0]) * rate))
+        else:
+            #: 그 자리를 사이에 둔 두 짝 사이에서 곧게 읽는다.
+            after = next(one for one in range(len(pairs)) if pairs[one][0] >= here)
+            if pairs[after][0] == here or after == 0:
+                out.append(pairs[after][1])
+            else:
+                (a, at_a), (b, at_b) = pairs[after - 1], pairs[after]
+                out.append(at_a + int((at_b - at_a) * (here - a) / max(1, b - a)))
+
     seen = -1
     for at, one in enumerate(out):
         if one is None:
@@ -2359,20 +2405,6 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
             out[at] = None
         else:
             seen = one
-
-    pinned = [at for at, one in enumerate(out) if one is not None]
-    #: 못이 몇 개 없으면 그 사이를 메우는 것이 고른 짐작보다 나쁘다. 통째로 물러선다.
-    #: 「적어도 몇 할」이니 올림이다 — 서른한 줄에 넷은 15% 에 못 미친다.
-    if len(pinned) < max(2, -(-len(lines) * HEARD_LEAST_PCT // 100)):
-        return coarse
-
-    weight = [max(1, sum(len(grains_of(speakable(word)))
-                         for word in tokenize(one.get("text", "")))) for one in lines]
-    for left, right in zip(pinned, pinned[1:]):
-        room, total, gone = out[right] - out[left], sum(weight[left:right]) or 1, 0
-        for at in range(left + 1, right):
-            gone += weight[at - 1]
-            out[at] = out[left] + int(room * gone / total)
     return [one if one is not None else coarse[at] for at, one in enumerate(out)]
 
 
