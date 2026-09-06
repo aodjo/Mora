@@ -253,13 +253,87 @@ def loudness(audio: Path) -> float:
 QUIET_VOICE_DB = float(os.getenv("MORA_QUIET_VOICE_DB", "-35"))
 
 
-def separate(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
+# 반주를 걷어내는 모델. `htdemucs_ft` 는 보컬 SDR 9~10, 이쪽은 12.98 이다. 사람이 둘을 나란히
+# 듣고 이쪽을 골랐다 — demucs 쪽은 반주가 덜 걷혔다.
+#
+# **정렬 점수는 어느 쪽이나 같았다**(무너진 줄 3 개로 동일). 나아지는 것은 소리이고, 값은 시간이다:
+# demucs 29 초, 이쪽은 3 분 남짓. 곡마다 한 번이고 결과는 디렉터리에 남으므로 치를 만하다고 보되,
+# 되돌릴 자리를 남겨 둔다 — `MORA_VOCALS_MODEL=demucs` 면 옛길로 간다.
+VOCALS_MODEL = os.getenv("MORA_VOCALS_MODEL", "model_bs_roformer_ep_317_sdr_12.9755.ckpt")
+
+
+def separate_by_demucs(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
+    """Pull the vocals out with demucs. The old way, kept for going back to.
+
+    @param {Path} mixture - The song as downloaded.
+    @param {Path} directory - Where working files go.
+    @param {str} backend - "mps", "cuda" or anything else for CPU.
+    @returns {dict[str, Path]} Every stem demucs produced, by name.
+    """
     output = directory / "demucs"
     stem_dir = output / "htdemucs_ft" / mixture.stem
     if not (stem_dir / "vocals.wav").exists():
         device = "mps" if backend == "mps" else "cuda" if backend == "cuda" else "cpu"
         run_command([sys.executable, "-m", "demucs", "-n", "htdemucs_ft", "--device", device, "--out", str(output), str(mixture)], "SEPARATION_FAILED")
-    stems = {path.stem: path for path in stem_dir.glob("*.wav")}
+    return {path.stem: path for path in stem_dir.glob("*.wav")}
+
+
+def separate_by_roformer(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
+    """Pull the vocals out with BS-Roformer, through the separator already used for the karaoke split.
+
+    Only `stems["vocals"]` is ever read downstream, so nothing else has to be produced.
+
+    audio-separator reads through soundfile and cannot open m4a, so anything that is not already a
+    wav is decoded first. That temporary wav is rewritten even when it exists: a run that died
+    mid-way leaves a truncated file, and trusting it as a cache fails somewhere else entirely.
+
+    @param {Path} mixture - The song as downloaded.
+    @param {Path} directory - Where working files go.
+    @param {str} backend - Which device the separator should sit on.
+    @returns {dict[str, Path]} Just the vocal stem, under "vocals".
+    """
+    made = directory / "roformer" / "vocals.wav"
+    if made.exists():
+        return {"vocals": made}
+    made.parent.mkdir(parents=True, exist_ok=True)
+
+    import torch
+    from audio_separator.separator import Separator
+
+    fed = mixture
+    if mixture.suffix.lower() != ".wav":
+        fed = made.parent / f"{mixture.stem}.src.wav"
+        run_command(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(mixture),
+                     "-ar", "44100", "-ac", "2", str(fed)], "SEPARATION_FAILED")
+
+    apart = Separator(output_dir=str(made.parent), output_format="WAV",
+                      model_file_dir=model_cache(), log_level=40,
+                      use_native_fp16=True, use_torch_compile=True)
+    # audio-separator 는 cuda·mps·directml 만 본다. 그 밖의 가속기는 못 알아보고 CPU 로 떨어져
+    # 네 배짜리 곡이 20 분을 넘긴다 — 여기서 직접 물려 준다.
+    apart.torch_device = torch.device("mps" if backend == "mps" else "cuda" if backend == "cuda" else "cpu")
+    apart.load_model(model_filename=VOCALS_MODEL)
+
+    got = None
+    for name in apart.separate(str(fed)):
+        one = made.parent / name
+        if not one.exists():
+            continue
+        if "(Vocals)" in name:
+            one.replace(made)
+            got = made
+        else:
+            one.unlink(missing_ok=True)
+    if fed is not mixture:
+        fed.unlink(missing_ok=True)
+    return {"vocals": got} if got else {}
+
+
+def separate(mixture: Path, directory: Path, backend: str) -> dict[str, Path]:
+    if VOCALS_MODEL == "demucs":
+        stems = separate_by_demucs(mixture, directory, backend)
+    else:
+        stems = separate_by_roformer(mixture, directory, backend)
     if "vocals" not in stems:
         raise RuntimeError("VOCALS_MISSING")
     # 반주 음원을 받아 온 것을 여기서 잡는다. 제목 필터는 "(Inst.)" 같은 줄임말마다 새고,
