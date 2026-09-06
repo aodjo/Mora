@@ -1847,6 +1847,13 @@ HEARD_SOLID = 6
 #: were all refused by a spread that was itself 6.5 s out. Swept blind over nine songs: 8 s 63%,
 #: 20 s 66%, 60 s 66%; it stops paying at 20. Read from `MORA_APART_MS` so a probe can move it.
 HEARD_APART_MS = int(os.environ.get("MORA_APART_MS", "20000"))
+#: Below this much likeness to the sheet, the transcript is assumed to have been written in the
+#: wrong language and is asked for again in the one the sheet is written in.
+HEARD_ALIKE_LEAST = 0.30
+#: At this much likeness the transcript is worth more than the even spread, and the spread stops
+#: being allowed to veto it. Below it the spread still guards against a repeat caught in the wrong
+#: place — the failure that put three songs 70–85 s out when kresnik wrote the transcripts.
+HEARD_TRUST_ALIKE = float(os.environ.get("MORA_TRUST", "0.30"))
 #: What percent of a song's lines must survive as anchors before any of them are used, rounded up.
 #: Two pins in a sixty-two-line song drag every line between them, and end-to-end that was worse
 #: than the even spread: Trip, anchored on 3% of its lines, fell from 53% of lines in place to 21%.
@@ -2114,7 +2121,7 @@ def guess_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     return out
 
 
-def heard_song(path: Path) -> list[tuple[str, int]]:
+def heard_song(path: Path, language: str | None = None) -> list[tuple[str, int]]:
     """Let a model say freely what it hears in the lead stem, and when.
 
     whisper does it where it is installed, kresnik where it is not. The gap between them is not
@@ -2128,16 +2135,60 @@ def heard_song(path: Path) -> list[tuple[str, int]]:
     English lyric cannot be written down at all; whisper has both languages and picks per song.
 
     @param {Path} path - The lead vocal stem.
+    @param {str | None} [language=None] - Force a language, or None to let the model choose.
     @returns {list[tuple[str, int]]} Each word or syllable heard, and the ms at which it starts.
     """
     if EARS_PY.exists():
+        asked = {"path": str(path)}
+        if language:
+            asked["language"] = language
         ran = subprocess.run([str(EARS_PY), str(Path(__file__).parent / "hear.py")],
-                             input=json.dumps({"path": str(path)}), capture_output=True, text=True)
+                             input=json.dumps(asked), capture_output=True, text=True)
         if ran.returncode == 0 and ran.stdout.strip():
             said = json.loads(ran.stdout).get("낱말")
             if said:
                 return [(one, at) for one, at in said]
     return kresnik_song(path)
+
+
+def alike_of(mine: str, yours: str) -> float:
+    """What share of the sheet's letters the transcript also has, in order.
+
+    @param {str} mine - The sheet's letters.
+    @param {str} yours - The transcript's letters.
+    @returns {float} Overlap as a share of the sheet, 0 to 1.
+    """
+    if not mine or not yours:
+        return 0.0
+    blocks = difflib.SequenceMatcher(None, mine, yours, autojunk=False).get_matching_blocks()
+    return sum(one.size for one in blocks) / len(mine)
+
+
+def tongue_of(lines: list[dict], tokenize) -> str | None:
+    """Which language the sheet is written in, by counting its letters.
+
+    whisper picks a language by listening, and it listens to the beginning. 하치와레girl opens on
+    twenty seconds of spoken Japanese that is not in the sheet at all — `おはよ … 実はね 勉強してた
+    んだ` — so the whole song came back in Japanese and none of the Korean lyric was written down:
+    the transcript matched 0% of the sheet where forcing Korean had matched 43%.
+
+    The sheet cannot be fooled that way. It says plainly what will be sung.
+
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @returns {str | None} A whisper language code, or None when the sheet says nothing useful.
+    """
+    hangul = latin = 0
+    for line in lines:
+        for word in tokenize(line.get("text", "")):
+            for one in unicodedata.normalize("NFC", word):
+                if "가" <= one <= "힣":
+                    hangul += 1
+                elif one.isascii() and one.isalpha():
+                    latin += 1
+    if hangul + latin < 20:
+        return None
+    return "ko" if hangul >= latin else "en"
 
 
 def kresnik_song(path: Path) -> list[tuple[str, int]]:
@@ -2203,6 +2254,37 @@ def jamo_of(rows: list) -> tuple[str, list[int]]:
     return "".join(letters), came
 
 
+def best_heard(lead: Path, mine: str, lines: list[dict],
+               tokenize) -> tuple[list[tuple[str, int]], float]:
+    """Transcribe the stem, asking again in the sheet's own language if the first try misses.
+
+    whisper picks a language by listening, and it listens to the beginning. 하치와레girl opens on
+    twenty seconds of spoken Japanese that is nowhere in the sheet — `おはよ … 実はね 勉強してた
+    んだ` — so the whole song came back in Japanese and not one Korean syllable was written down:
+    0% of the sheet matched, where forcing Korean had matched 43%. Forcing Korean on everything is
+    no answer either; it dropped Small girl, which is mostly English, from 73% to 17%.
+
+    So listen first, and check the answer against the sheet. Only where the check fails is the
+    sheet's own language imposed, and even then the better of the two is kept.
+
+    @param {Path} lead - The lead vocal stem.
+    @param {str} mine - The sheet's letters, for measuring likeness.
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @returns {tuple[list[tuple[str, int]], float]} What was heard, and how much of the sheet it got.
+    """
+    said = heard_song(lead)
+    alike = alike_of(mine, jamo_of(said)[0])
+    if alike >= HEARD_ALIKE_LEAST:
+        return said, alike
+    tongue = tongue_of(lines, tokenize)
+    if not tongue:
+        return said, alike
+    again = heard_song(lead, tongue)
+    twice = alike_of(mine, jamo_of(again)[0])
+    return (again, twice) if twice > alike else (said, alike)
+
+
 def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     """Place each line where the audio sounds most like it, falling back on the even spread.
 
@@ -2244,11 +2326,14 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
         for word in tokenize(line.get("text", "")):
             for grain in grains_of(speakable(word)):
                 sheet.append((grain, at))
-    said = heard_song(lead)
     mine, from_mine = jamo_of(sheet)
+    said, alike = best_heard(lead, mine, lines, tokenize)
     yours, from_yours = jamo_of(said)
     if not mine or not yours:
         return coarse
+    #: 받아쓰기가 이만큼 닮으면 엉뚱한 되풀이를 잡을 걱정보다 거친 짐작이 옳은 못을 거부할
+    #: 걱정이 크다. 하치와레girl 의 짐작은 중얼거림을 노래로 세어 21 초나 앞당겨져 있었다.
+    trust = alike >= HEARD_TRUST_ALIKE
 
     #: autojunk 은 흔한 자모를 통째로 버려서 긴 노래에서는 짝을 아예 못 찾는다.
     blocks = difflib.SequenceMatcher(None, mine, yours, autojunk=False).get_matching_blocks()
@@ -2269,8 +2354,8 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     for at, one in enumerate(out):
         if one is None:
             continue
-        #: 거친 짐작이 보증하지 않는 못은 엉뚱한 되풀이를 잡은 것이다. 뒤로 가는 못도 버린다.
-        if one < seen or abs(one - coarse[at]) > HEARD_APART_MS:
+        #: 뒤로 가는 못은 언제나 버린다. 거친 짐작의 검문은 받아쓰기를 못 믿을 때만 든다.
+        if one < seen or (not trust and abs(one - coarse[at]) > HEARD_APART_MS):
             out[at] = None
         else:
             seen = one
