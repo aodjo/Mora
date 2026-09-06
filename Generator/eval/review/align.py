@@ -1793,6 +1793,14 @@ def polish(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
         #: is one syllable caught on another sound in the window. Keep what the aligner had.
         if any(b - a > STUCK_HOLE_MS for (a, _), (b, _) in zip(spans, spans[1:])):
             continue
+        #: Syllables landing **on the same instant** are not a reading either. On 야해 the refiner
+        #: answered `워@44.21 낙@44.45 넌@44.69 착@44.85 해@45.81 서@45.81 그@45.81 …` — eight of
+        #: thirteen piled on one point, so on screen the whole tail of the line changed at once and
+        #: a person said 「워낙 까지는 맞았는데 넌 착해서 ~ 가 한번에 바뀌어」. What it replaced was
+        #: evenly spaced. The aligner never puts two characters closer than `CRAMP_MS`, so anything
+        #: tighter than that came from a model that lost the line, and the earlier reading stands.
+        if any(b - a < CRAMP_MS for (a, _), (b, _) in zip(spans, spans[1:])):
+            continue
         for grain, (since, until) in zip(chars, spans):
             grain["at"] = since
             grain["end"] = max(since + 20, until)
