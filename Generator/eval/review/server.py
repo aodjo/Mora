@@ -1008,6 +1008,19 @@ def wav_form(path: Path) -> str | None:
         return None
 
 
+
+def read_json(where: Path) -> dict:
+    """Read one of the artefacts left beside the audio, or nothing.
+
+    @param {Path} where - The artefact file.
+    @returns {dict} What it holds, or an empty dict when missing or broken.
+    """
+    try:
+        return json.loads(where.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 @app.get("/api/songs/{song_id}/workspace")
 def workspace(song_id: int) -> dict:
     """That song's **workshop** — which files were made, and what each step produced.
@@ -1045,6 +1058,11 @@ def workspace(song_id: int) -> dict:
             "form": wav_form(got),
         })
 
+    #: 받아쓰기와 지어낸 시계. 만들어만 두고 안 보여 주면 「이 시각이 어디서 왔나」에 여전히
+    #: 답할 수 없다 — 작업실이 있는 까닭이 그것이다.
+    heard = read_json(AUDIO / f"{row['video_id']}.heard.json")
+    clock = read_json(AUDIO / f"{row['video_id']}.clock.json")
+
     lines = json.loads(row["lines"])
     placed = [one for one in lines if one.get("words")]
     chars = [c for one in placed for w in one["words"] for c in (w.get("chars") or [])]
@@ -1057,13 +1075,24 @@ def workspace(song_id: int) -> dict:
          "got": "보컬 한 갈래"},
         {"name": "목소리 가르기", "done": (AUDIO / f"{row['video_id']}.lead.wav").exists(),
          "got": "리드 · 서브"},
+        {"name": "받아쓰기", "done": bool(heard),
+         "got": (f"낱말 {len(heard.get('낱말') or [])} · 가사와 {heard.get('닮은 만큼', 0) * 100:.0f}% 닮음 · "
+                 f"{(heard.get('어떻게') or {}).get('갈래', '')}"
+                 f"{' · 말 ' + str((heard.get('어떻게') or {}).get('말')) if (heard.get('어떻게') or {}).get('말') else ''}"
+                 f"{' · 목소리 문' if (heard.get('어떻게') or {}).get('문') else ''}")
+                if heard else "아직"},
+        {"name": "줄자리 짚기", "done": bool(clock),
+         "got": (f"소리로 못박은 줄 {len(clock.get('못박힌 줄') or [])}/{len(clock.get('시계') or [])} · "
+                 f"짝 지은 음절 {clock.get('짝 지은 음절', 0)} · "
+                 f"{'받아쓰기를 믿음' if clock.get('받아쓰기를 믿나') else '고른 짐작이 검문함'}")
+                if clock else "밖에서 온 시각을 씀"},
         {"name": "소리에 맞추기", "done": bool(placed),
          "got": (f"{len(placed)}/{len(lines)}줄 · 글자 {len(chars)} · "
                  f"서브 레인 {sum(1 for one in lines if one.get('lane') == 1)} · "
                  f"무너짐 {sum(1 for one in placed if one['words'][0].get('stuck'))}")
                 if placed else "아직"},
     ]
-    return {"files": files, "steps": steps}
+    return {"files": files, "steps": steps, "heard": heard, "clock": clock}
 
 
 @app.get("/stem/{video_id}/{kind}")

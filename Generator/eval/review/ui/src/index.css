@@ -716,3 +716,37 @@ input { border: 0; background: none; outline: none; }
 }
 .paste-box::placeholder { color: var(--dimmer); line-height: 1.8; }
 .paste-box:focus { background: rgba(255, 255, 255, 0.055); }
+
+/* 받아쓴 것 — 화면에 안 나가는 글이지만, 줄이 엉뚱한 데 놓였을 때 가장 먼저 볼 자리다. */
+.said { margin-top: 18px; border-top: 1px solid var(--edge); padding-top: 14px; }
+.said-head {
+  display: flex; align-items: baseline; gap: 10px; width: 100%;
+  background: none; border: 0; padding: 6px 2px; cursor: pointer; text-align: left;
+  color: inherit; font: inherit;
+}
+.said-head b { font-size: 13px; letter-spacing: .01em; }
+.said-head i { flex: 1; font-style: normal; font-size: 12px; color: var(--dim); }
+.said-more { font-size: 12px; color: var(--dim); }
+.said-head:hover .said-more { color: var(--ink); }
+.said-why { margin: 2px 2px 10px; font-size: 12px; line-height: 1.5; color: var(--dim); }
+.said-words {
+  display: flex; flex-wrap: wrap; gap: 4px 6px;
+  margin: 0; padding: 0; list-style: none;
+  max-height: 260px; overflow-y: auto;
+}
+.said-words li {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  padding: 3px 7px; border-radius: 6px;
+  background: color-mix(in oklab, var(--ink) 5%, transparent);
+  font-size: 12px;
+}
+.said-words li em {
+  font-style: normal; font-variant-numeric: tabular-nums;
+  font-size: 10px; color: var(--dim);
+}
+/* 지금 울리는 자리. 소리와 글을 눈으로 맞춰 보라고 둔 것이다. */
+.said-words li.near {
+  background: color-mix(in oklab, var(--accent) 22%, transparent);
+  color: var(--ink);
+}
+.said-words li.near em { color: var(--ink); }

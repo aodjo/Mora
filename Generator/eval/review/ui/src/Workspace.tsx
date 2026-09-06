@@ -33,6 +33,22 @@ interface Made {
   form?: string | null;
 }
 
+/**
+ * What the model heard when it listened to the song freely, as saved beside the audio.
+ *
+ * This is **never shown to a listener** — it is the transcript the anchors were matched against,
+ * and it is often wrong (`조용히 숨을 셔` comes back as `조이스쉬 마기`). It is here because when
+ * a line lands in the wrong place this is the first thing to look at.
+ */
+interface Heard {
+  /** Each word heard, with the millisecond it starts at. */
+  "낱말"?: [string, number][];
+  /** Which stem, which language, whether the voice gate was on. */
+  "어떻게"?: { "갈래"?: string; "말"?: string | null; "문"?: boolean };
+  /** How much of the sheet's letters came back, 0 to 1. */
+  "닮은 만큼"?: number;
+}
+
 /** One stage the song has passed through, in pipeline order. */
 interface Step {
   name: string;
@@ -118,6 +134,8 @@ function when(stamp: number | null): string {
 export function Workspace({ songId, stem, onStem, nowMs, totalMs, busy }: Props) {
   const [files, setFiles] = useState<Made[]>([]);
   const [steps, setSteps] = useState<Step[]>([]);
+  const [heard, setHeard] = useState<Heard>({});
+  const [open, setOpen] = useState(false);
   const [failed, setFailed] = useState("");
 
   useEffect(() => {
@@ -129,6 +147,7 @@ export function Workspace({ songId, stem, onStem, nowMs, totalMs, busy }: Props)
         if (!alive) return;
         setFiles(got.files);
         setSteps(got.steps);
+        setHeard(got.heard ?? {});
       })
       .catch((error) => alive && setFailed(String(error.message ?? error)));
     return () => { alive = false; };
@@ -194,6 +213,35 @@ export function Workspace({ songId, stem, onStem, nowMs, totalMs, busy }: Props)
               );
             })}
           </ul>
+          {(heard["낱말"]?.length ?? 0) > 0 && (
+            <section className="said">
+              <button className="said-head" onClick={() => setOpen(!open)}>
+                <b>받아쓴 것</b>
+                <i>
+                  낱말 {heard["낱말"]!.length} · 가사와 {Math.round((heard["닮은 만큼"] ?? 0) * 100)}% 닮음
+                  {heard["어떻게"]?.["말"] && ` · 말 ${heard["어떻게"]["말"]}`}
+                  {heard["어떻게"]?.["문"] && " · 목소리 문"}
+                </i>
+                <span className="said-more">{open ? "접기" : "펴기"}</span>
+              </button>
+              {open && (
+                <>
+                  <p className="said-why">
+                    화면에 안 나가는 글이다 — 닻을 어디에 세울지 정하려고 들은 것이라 틀려도 된다.
+                    줄이 엉뚱한 데 놓였을 때 가장 먼저 볼 자리.
+                  </p>
+                  <ol className="said-words">
+                    {heard["낱말"]!.map(([word, at], index) => (
+                      <li key={`${at}-${index}`} className={Math.abs(at - nowMs) < 900 ? "near" : ""}>
+                        <em>{clock(at / 1000)}</em>
+                        {word}
+                      </li>
+                    ))}
+                  </ol>
+                </>
+              )}
+            </section>
+          )}
           <p className="shop-foot">
             지금 {clock(nowMs / 1000)} / {clock(totalMs / 1000)} 지점 ·
             아래 재생 단추가 고른 갈래를 그대로 울린다
