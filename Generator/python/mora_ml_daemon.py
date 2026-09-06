@@ -466,6 +466,13 @@ def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any
                 word_timestamps=True,
                 condition_on_previous_text=False,
                 language=None if language == "und" else language.split("-")[0],
+                # 기본 온도는 (0, 0.2, 0.4, 0.6, 0.8, 1.0) 이고, 압축률이나 확신도가 문턱에
+                # 걸리면 온도를 올려 샘플링으로 다시 푼다. 지어내기를 막자고 둔 되풀이지만
+                # 같은 소리에서 판마다 다른 글이 나온다 — 검수 도구에서 같은 설정으로 열세
+                # 곡을 두 번 재니 제자리 줄이 545 와 557 로 갈렸고, 그 폭이 고칠 것을 재어 얻은
+                # 폭만 해서 무엇이 나은지 가릴 수가 없었다. 여기서는 그것이 곧 같은 곡에 다른
+                # 타이밍이 나온다는 뜻이다. 재현되지 않는 것은 고칠 수도 없다.
+                temperature=0.0,
             )
         return result, str(result.get("language", language))
     import whisperx
@@ -477,6 +484,9 @@ def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any
             device,
             compute_type=compute_type,
             language=None if language == "und" else language.split("-")[0],
+            # 맥 쪽과 같은 까닭으로 온도를 하나로 못박는다. 여기서는 `asr_options` 를 거쳐야
+            # 기본 온도 사다리를 덮어쓸 수 있다.
+            asr_options={"temperatures": [0.0]},
         )
         audio = whisperx.load_audio(str(vocals))
         result = model.transcribe(audio, batch_size=8)
