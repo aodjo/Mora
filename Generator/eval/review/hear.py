@@ -63,16 +63,20 @@ _it: dict = {}
 STEADY = 0.0
 
 
-def by_mlx(path: str, which: str, language: str | None, vad: bool = False) -> list:
+def by_mlx(path: str, which: str, language: str | None, vad: bool = False,
+           hint: str = "") -> list:
     """Transcribe on Apple silicon.
 
-    mlx-whisper has no voice-activity gate, so `vad` is taken and ignored rather than making the
-    caller ask which machine it is talking to.
+    mlx-whisper has neither a voice-activity gate nor hotwords, so `vad` and `hint` are taken and
+    ignored rather than making the caller ask which machine it is talking to. `hint` could go in
+    as `initial_prompt` here, but that seeds only the first window and would not mean the same
+    thing as it does on the other side.
 
     @param {str} path - The audio to read.
     @param {str} which - Which weights to use.
     @param {str | None} language - The language to force, or None to let it choose.
     @param {bool} [vad=False] - Ignored here.
+    @param {str} [hint=""] - Ignored here.
     @returns {list} Each word heard, paired with the ms at which it starts.
     """
     said = mlx_whisper.transcribe(path, path_or_hf_repo=which, language=language,
@@ -83,8 +87,13 @@ def by_mlx(path: str, which: str, language: str | None, vad: bool = False) -> li
             if one.get("word", "").strip()]
 
 
-def by_cuda(path: str, which: str, language: str | None, vad: bool = False) -> list:
+def by_cuda(path: str, which: str, language: str | None, vad: bool = False,
+            hint: str = "") -> list:
     """Transcribe on an NVIDIA card.
+
+    `hint` is handed over as **hotwords**, not as `initial_prompt`. A prompt seeds only the first
+    window; with `condition_on_previous_text` off it never reaches the rest of the song, which is
+    most of it. Hotwords are applied to every window.
 
     The laptop 3060 has 6 GB and the alignment pipeline wants most of it, so the weights go in at
     `int8_float16` — a third of the memory for no difference that this measurement can see.
@@ -97,13 +106,14 @@ def by_cuda(path: str, which: str, language: str | None, vad: bool = False) -> l
     @param {str} which - Which weights to use.
     @param {str | None} language - The language to force, or None to let it choose.
     @param {bool} [vad=False] - Whether to drop stretches with no voice in them.
+    @param {str} [hint=""] - Words the song is known to contain, biasing what is written down.
     @returns {list} Each word heard, paired with the ms at which it starts.
     """
     if "it" not in _it:
         _it["it"] = WhisperModel(which, device="cuda", compute_type="int8_float16")
     chunks, _ = _it["it"].transcribe(path, language=language, word_timestamps=True,
                                      condition_on_previous_text=False, vad_filter=vad,
-                                     temperature=STEADY)
+                                     temperature=STEADY, hotwords=hint or None)
     return [(one.word.strip(), int(one.start * 1000))
             for chunk in chunks for one in (chunk.words or []) if one.word.strip()]
 
@@ -119,7 +129,7 @@ def main() -> int:
         #: (Small girl)이 자모 17% 밖에 안 닮았다 — 한글로 받아 적으려 애쓴 탓이다.
         speak = by_mlx if mlx_whisper else by_cuda
         out = speak(asked["path"], asked.get("which", WHICH), asked.get("language"),
-                    bool(asked.get("vad")))
+                    bool(asked.get("vad")), asked.get("hint", ""))
     except Exception as trouble:  # noqa: BLE001
         json.dump({"안 됨": str(trouble)}, sys.stdout)
         return 1

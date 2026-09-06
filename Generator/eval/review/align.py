@@ -1866,6 +1866,20 @@ HEARD_SOLID = 6
 #: were all refused by a spread that was itself 6.5 s out. Swept blind over nine songs: 8 s 63%,
 #: 20 s 66%, 60 s 66%; it stops paying at 20. Read from `MORA_APART_MS` so a probe can move it.
 HEARD_APART_MS = int(os.environ.get("MORA_APART_MS", "20000"))
+#: Whether to hand whisper the song's own words while it listens. **Measured and rejected**, kept
+#: only so nobody spends another afternoon on it. Blind over thirteen songs it cost 13 points —
+#: 541 lines in place became 455, and eleven of twelve songs got worse:
+#:
+#:   하치와레girl 59% → 3%   폭 5.9s → 47.6s · 곡이 통째로 11.45 초 밀림
+#:   Daddy      96% → 64%  폭 0.9s → 64.2s · 무너짐 0 → 16
+#:   NOT SORRY  84% → 88%  ← 나아진 것은 이 하나뿐
+#:
+#: 까닭은 그 자국에 그대로 보인다. 답을 알려주면 모델이 **아무도 안 부르는 데까지 가사를 적고**,
+#: 간주와 인트로에 번져 든 그 글자에 닻이 선다. 「닮은 만큼」으로 쟀으면 오히려 올라 보였을 것이다 —
+#: 그 자는 이것을 판정할 수 없다.
+HEARD_HINT = os.environ.get("MORA_HINT", "0") != "0"
+#: How much of the sheet's vocabulary to hand over. Whisper's prompt window is small.
+HEARD_HINT_CHARS = int(os.environ.get("MORA_HINT_CHARS", "300"))
 #: Once a transcript recovers this much of the sheet, no other way of listening is tried. Ten of
 #: thirteen songs reach it on the first pass, so the extra ways cost nothing on most songs.
 HEARD_ALIKE_GOOD = 0.50
@@ -2140,8 +2154,8 @@ def guess_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     return out
 
 
-def heard_song(path: Path, language: str | None = None,
-               vad: bool = False) -> list[tuple[str, int]]:
+def heard_song(path: Path, language: str | None = None, vad: bool = False,
+               hint: str = "") -> list[tuple[str, int]]:
     """Let a model say freely what it hears in the lead stem, and when.
 
     whisper does it where it is installed, kresnik where it is not. The gap between them is not
@@ -2157,12 +2171,15 @@ def heard_song(path: Path, language: str | None = None,
     @param {Path} path - The lead vocal stem.
     @param {str | None} [language=None] - Force a language, or None to let the model choose.
     @param {bool} [vad=False] - Skip stretches with no voice in them.
+    @param {str} [hint=""] - Words the song is known to contain, biasing what is written down.
     @returns {list[tuple[str, int]]} Each word or syllable heard, and the ms at which it starts.
     """
     if EARS_PY.exists():
         asked: dict = {"path": str(path), "vad": vad}
         if language:
             asked["language"] = language
+        if hint:
+            asked["hint"] = hint
         ran = subprocess.run([str(EARS_PY), str(Path(__file__).parent / "hear.py")],
                              input=json.dumps(asked), capture_output=True, text=True)
         if ran.returncode == 0 and ran.stdout.strip():
@@ -2275,6 +2292,28 @@ def jamo_of(rows: list) -> tuple[str, list[int]]:
     return "".join(letters), came
 
 
+
+def hint_of(lines: list[dict], tokenize) -> str:
+    """The song's own words, for whisper to lean toward while it listens.
+
+    Every word once, in the order it is first sung, cut at `HEARD_HINT_CHARS`. Repeats are dropped
+    because a chorus repeated eight times would crowd out the verses, and the point is coverage of
+    the song's vocabulary, not its shape.
+
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @returns {str} Space-joined words, or empty when the sheet says nothing useful.
+    """
+    seen: dict[str, None] = {}
+    for line in lines:
+        for word in tokenize(line.get("text", "")):
+            said = speakable(word).strip()
+            if said:
+                seen.setdefault(said, None)
+    out = " ".join(seen)
+    return out[:HEARD_HINT_CHARS]
+
+
 def best_heard(path: Path, mine: str, lines: list[dict],
                tokenize) -> tuple[list[tuple[str, int]], float]:
     """Transcribe the song several ways and keep whichever recovered the most of the sheet.
@@ -2317,6 +2356,12 @@ def best_heard(path: Path, mine: str, lines: list[dict],
     tries = [(whole, None, False), (whole, tongue, False),
              (stem, None, True), (whole, None, True), (stem, None, False)]
 
+    #: 가사를 미리 알려주면 어느 갈래가 나은지 **닮은 만큼으로 가릴 수 없게 된다** — 모델에게
+    #: 답을 준 셈이라 그 자가 저절로 오르고, 심하면 아무도 안 부르는 데까지 가사를 적어 닻이
+    #: 엉뚱한 자리에 선다. 그래서 갈래 고르기에 섞지 않고, 켜면 모든 갈래에 똑같이 건다.
+    #: 값어치는 오직 쌩 가사 끝값으로만 가린다.
+    hint = hint_of(lines, tokenize) if HEARD_HINT else ""
+
     said: list[tuple[str, int]] = []
     alike = 0.0
     seen: set[tuple[str, str | None, bool]] = set()
@@ -2325,7 +2370,7 @@ def best_heard(path: Path, mine: str, lines: list[dict],
         if key in seen or not where.exists():
             continue
         seen.add(key)
-        now = heard_song(where, tongue_now, vad)
+        now = heard_song(where, tongue_now, vad, hint)
         if not now:
             continue
         got = alike_of(mine, jamo_of(now)[0])
