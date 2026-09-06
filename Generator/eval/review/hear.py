@@ -55,6 +55,13 @@ except ImportError:
 #: 한 번 세운 모델을 붙들어 둔다. faster-whisper 는 세우는 데만 몇 초 걸린다.
 _it: dict = {}
 
+#: **온도는 0 으로 못박는다.** 두 구현 모두 기본값이 `(0, 0.2, 0.4, 0.6, 0.8, 1.0)` 이라, 압축률이나
+#: 확신도가 문턱에 걸리면 온도를 올려 **샘플링으로 다시 푼다.** 그러면 같은 소리에서 판마다 다른
+#: 글이 나오고, 재는 값이 따라 흔들린다 — 같은 설정으로 열세 곡을 두 번 재니 제자리 줄이 545 와
+#: 557 로 갈렸다. 그 폭이 잣대를 훑어 얻은 폭(80~83%)만 해서 무엇이 나은지 가릴 수가 없었다.
+#: 지어내기를 막자고 둔 되풀이지만, 재현되지 않는 것은 고칠 수가 없으므로 재현을 택한다.
+STEADY = 0.0
+
 
 def by_mlx(path: str, which: str, language: str | None, vad: bool = False) -> list:
     """Transcribe on Apple silicon.
@@ -69,7 +76,8 @@ def by_mlx(path: str, which: str, language: str | None, vad: bool = False) -> li
     @returns {list} Each word heard, paired with the ms at which it starts.
     """
     said = mlx_whisper.transcribe(path, path_or_hf_repo=which, language=language,
-                                  word_timestamps=True, condition_on_previous_text=False)
+                                  word_timestamps=True, condition_on_previous_text=False,
+                                  temperature=STEADY)
     return [(one["word"].strip(), int(one["start"] * 1000))
             for chunk in said.get("segments", []) for one in chunk.get("words", [])
             if one.get("word", "").strip()]
@@ -94,7 +102,8 @@ def by_cuda(path: str, which: str, language: str | None, vad: bool = False) -> l
     if "it" not in _it:
         _it["it"] = WhisperModel(which, device="cuda", compute_type="int8_float16")
     chunks, _ = _it["it"].transcribe(path, language=language, word_timestamps=True,
-                                     condition_on_previous_text=False, vad_filter=vad)
+                                     condition_on_previous_text=False, vad_filter=vad,
+                                     temperature=STEADY)
     return [(one.word.strip(), int(one.start * 1000))
             for chunk in chunks for one in (chunk.words or []) if one.word.strip()]
 
