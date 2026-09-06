@@ -1827,6 +1827,8 @@ def polish(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
 #: five-syllable refrain sung twelve times lands anywhere from 0.56 s to 2.80 s, and that is
 #: singing, not breakage. The failure this test exists for was 0.88 s against 10.23 s.
 TWIN_APART_MS = 2000
+#: The longest a line's last syllable may hold when no rest is found to stop it (ms).
+TAIL_MOST_MS = 700
 #: How much a hole must overlap a rest before the two count as the same place (ms).
 REST_TOUCH_MS = 200
 TURN_JOIN_MS = 250
@@ -2273,6 +2275,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             word.pop("stuck", None)
     #: 쉼을 건넨다. 안 건네면 `settle_turns` 가 일부러 넣은 쉼을 「글자 사이가 빔」으로 되돌려
     #: 부른다 — 열두 곡에서 그렇게 찍힌 구멍 열여덟 중 열일곱이 그것이었다.
+    hush_tails(out, quiet_of(path))
     flag_stuck(lines, out, quiet_of(path))
     return out, lanes
 
@@ -2885,6 +2888,44 @@ def quiet_of(path: Path) -> list[tuple[int, int]]:
         else:
             held.append([a, b])
     return [(a, b) for (_, a), (b, _) in zip(held, held[1:])]
+
+
+def hush_tails(out: list[list[dict]], quiet: list[tuple[int, int]] | None) -> None:
+    """Stop a line's last syllable when the voice stops, not when the next line starts.
+
+    `loosen_chars` runs every character's end out to the next character's start, so that a
+    character never flashes on and waits — which is right inside a line. At the end of a line the
+    next character belongs to the **next line**, so the last syllable holds across the gap between
+    them, up to the `HOLD_MS` cap. Measured over twelve songs, 67 of 638 line-final syllables held
+    longer than a second and 33 sat exactly on the 1.5 s cap, and a person watching said the
+    previous lyric drags on while the next one should already be singing.
+
+    The diarizer says where the voice stops. A line's tail is cut there, and where there is no
+    diarization to consult it is cut at `TAIL_MOST_MS` — long enough to carry a held note, short
+    enough that the eye does not read it as the line still being sung.
+
+    @param {list[list[dict]]} out - Per-line word dicts, modified in place.
+    @param {list[tuple[int, int]] | None} quiet - Stretches nobody sings in, in ms.
+    @returns {None}
+    """
+    for words in out:
+        chars = [one for word in words for one in (word.get("chars") or []) if one.get("at") is not None]
+        if not chars:
+            continue
+        last = chars[-1]
+        stop = last["at"] + TAIL_MOST_MS
+        for since, until in (quiet or []):
+            #: 마지막 낱자가 울린 뒤 처음 오는 쉼. 목소리가 거기서 멎으므로 줄도 거기서 멎는다.
+            if since >= last["at"]:
+                stop = min(stop, since)
+                break
+        held = last.get("end") or last["at"]
+        last["end"] = max(last["at"] + LEAST_MS, min(held, stop))
+        for word in words:
+            mine = [one for one in (word.get("chars") or []) if one.get("at") is not None]
+            if mine:
+                word["end"] = max(max(one.get("end") or one["at"] for one in mine),
+                                  mine[0]["at"] + LEAST_MS)
 
 
 def flag_stuck(lines: list[dict], out: list[list[dict]],
