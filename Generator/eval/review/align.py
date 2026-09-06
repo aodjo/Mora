@@ -1833,12 +1833,20 @@ TAIL_MOST_MS = 700
 #: Whether a free transcript may sharpen the invented clock. Read from `MORA_HEARD` so the probes
 #: can measure the blind path with it and without it on the same songs.
 HEARD = os.environ.get("MORA_HEARD", "1") != "0"
+#: Where whisper lives. mlx has nothing to do with torch, but it sits in its own venv for the same
+#: reason `~/dia` and `~/qwen` do — one venv repinning another's versions has broken all three.
+#: Missing, `heard_song` falls back to kresnik, which is much worse but always there.
+EARS_PY = Path.home() / "ears/bin/python"
 #: How many letters a transcript match must run before `heard_clock` believes it. Two letters
 #: shared by chance are enough to drag a repeated lyric to the wrong repeat.
 HEARD_SOLID = 6
 #: How far a transcript match may sit from the even spread before it is disbelieved (ms). A wrong
 #: repeat is wrong by the distance between repeats; the spread is never wrong by anything like it.
-HEARD_APART_MS = 8000
+#: 8 s was set when kresnik wrote the transcripts and they had to be doubted hard. whisper's are
+#: worth more than the spread is, and holding them to 8 s threw away good pins — 하치와레girl's
+#: were all refused by a spread that was itself 6.5 s out. Swept blind over nine songs: 8 s 63%,
+#: 20 s 66%, 60 s 66%; it stops paying at 20. Read from `MORA_APART_MS` so a probe can move it.
+HEARD_APART_MS = int(os.environ.get("MORA_APART_MS", "20000"))
 #: What percent of a song's lines must survive as anchors before any of them are used, rounded up.
 #: Two pins in a sixty-two-line song drag every line between them, and end-to-end that was worse
 #: than the even spread: Trip, anchored on 3% of its lines, fell from 53% of lines in place to 21%.
@@ -2107,7 +2115,33 @@ def guess_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
 
 
 def heard_song(path: Path) -> list[tuple[str, int]]:
-    """Let the model say freely what it hears in the lead stem, and when.
+    """Let a model say freely what it hears in the lead stem, and when.
+
+    whisper does it where it is installed, kresnik where it is not. The gap between them is not
+    close — over thirteen songs, how much of the sheet's letters the transcript recovered:
+
+      kresnik  가운뎃값 13% · 30% 넘는 곡  5/13
+      whisper  가운뎃값 81% · 30% 넘는 곡 12/13
+
+    and 30% is roughly where a transcript starts carrying enough for `heard_clock` to pin
+    anything. kresnik's whole vocabulary is 1202 Hangul syllables with no Latin in it, so an
+    English lyric cannot be written down at all; whisper has both languages and picks per song.
+
+    @param {Path} path - The lead vocal stem.
+    @returns {list[tuple[str, int]]} Each word or syllable heard, and the ms at which it starts.
+    """
+    if EARS_PY.exists():
+        ran = subprocess.run([str(EARS_PY), str(Path(__file__).parent / "hear.py")],
+                             input=json.dumps({"path": str(path)}), capture_output=True, text=True)
+        if ran.returncode == 0 and ran.stdout.strip():
+            said = json.loads(ran.stdout).get("낱말")
+            if said:
+                return [(one, at) for one, at in said]
+    return kresnik_song(path)
+
+
+def kresnik_song(path: Path) -> list[tuple[str, int]]:
+    """Let the aligner's own model say freely what it hears in the lead stem, and when.
 
     Greedy CTC — the likeliest token per frame, repeats collapsed, blanks dropped. The blanks are
     the point: they are the model saying **nothing is being sung here**, which is the one thing
@@ -2160,9 +2194,12 @@ def jamo_of(rows: list) -> tuple[str, list[int]]:
     letters: list[str] = []
     came: list[int] = []
     for at, row in enumerate(rows):
-        for letter in unicodedata.normalize("NFD", row[0]):
-            letters.append(letter)
-            came.append(at)
+        #: whisper 는 마침표와 큰 글자를 섞어 내놓고 가사 쪽은 이미 씻겨 있다. 양쪽을 같은 꼴로
+        #: 만들어야 영어 가사가 짝을 찾는다.
+        for letter in unicodedata.normalize("NFD", row[0].lower()):
+            if letter.isalnum() or "ᄀ" <= letter <= "ᇿ":
+                letters.append(letter)
+                came.append(at)
     return "".join(letters), came
 
 
