@@ -1883,10 +1883,21 @@ HEARD_APART_MS = int(os.environ.get("MORA_APART_MS", "20000"))
 HEARD_HINT = os.environ.get("MORA_HINT", "0") != "0"
 #: How much of the sheet's vocabulary to hand over. Whisper's prompt window is small.
 HEARD_HINT_CHARS = int(os.environ.get("MORA_HINT_CHARS", "300"))
+#: How far whisper's word times run ahead of the singing, in ms, and are pushed back by.
+#:
+#: Its word times come from walking the cross-attention back, and that lands on where the word
+#: **begins to be audible** rather than where it is sung — consistently early. Measured against
+#: the sheets' own line times over twelve songs and 544 lines where a line's first syllable was
+#: matched: 가운뎃값 -0.36 s with a scatter of only 0.25 s, and 463 of the 544 lines early. Ten of
+#: the twelve songs lean the same way. A bias that steady is worth subtracting; it is not noise.
+#:
+#: This matters more than it looks. These times become the anchors, the anchors become the clock,
+#: and `settle_clock` then pulls lines onto a clock that is a third of a second early.
+HEARD_LEAN_MS = int(os.environ.get("MORA_LEAN_MS", "360"))
 #: What the saved artefacts were made by. A file whose stamp does not match this is remade rather
 #: than trusted — otherwise changing the model or the way of listening would be silently ignored.
 #: Bump `판` whenever `best_heard` changes what it produces.
-HEARD_STAMP = {"판": 1}
+HEARD_STAMP = {"판": 2, "쏠림 걷기": HEARD_LEAN_MS}
 #: Once a transcript recovers this much of the sheet, no other way of listening is tried. Ten of
 #: thirteen songs reach it on the first pass, so the extra ways cost nothing on most songs.
 HEARD_ALIKE_GOOD = 0.50
@@ -2192,7 +2203,8 @@ def heard_song(path: Path, language: str | None = None, vad: bool = False,
         if ran.returncode == 0 and ran.stdout.strip():
             said = json.loads(ran.stdout).get("낱말")
             if said:
-                return [(one, at) for one, at in said]
+                #: 쏠림은 여기서 한 번만 걷는다. 아래로 내려가는 모든 것이 같은 시각을 보게.
+                return [(one, max(0, at + HEARD_LEAN_MS)) for one, at in said]
     return kresnik_song(path)
 
 
