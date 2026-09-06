@@ -1622,7 +1622,7 @@ def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True,
         out.append(words_out)
     settle_clock(lines, out)
     unpack_song(out)
-    flag_stuck(lines, out)
+    flag_stuck(lines, out, quiet_of(source or path))
     return out
 
 
@@ -1706,7 +1706,7 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True,
             word.pop("stuck", None)
     settle_clock(lines, out)
     unpack_song(out)
-    flag_stuck(lines, out)
+    flag_stuck(lines, out, quiet_of(source or path))
     return out
 
 
@@ -1816,6 +1816,8 @@ def polish(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
 
 
 #: 화자 토막 둘 사이가 이보다 좁으면 한 번 부른 것으로 잇는다(ms). 숨 한 번은 쉼이 아니다.
+#: How much a hole must overlap a rest before the two count as the same place (ms).
+REST_TOUCH_MS = 200
 TURN_JOIN_MS = 250
 #: 줄의 가장자리에서 이만큼 밖까지 그 줄의 토막으로 본다(ms).
 TURN_EDGE_MS = 400
@@ -2254,7 +2256,9 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     for words in out:
         for word in words:
             word.pop("stuck", None)
-    flag_stuck(lines, out)
+    #: 쉼을 건넨다. 안 건네면 `settle_turns` 가 일부러 넣은 쉼을 「글자 사이가 빔」으로 되돌려
+    #: 부른다 — 열두 곡에서 그렇게 찍힌 구멍 열여덟 중 열일곱이 그것이었다.
+    flag_stuck(lines, out, quiet_of(path))
     return out, lanes
 
 
@@ -2833,7 +2837,43 @@ def broken_lines(out: list[list[dict]]) -> set[int]:
     return hurt
 
 
-def flag_stuck(lines: list[dict], out: list[list[dict]]) -> None:
+def on_rest(words: list[dict], quiet: list[tuple[int, int]] | None) -> bool:
+    """Say whether every wide hole in one line sits where nobody is singing.
+
+    @param {list[dict]} words - One line's word dicts.
+    @param {list[tuple[int, int]] | None} quiet - Stretches nobody sings in, in ms.
+    @returns {bool} True when the line's holes are all rests, so none of them is breakage.
+    """
+    if not quiet:
+        return False
+    chars = [one for word in words for one in (word.get("chars") or []) if one.get("at") is not None]
+    holes = [(a["at"], b["at"]) for a, b in zip(chars, chars[1:])
+             if b["at"] - a["at"] > STUCK_HOLE_MS]
+    if not holes:
+        return False
+    return all(any(min(b, until) - max(a, since) > REST_TOUCH_MS for since, until in quiet)
+               for a, b in holes)
+
+
+def quiet_of(path: Path) -> list[tuple[int, int]]:
+    """The stretches of a song nobody sings in, from the cached diarization.
+
+    @param {Path} path - The original audio.
+    @returns {list[tuple[int, int]]} Start and end of each rest, in ms.
+    """
+    spans = sorted((int(a * 1000), int(b * 1000))
+                   for one in voices_apart(path).get("쪽", []) for a, b in one["토막"])
+    held: list[list[int]] = []
+    for a, b in spans:
+        if held and a - held[-1][1] <= 0:
+            held[-1][1] = max(held[-1][1], b)
+        else:
+            held.append([a, b])
+    return [(a, b) for (_, a), (b, _) in zip(held, held[1:])]
+
+
+def flag_stuck(lines: list[dict], out: list[list[dict]],
+               quiet: list[tuple[int, int]] | None = None) -> None:
     """Flag collapsed lines for a human **without using the outside times at all**. Edits `out` in
     place.
 
@@ -2859,8 +2899,16 @@ def flag_stuck(lines: list[dict], out: list[list[dict]]) -> None:
 
     Reasons are attached to the line's first word only, since the screen reads them per line.
 
+    A hole is **not** breakage when the diarizer has nobody singing across it. A line is one row of
+    text but often two utterances with silence between them, and `settle_turns` puts that silence
+    back on purpose. Measured over twelve songs, 17 of the 18 holes flagged sat exactly on such a
+    rest — including every take of Small girl's `(If, if I got a, if I got a) would you guarantee?`,
+    the line a person confirmed by ear. Only one was a real hole. Without the rests to check
+    against, this test calls the fix a fault.
+
     @param {list[dict]} lines - Lyric lines, used only to group takes of identical text.
     @param {list[list[dict]]} out - Per-line word dicts, modified in place.
+    @param {list[tuple[int, int]] | None} [quiet=None] - Stretches nobody sings in, in ms.
     @returns {None}
     """
     from collections import defaultdict
@@ -2898,7 +2946,7 @@ def flag_stuck(lines: list[dict], out: list[list[dict]]) -> None:
     for index, (count, span, hole) in shape.items():
         if count >= 4 and span <= (count - 1) * CRAMP_MS + 20:
             doubt[index].append("글자가 모두 최소 간격에 붙음")
-        if hole > STUCK_HOLE_MS:
+        if hole > STUCK_HOLE_MS and not on_rest(out[index], quiet):
             doubt[index].append(f"글자 사이가 {hole / 1000:.1f}초 빔")
 
     for index, why in doubt.items():
