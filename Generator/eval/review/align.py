@@ -1626,14 +1626,10 @@ def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True,
                 keep[since:until] = True
             #: 화자 자르기가 못 본 빈 자리. 소리가 곡 평균보다 한참 아래로 `HOLE_MS` 넘게 내려앉은
             #: 곳은 누가 부른다고 했든 쉼이다. 여닫이 여유는 쉼 막기와 같게 둔다.
-            #: 구멍은 **리드 갈래**에서 잰다, 지금 정렬하는 갈래가 무엇이든. 야해는 `clearest` 가
-            #: 보컬 갈래를 바탕으로 골랐고, 보컬 갈래에는 리드가 쉬는 44.4~47.6 초에 애드리브가
-            #: 있어 구멍이 아니었다 — 7 번 「워낙 넌 착해서 그렇게는 못할걸」이 그 위에 놓였다.
-            #: kresnik 자유 해독은 그 자리에서 낱 음절 둘만 듣는다. 쉼은 메인이 쉬는 자리다.
-            #: 다만 시계가 그 구멍 안에 줄을 둔다면 쉼이 아니라 **메인이 안 부르는 줄**이다 —
-            #: 붉은 노을의 합창 후렴은 리드에 없고 서브에 있다. 그 구멍은 열어 둔다.
+            #: 구멍은 **지금 정렬하는 갈래**에서 잰다. 리드에서 재서 모든 갈래에 씌우는 것은
+            #: 야해 7 번 하나를 고치고 열세 곡 쌩 가사 24 줄을 잃었다(`rests_of` 참조).
             if HOLE_MS > 0:
-                for a, b in rests_of(source or path, lines):
+                for a, b in rests_of(path):
                     since = min(log_probs.shape[1], int((a + HOLE_EDGE_MS) / per_frame))
                     until = max(0, int((b - HOLE_EDGE_MS) / per_frame))
                     if until > since:
@@ -1725,7 +1721,7 @@ def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True,
             })
         out.append(words_out)
     settle_clock(lines, out)
-    unpack_song(out, rests_of(source or path, lines))
+    unpack_song(out, rests_of(path))
     flag_stuck(lines, out, quiet_of(source or path))
     return out
 
@@ -1809,7 +1805,7 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True,
         for word in words:
             word.pop("stuck", None)
     settle_clock(lines, out)
-    unpack_song(out, rests_of(source or path, lines))
+    unpack_song(out, rests_of(path))
     flag_stuck(lines, out, quiet_of(source or path))
     return out
 
@@ -2739,31 +2735,27 @@ def quiet_holes(stem: Path) -> list[tuple[int, int]]:
 _holes: dict[str, list[tuple[int, int]]] = {}
 
 
-def rests_of(path: Path, lines: list[dict]) -> list[tuple[int, int]]:
-    """The song's rests: the lead stem's quiet holes, less any hole a line is timed inside.
+def rests_of(stem: Path) -> list[tuple[int, int]]:
+    """A stem's rests — its quiet holes, read once and kept.
 
-    Measured on the **lead** whatever stem is being aligned. 야해's base stem was the vocals
-    (`clearest` chose it), and the vocals carry an ad-lib through 44.4~47.6 s where the lead is
-    silent, so the hole was not a hole there and line 7 was laid on it; kresnik's free decode hears
-    two stray syllables in that stretch. A rest is where the main voice rests.
+    Measuring them on the **lead** whatever stem was being aligned was tried and taken out. It
+    fixed one line — 야해's base stem is the vocals (`clearest` chose it), which carry an ad-lib
+    through 44.4~47.6 s where the lead is silent, so line 7 was laid on that rest — and it cost
+    24 lines over thirteen songs on the blind path (566 → 542 in place; 하치와레girl 72 → 62%,
+    Small girl 86 → 78%, 너와 나 89 → 81%), while the sheet-timed path did not move. Opening a hole
+    where the clock puts a line inside it depends on the clock, and the invented clock is 1.6 s off
+    at the median; and a lead rest is not a rest for a line the backing stem carries. Each stem's
+    own silence is the one thing it is sure about.
 
-    A hole that a line is clocked inside is not a rest but a line the main voice does not sing —
-    붉은 노을's group chorus is absent from the lead and present in the backing stem. Those stay
-    open. The holes are read once per stem and kept.
-
-    @param {Path} path - The original audio or any stem of it; the lead is found beside it.
-    @param {list[dict]} lines - Lyric lines with whatever start times are known.
+    @param {Path} stem - The audio being aligned.
     @returns {list[tuple[int, int]]} Start and end of each rest, in ms.
     """
     if HOLE_MS <= 0:
         return []
-    lead = path.parent / (path.name.split(".")[0] + ".lead.wav")
-    stem = lead if lead.exists() else path
     key = str(stem)
     if key not in _holes:
         _holes[key] = quiet_holes(stem)
-    told = [one["at"] for one in lines if one.get("at") is not None]
-    return [(a, b) for a, b in _holes[key] if not any(a < at < b for at in told)]
+    return _holes[key]
 
 
 def onsets_of(stem: Path) -> list[int]:
@@ -3232,7 +3224,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 그때 새로 튀는 줄이 생긴다 — 고스트시티 63 번이 −4.59 초로 남아 있었다(`RESCUE_REACH_MS`
     #: 4 초 안이라 고르기는 통과한다). 섞은 뒤의 최종 결과에 한 번 더 건다.
     settle_clock(lines, out, ours)
-    unpack_song(out, rests_of(path, lines))
+    unpack_song(out, rests_of(lead))
     #: 줄 자리가 다 잡힌 뒤에, 그 창 안에서 음절만 Qwen3 로 다시 놓는다. 펴기 뒤여야 한다 —
     #: 펴기는 「모델이 못 들은 줄」의 마지막 수단이고, 여기서는 그 줄을 실제로 듣는다.
     polish(path, lines, out)
