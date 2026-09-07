@@ -3857,6 +3857,51 @@ def quiet_of(path: Path) -> list[tuple[int, int]]:
 #: 받아쓴 낱말이 줄 안의 낱말을 못박을 때, 우리 자리와 이보다 더 어긋나야 옮긴다(ms). whisper 의
 #: 낱말 시각 자체가 몇백 ms 흔들리므로 그 안의 차이는 소리가 이긴다.
 HEARD_PULL_MS = int(os.environ.get("MORA_PULL_MS", "600"))
+HEARD_PULL_ABS_MS = int(os.environ.get("MORA_PULL_ABS_MS", "300"))
+#: 못을 절대 시각으로 쓸지 가르는 데 필요한 최소 못 수, 우리가 맞는 곡에서 「우리 − whisper」의
+#: 평소값(ms), 그리고 거기서 얼마나 벗어나야 이 곡의 정렬이 밀린 것으로 보는지(ms).
+HEARD_WHO_LEAST = 20
+#: MSI 열두 곡, 두 길 스물네 판의 앞 상태(`settle_heard` 가 손대기 전) 가운뎃값: −217 ~ +52,
+#: 가운데 −175 (사랑하게 −37/−52, 너와 나 −80/−62, 파란달팽이 +52/+52, 나머지 −115 ~ −217).
+#: 야해는 +182 — 평소값에서 350 벗어난다. 파란달팽이가 222 로 그다음이다.
+HEARD_TYPICAL_MS = int(os.environ.get("MORA_TYPICAL_MS", "-170"))
+HEARD_SHIFT_MS = int(os.environ.get("MORA_SHIFT_MS", "300"))
+
+
+def squeeze_before(out: list[list[dict]], index: int, roof: int) -> bool:
+    """Compress the nearest earlier line so that it ends before `roof`, keeping its head.
+
+    Every character of that line is rescaled between its first character and `roof`, so its
+    shape survives and only its length changes. Nothing happens when the line already ends in
+    time, or when even its head sits past the roof — then it is the head that is wrong, and
+    squeezing would only crush it.
+
+    @param {list[list[dict]]} out - Per-line word dicts, modified in place.
+    @param {int} index - The line whose head the earlier line must not reach.
+    @param {int} roof - Time in ms the earlier line must end before.
+    @returns {bool} True when a line was compressed.
+    """
+    for earlier in range(index - 1, -1, -1):
+        words = [one for one in out[earlier] if (one.get("chars") or []) and one["chars"][0].get("at") is not None]
+        if not words:
+            continue
+        chars = [two for one in words for two in one["chars"] if two.get("at") is not None]
+        first, last = chars[0]["at"], chars[-1]["at"]
+        if last < roof:
+            return False
+        if first + LEAST_MS * len(chars) > roof or last <= first:
+            return False
+        scale = (roof - first) / (last - first)
+        for one in chars:
+            hold = max(20, (one.get("end") or one["at"] + 20) - one["at"])
+            one["at"] = int(first + (one["at"] - first) * scale)
+            one["end"] = one["at"] + max(20, int(hold * scale))
+        for one in words:
+            own = [two for two in one["chars"] if two.get("at") is not None]
+            one["at"] = own[0]["at"]
+            one["end"] = own[-1]["end"]
+        return True
+    return False
 
 
 def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize) -> int:
@@ -3871,13 +3916,19 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
     block, that word's start is known to within whisper's own scatter.
 
     Only a difference beyond `HEARD_PULL_MS` moves anything — inside that the sound wins, since
-    whisper's word times wander a few hundred ms on their own. And only the **shape** inside the
-    line is taken from the transcript: the first pinned word stays where the aligner put it and
-    the other pins are read relative to it. Where a line starts belongs to the clock and the CTC
-    — taking whisper's absolute times pulled some lines and not others in songs where whisper runs
-    early throughout, and the line starts scattered (thirteen songs, sheet-timed: 672 → 609). A
-    moved line is re-laid piecewise: the characters between two pins keep their proportions, the
-    tail shifts with the last pin, and nothing crosses the neighbouring lines.
+    whisper's word times wander a few hundred ms on their own. Usually only the **shape** inside
+    the line is taken from the transcript: the first pinned word stays where the aligner put it
+    and the other pins are read relative to it. Where a line starts belongs to the clock and the
+    CTC — taking whisper's absolute times pulled some lines and not others in songs where whisper
+    runs early throughout, and the line starts scattered (thirteen songs, sheet-timed: 672 → 609).
+    The exception is decided per song: whisper's timing bias is nearly the same in every song, so
+    in songs where the sheet says we are right, the median of (our time − whisper's raw time) over
+    the pinned words sits in a narrow band around `HEARD_TYPICAL_MS`. A song whose median falls
+    `HEARD_SHIFT_MS` outside that band is one where the aligner drifted — 야해, at +501 ms, where our
+    words ran half a second behind and the tail of every line was eating the head of the next —
+    and there the pins are taken absolutely, and an earlier line's tail is squeezed in front of a
+    pinned head. A moved line is re-laid piecewise: the characters between two pins keep their
+    proportions, the tail shifts with the last pin, and nothing crosses the neighbouring lines.
 
     @param {Path} path - The original audio; the transcript and clock sit beside it.
     @param {list[dict]} lines - Lyric lines.
@@ -3929,7 +3980,7 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
     if not pins:
         return 0
 
-    done = 0
+    plans: dict[int, tuple[list[dict], list[dict], list[tuple[int, int]]]] = {}
     for index, words in enumerate(out):
         held = [one for one in words
                 if (one.get("chars") or []) and one["chars"][0].get("at") is not None]
@@ -3957,14 +4008,49 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
         for at, when in marks:
             if not in_turn or when > in_turn[-1][1] + LEAST_MS * (at - in_turn[-1][0]):
                 in_turn.append((at, when))
-        marks = in_turn
-        #: 줄의 **시작**은 시계와 CTC 가 정한다. 받아쓰기는 줄 **안의 모양**만 고친다 — 첫 못의
-        #: 차를 기준으로 빼서 상대 차만 쓴다. 못을 절대 시각으로 쓰니 whisper 가 곡 전체로 조금
-        #: 이른 곡에서 차가 문턱을 넘는 줄만 당겨져 줄 시작들이 흩어졌다: 열세 곡 시각 있음
-        #: 672 → 609, 너와 나 100 → 63%. 못 자체는 제 줄 안에 있었다(102 개 중 창 밖 3 개).
-        ref = marks[0][1] - chars[marks[0][0]]["at"]
-        marks = [(at, when - ref) for at, when in marks]
-        if max(abs(when - chars[at]["at"]) for at, when in marks) <= HEARD_PULL_MS:
+        plans[index] = (held, chars, in_turn)
+    if not plans:
+        return 0
+
+    #: **이 곡에서 우리 정렬이 밀렸나.** 못박힌 낱말마다 우리 시각에서 whisper 의 시각(쏠림 더하기
+    #: 전)을 뺀 값의 가운뎃값을 잰다. whisper 의 치우침은 곡마다 거의 같아서, 시트 시각이 있고
+    #: 우리가 맞는 곡들에서는 이 값이 좁게 모인다(붉은 노을 −136, NOT SORRY −231, 하치와레girl
+    #: −209 ms, 사분위 폭 150 안팎). 야해는 +501 ms 였다 — 사람 귀가 「뒤 낱말들이 다음 줄 앞
+    #: 낱말들을 먹는다」고 한 그 곡이다. 그 평소값(`HEARD_TYPICAL_MS`)에서 `HEARD_SHIFT_MS` 넘게
+    #: 벗어난 곡에서만 못을 절대 시각으로 쓴다.
+    #:
+    #: 소리 솟음 위에 누가 더 자주 있는지로 가르려던 것은 버렸다. 촘촘한 노래에서는 솟음이
+    #: 어디에나 있어 절반쯤은 우연히 맞고, 너와 나에서 whisper 가 솟음에서 2 점 앞섰는데 시트로는
+    #: 100 → 63% 로 무너졌다(열세 곡 시각 있음 672 → 651).
+    shifts = sorted(chars[at]["at"] - (when - HEARD_LEAN_MS)
+                    for held, chars, marks in plans.values() for at, when in marks)
+    absolute = (len(shifts) >= HEARD_WHO_LEAST
+                and abs(shifts[len(shifts) // 2] - HEARD_TYPICAL_MS) > HEARD_SHIFT_MS)
+    if os.environ.get("MORA_TRACE_HEARD"):
+        print(f"[settle_heard] 못 {len(shifts)} · 우리 − whisper 가운뎃값 "
+              f"{shifts[len(shifts) // 2] if shifts else None} ms · 절대 {absolute}", file=sys.stderr, flush=True)
+
+    done = 0
+    for index, (held, chars, marks) in plans.items():
+        if absolute:
+            #: 앞 줄 꼬리가 이 줄의 못박힌 머리를 넘으면 앞 줄을 눌러 준다. 못이 없는 줄은 스스로
+            #: 못 움직이는데, 그 꼬리가 다음 줄이 시작할 자리를 차지하고 있으면 다음 줄이 앞 줄
+            #: 뒤에 붙어 늦는다 — 야해 5 번 「흉터 마냥 더 진하게」(whisper 가 못 들음)가 41.5 초까지
+            #: 뻗어 6 번 「남겨줘」(들은 시각 41.06)를 41.7 로 밀었다. 「뒤 낱말 몇이 다음 문장의 앞
+            #: 낱말 몇을 먹는다」의 모양이다.
+            head = marks[0][1] - (chars[marks[0][0]]["at"] - chars[0]["at"])
+            squeeze_before(out, index, head - LEAST_MS)
+        if not absolute:
+            #: 줄의 **시작**은 시계와 CTC 가 정한다. 받아쓰기는 줄 **안의 모양**만 고친다 — 첫 못의
+            #: 차를 기준으로 빼서 상대 차만 쓴다. 못을 절대 시각으로 쓰니 whisper 가 곡 전체로 조금
+            #: 이른 곡에서 차가 문턱을 넘는 줄만 당겨져 줄 시작들이 흩어졌다: 열세 곡 시각 있음
+            #: 672 → 609, 너와 나 100 → 63%. 못 자체는 제 줄 안에 있었다(102 개 중 창 밖 3 개).
+            ref = marks[0][1] - chars[marks[0][0]]["at"]
+            marks = [(at, when - ref) for at, when in marks]
+        #: 절대 모드는 곡 단위로 whisper 가 소리 위에 있음을 확인한 뒤라 문턱을 낮춘다 — 야해에서
+        #: 0.6 초 문턱은 「조용히」 71.5(들은 시각 70.96)·「난」 77.0(76.56) 처럼 0.4~0.55 초 늦은
+        #: 머리들을 그대로 두었다.
+        if max(abs(when - chars[at]["at"]) for at, when in marks) <= (HEARD_PULL_ABS_MS if absolute else HEARD_PULL_MS):
             continue
 
         floor = None
