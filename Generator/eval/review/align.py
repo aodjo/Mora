@@ -2533,7 +2533,14 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
 
     #: 못이 몇 개 없으면 그 사이를 메우는 것이 고른 짐작보다 나쁘다. 통째로 물러선다.
     #: 「적어도 몇 할」이니 올림이다 — 서른한 줄에 넷은 15% 에 못 미친다.
-    if len(said_lines) < max(2, -(-len(lines) * HEARD_LEAST_PCT // 100)):
+    need = max(2, -(-len(lines) * HEARD_LEAST_PCT // 100))
+    if len(said_lines) < need:
+        #: 물러설 때도 남긴다. 왜 안 붙었는지는 붙었을 때보다 더 보고 싶은 것이다.
+        keep(beside(path, ".clock.json"), {
+            "시계": coarse, "못박힌 줄": [], "고른 짐작": coarse,
+            "닮은 만큼": round(alike, 4), "받아쓰기를 믿나": trust, "짝 지은 음절": 0,
+            "물러섬": f"짝 지은 줄 {len(said_lines)} · 바닥선 {need}",
+        })
         return coarse
 
     #: 뒤로 가는 짝은 버린다. 짝은 차례대로 나오지만 한 음절이 여러 짝에 걸릴 수 있다.
@@ -2542,6 +2549,11 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
         if not pairs or marks[grain] >= pairs[-1][1]:
             pairs.append((grain, marks[grain]))
     if len(pairs) < 2:
+        keep(beside(path, ".clock.json"), {
+            "시계": coarse, "못박힌 줄": [], "고른 짐작": coarse,
+            "닮은 만큼": round(alike, 4), "받아쓰기를 믿나": trust, "짝 지은 음절": len(pairs),
+            "물러섬": "차례를 지키는 짝이 둘도 안 된다",
+        })
         return coarse
 
     #: 줄이 시작하는 음절 자리.

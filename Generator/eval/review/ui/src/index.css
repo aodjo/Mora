@@ -750,3 +750,16 @@ input { border: 0; background: none; outline: none; }
   color: var(--ink);
 }
 .said-words li.near em { color: var(--ink); }
+
+/* 짝지어진 낱말과 그렇지 않은 낱말. 가사에 없는 소리(다른 말로 된 인트로, 애드리브, 환각)와
+   받아쓰기가 놓친 자리를 한눈에 가르려고 둔다. */
+.said-words li.held { color: var(--ink); }
+.said-words li.held b {
+  font-weight: 500; font-size: 10px; font-variant-numeric: tabular-nums;
+  color: var(--accent); margin-left: 1px;
+}
+.said-words li.loose {
+  color: var(--word-off);
+  background: color-mix(in oklab, var(--ink) 3%, transparent);
+}
+.said-words li.loose em { color: var(--dimmer); }

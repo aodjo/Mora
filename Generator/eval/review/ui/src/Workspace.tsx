@@ -47,6 +47,15 @@ interface Heard {
   "어떻게"?: { "갈래"?: string; "말"?: string | null; "문"?: boolean };
   /** How much of the sheet's letters came back, 0 to 1. */
   "닮은 만큼"?: number;
+  /**
+   * Each word heard, with the lyric line the sheet matched it to — `line` is null when nothing
+   * in the sheet accounts for it.
+   *
+   * An unmatched word is either something nobody wrote a lyric for (an intro spoken in another
+   * language, an ad-lib, a subtitle the model hallucinated) or a place the transcript simply
+   * failed. Seeing which is which is the point of showing this at all.
+   */
+  "짝"?: { at: number; word: string; line: number | null }[];
 }
 
 /** One stage the song has passed through, in pipeline order. */
@@ -228,15 +237,25 @@ export function Workspace({ songId, stem, onStem, nowMs, totalMs, busy }: Props)
                 <>
                   <p className="said-why">
                     화면에 안 나가는 글이다 — 닻을 어디에 세울지 정하려고 들은 것이라 틀려도 된다.
-                    줄이 엉뚱한 데 놓였을 때 가장 먼저 볼 자리.
+                    <b>진하게</b> 나온 것이 가사와 짝지어진 낱말이고 뒤의 숫자가 그 줄이다.
+                    흐린 것은 짝이 없는 것 — 가사에 없는 소리이거나, 받아쓰기가 놓친 자리다.
                   </p>
                   <ol className="said-words">
-                    {heard["낱말"]!.map(([word, at], index) => (
-                      <li key={`${at}-${index}`} className={Math.abs(at - nowMs) < 900 ? "near" : ""}>
-                        <em>{clock(at / 1000)}</em>
-                        {word}
-                      </li>
-                    ))}
+                    {(heard["짝"] ?? heard["낱말"]!.map(([word, at]) => ({ at, word, line: null })))
+                      .map((one, index) => (
+                        <li
+                          key={`${one.at}-${index}`}
+                          className={
+                            `${one.line === null ? "loose" : "held"}` +
+                            `${Math.abs(one.at - nowMs) < 900 ? " near" : ""}`
+                          }
+                          title={one.line === null ? "가사에 짝이 없다" : `${one.line + 1}번 줄`}
+                        >
+                          <em>{clock(one.at / 1000)}</em>
+                          {one.word}
+                          {one.line !== null && <b>{one.line + 1}</b>}
+                        </li>
+                      ))}
                   </ol>
                 </>
               )}

@@ -1009,6 +1009,49 @@ def wav_form(path: Path) -> str | None:
 
 
 
+
+def matched_words(row, heard: dict) -> list[dict]:
+    """Say, for each word heard, whether the sheet accounts for it and which line it belongs to.
+
+    The workshop showed what the model heard but not **which of it the lyric explains**, and that
+    is the whole point — a word with no line behind it is either something nobody sang the lyric
+    for (an intro in another language, an ad-lib) or a place the transcript simply failed. Both are
+    what you are looking for when a line lands wrong.
+
+    The matching here is the same one `heard_clock` anchors with, so what is shown is what was
+    used, not a second opinion.
+
+    @param {sqlite3.Row} row - The song row, for its lyric lines.
+    @param {dict} heard - The saved transcript.
+    @returns {list[dict]} Each word with `at`, `word`, and `line` (None when nothing matched it).
+    """
+    import difflib
+    import align
+
+    said = [(one, at) for one, at in (heard.get("낱말") or [])]
+    if not said:
+        return []
+    lines = json.loads(row["lines"])
+    sheet: list[tuple[str, int]] = []
+    for at, line in enumerate(lines):
+        for word in align_words(line.get("text", "")):
+            for grain in align.grains_of(align.speakable(word)):
+                sheet.append((grain, at))
+    if not sheet:
+        return []
+
+    mine, from_mine = align.jamo_of(sheet)
+    yours, from_yours = align.jamo_of(said)
+    holds: dict[int, int] = {}
+    for a, b, size in difflib.SequenceMatcher(None, mine, yours, autojunk=False).get_matching_blocks():
+        if size < align.HEARD_SOLID:
+            continue
+        for step in range(size):
+            holds.setdefault(from_yours[b + step], sheet[from_mine[a + step]][1])
+    return [{"at": at, "word": word, "line": holds.get(index)}
+            for index, (word, at) in enumerate(said)]
+
+
 def read_json(where: Path) -> dict:
     """Read one of the artefacts left beside the audio, or nothing.
 
@@ -1092,6 +1135,8 @@ def workspace(song_id: int) -> dict:
                  f"무너짐 {sum(1 for one in placed if one['words'][0].get('stuck'))}")
                 if placed else "아직"},
     ]
+    if heard:
+        heard = {**heard, "짝": matched_words(row, heard)}
     return {"files": files, "steps": steps, "heard": heard, "clock": clock}
 
 
