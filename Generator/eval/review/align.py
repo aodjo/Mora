@@ -3228,6 +3228,8 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 줄 자리가 다 잡힌 뒤에, 그 창 안에서 음절만 Qwen3 로 다시 놓는다. 펴기 뒤여야 한다 —
     #: 펴기는 「모델이 못 들은 줄」의 마지막 수단이고, 여기서는 그 줄을 실제로 듣는다.
     polish(path, lines, out)
+    #: 받아쓰기가 낱말 단위로 들은 자리에 줄 안의 낱말을 맞춘다 — 크게 어긋난 곳만.
+    settle_heard(path, lines, out, tokenize)
     #: 그리고 마지막으로, 한 줄이 여러 번에 나뉘어 불린 자리에 쉼을 되돌린다. Qwen3 도 그 줄에서는
     #: 못 듣는다 — 리드 갈래가 통째로 조용하다 — 그러니 화자 토막이 유일한 증거다.
     settle_turns(path, lines, out, lanes)
@@ -3850,6 +3852,165 @@ def quiet_of(path: Path) -> list[tuple[int, int]]:
         else:
             held.append([a, b])
     return [(a, b) for (_, a), (b, _) in zip(held, held[1:])]
+
+
+#: 받아쓴 낱말이 줄 안의 낱말을 못박을 때, 우리 자리와 이보다 더 어긋나야 옮긴다(ms). whisper 의
+#: 낱말 시각 자체가 몇백 ms 흔들리므로 그 안의 차이는 소리가 이긴다.
+HEARD_PULL_MS = int(os.environ.get("MORA_PULL_MS", "600"))
+
+
+def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize) -> int:
+    """Pull a line's words onto the transcript's word times where the two disagree by a lot.
+
+    The transcript anchors **lines** (`heard_clock`) and then has no more say; inside a line the
+    syllables fall where CTC and Qwen3 put them. 야해 line 11 「이른 아침에 못살게 날 더 괴롭혀줘」
+    came out with 더 at 70.19 s and 줘 at 71.31 s while whisper heard 더 at 68.4 and 괴롭혀줘 at
+    68.8 — the tail 1.5 s late, and the next line's 조용히 (heard 70.6) squeezed in after it. The
+    words whisper heard are matched to the sheet letter by letter exactly as the clock matches
+    them; where a heard word's first letter meets a sheet word's first letter inside a solid
+    block, that word's start is known to within whisper's own scatter.
+
+    Only a difference beyond `HEARD_PULL_MS` moves anything — inside that the sound wins, since
+    whisper's word times wander a few hundred ms on their own. And only the **shape** inside the
+    line is taken from the transcript: the first pinned word stays where the aligner put it and
+    the other pins are read relative to it. Where a line starts belongs to the clock and the CTC
+    — taking whisper's absolute times pulled some lines and not others in songs where whisper runs
+    early throughout, and the line starts scattered (thirteen songs, sheet-timed: 672 → 609). A
+    moved line is re-laid piecewise: the characters between two pins keep their proportions, the
+    tail shifts with the last pin, and nothing crosses the neighbouring lines.
+
+    @param {Path} path - The original audio; the transcript and clock sit beside it.
+    @param {list[dict]} lines - Lyric lines.
+    @param {list[list[dict]]} out - Per-line word dicts, whose character times are rewritten.
+    @param {callable} tokenize - Splits a line into words, the way the aligner did.
+    @returns {int} How many lines were re-laid.
+    """
+    heard = kept(beside(path, ".heard.json"))
+    clock = kept(beside(path, ".clock.json"))
+    if not heard or not heard.get("낱말") or not clock or not clock.get("받아쓰기를 믿나"):
+        return 0
+    said = [(one, at) for one, at in heard["낱말"]]
+
+    sheet: list[tuple[str, int, int]] = []
+    for at, line in enumerate(lines):
+        for spot, word in enumerate(tokenize(line.get("text", ""))):
+            for grain in grains_of(speakable(word)):
+                sheet.append((grain, at, spot))
+    if not sheet:
+        return 0
+    mine, from_mine = jamo_of(sheet)
+    yours, from_yours = jamo_of(said)
+    #: 낱말의 첫 글자인 자리들 — 시트 쪽은 (줄, 낱말)이 바뀌는 곳, 받아쓰기 쪽은 낱말이 바뀌는 곳.
+    mine_head: dict[int, tuple[int, int]] = {}
+    seen = None
+    for index, grain in enumerate(from_mine):
+        key = sheet[grain][1:]
+        if key != seen:
+            mine_head[index] = key
+            seen = key
+    yours_head: dict[int, int] = {}
+    seen = None
+    for index, word in enumerate(from_yours):
+        if word != seen:
+            yours_head[index] = word
+            seen = word
+
+    pins: dict[tuple[int, int], int] = {}
+    for a, b, size in difflib.SequenceMatcher(None, mine, yours, autojunk=False).get_matching_blocks():
+        if size < HEARD_SOLID:
+            continue
+        for step in range(size):
+            key = mine_head.get(a + step)
+            word = yours_head.get(b + step)
+            if key is not None and word is not None:
+                when = said[word][1] + HEARD_LEAN_MS
+                if key not in pins or when < pins[key]:
+                    pins[key] = when
+    if not pins:
+        return 0
+
+    done = 0
+    for index, words in enumerate(out):
+        held = [one for one in words
+                if (one.get("chars") or []) and one["chars"][0].get("at") is not None]
+        if not held:
+            continue
+        #: 정렬 결과는 못 놓은 낱말을 빼고 내놓으므로, 시트의 낱말 번호를 글자로 다시 맞춘다.
+        expect = ["".join(grains_of(speakable(word))) for word in tokenize(lines[index].get("text", ""))]
+        spot = 0
+        marks: list[tuple[int, int]] = []
+        chars: list[dict] = []
+        for one in held:
+            own = [two for two in one["chars"] if two.get("at") is not None]
+            while spot < len(expect) and expect[spot] != one["text"]:
+                spot += 1
+            if spot < len(expect):
+                when = pins.get((index, spot))
+                if when is not None:
+                    marks.append((len(chars), when))
+                spot += 1
+            chars.extend(own)
+        if len(chars) < 2 or not marks:
+            continue
+        #: 차례를 어기는 못은 버린다.
+        in_turn: list[tuple[int, int]] = []
+        for at, when in marks:
+            if not in_turn or when > in_turn[-1][1] + LEAST_MS * (at - in_turn[-1][0]):
+                in_turn.append((at, when))
+        marks = in_turn
+        #: 줄의 **시작**은 시계와 CTC 가 정한다. 받아쓰기는 줄 **안의 모양**만 고친다 — 첫 못의
+        #: 차를 기준으로 빼서 상대 차만 쓴다. 못을 절대 시각으로 쓰니 whisper 가 곡 전체로 조금
+        #: 이른 곡에서 차가 문턱을 넘는 줄만 당겨져 줄 시작들이 흩어졌다: 열세 곡 시각 있음
+        #: 672 → 609, 너와 나 100 → 63%. 못 자체는 제 줄 안에 있었다(102 개 중 창 밖 3 개).
+        ref = marks[0][1] - chars[marks[0][0]]["at"]
+        marks = [(at, when - ref) for at, when in marks]
+        if max(abs(when - chars[at]["at"]) for at, when in marks) <= HEARD_PULL_MS:
+            continue
+
+        floor = None
+        for earlier in range(index - 1, -1, -1):
+            before = [two for one in out[earlier] for two in (one.get("chars") or []) if two.get("at") is not None]
+            if before:
+                floor = before[-1]["at"] + LEAST_MS
+                break
+        roof = None
+        for later in range(index + 1, len(out)):
+            after = [two for one in out[later] for two in (one.get("chars") or []) if two.get("at") is not None]
+            if after:
+                roof = after[0]["at"] - LEAST_MS
+                break
+
+        old = [one["at"] for one in chars]
+        new = list(old)
+        first_at, first_when = marks[0]
+        for at in range(0, first_at + 1):
+            new[at] = old[at] + (first_when - old[first_at])
+        for (a, when_a), (b, when_b) in zip(marks, marks[1:]):
+            span = max(1, old[b] - old[a])
+            for at in range(a, b + 1):
+                new[at] = int(when_a + (when_b - when_a) * (old[at] - old[a]) / span)
+        last_at, last_when = marks[-1]
+        for at in range(last_at, len(chars)):
+            new[at] = old[at] + (last_when - old[last_at])
+        #: 이웃 줄을 넘지 않는다. 머리가 앞 줄에 물리면 앞 줄 뒤로 붙이고 차례만 지킨다.
+        if floor is not None and new[0] < floor:
+            new[0] = floor
+        for at in range(1, len(new)):
+            if new[at] < new[at - 1] + LEAST_MS:
+                new[at] = new[at - 1] + LEAST_MS
+        if roof is not None and new[-1] > roof:
+            continue
+        for at, one in enumerate(chars):
+            hold = max(20, (one.get("end") or old[at] + 20) - old[at])
+            limit = new[at + 1] if at + 1 < len(new) else (roof if roof is not None else new[at] + hold)
+            one["at"] = new[at]
+            one["end"] = max(new[at] + 20, min(new[at] + hold, limit))
+        for one in held:
+            own = [two for two in one["chars"] if two.get("at") is not None]
+            one["at"] = own[0]["at"]
+            one["end"] = own[-1]["end"]
+        done += 1
+    return done
 
 
 def hush_tails(out: list[list[dict]], quiet: list[tuple[int, int]] | None) -> None:
