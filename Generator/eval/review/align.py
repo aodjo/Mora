@@ -32,6 +32,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import unicodedata
 from pathlib import Path
 
@@ -210,6 +211,9 @@ def source_in(folder: Path, video_id: str) -> Path | None:
 _bundles: dict[str, dict] = {}
 #: The speaker model, shared by every backend.
 _voice: dict = {}
+#: Which diarizer segments carry lyric, per song, with how many lines had text when it was
+#: worked out. See `lyric_segments` for why the count matters.
+_segs: dict[str, tuple[int, list[tuple[float, float]]]] = {}
 #: Diarization answers already read, keyed by their file. Holding them keeps what `told_apart`
 #: writes onto them — the lane-to-speaker mapping — alive for the passes that come after.
 _said: dict[str, dict] = {}
@@ -1866,6 +1870,32 @@ HEARD = os.environ.get("MORA_HEARD", "1") != "0"
 #: reason `~/dia` and `~/qwen` do — one venv repinning another's versions has broken all three.
 #: Missing, `heard_song` falls back to kresnik, which is much worse but always there.
 EARS_PY = Path.home() / "ears/bin/python"
+#: A pin from the transcript must sit on voice: an onset within this many ms of it. **Off by
+#: default (0) — measured and it loses.** It was built for 야해, where whisper wrote `작은 손목에`
+#: at 43.1 s beside a 4.6 s stretch holding four onsets; but that pin sat on one of the four and
+#: passed anyway, and across thirteen songs blind the gate cost five lines — the ballads most:
+#:
+#:                     문 끔   문 켬
+#:   사랑하게 될거야        86%    75%      붉은 노을    54%    60%
+#:   너와 나             78%    63%      Small girl  84%    87%
+#:   미안하다는말          87%    78%      To. 난간     93%    95%
+#:   쌩 가사 열세 곡      538    533
+#:
+#: It removes only 1–6% of a song's pins, but a removed pin that was a line's first syllable
+#: moves that line. `HEARD_RUSH` below is what actually fixed 야해, and it touched nothing else.
+#: Kept, switchable by `MORA_ONSET_MS`, so the next person can measure rather than guess.
+HEARD_ONSET_MS = int(os.environ.get("MORA_ONSET_MS", "0"))
+#: A pin that would make the singer rush faster than this many times the song's own median
+#: pace, from the previous pinned line, is not believed. whisper writes chorus text a phrase
+#: early — 야해's `작은 손목에` at 43.1 s, on a real onset, asked lines 5–7's thirty-six syllables
+#: to fit in 3.8 s: 9.4 syllables a second against the song's 2.9. Real passages stay under
+#: 1.8× (Small girl 1.7, To. 난간 1.3, Daddy 1.3); the invented ones sit at 3× and above
+#: (NOT SORRY 18.2/s, 3.8×). Read from `MORA_RUSH`; 0 turns it off.
+HEARD_RUSH = float(os.environ.get("MORA_RUSH", "2.5"))
+#: And never faster than this many syllables a second, whatever the song's pace.
+HEARD_RUSH_MOST = 12.0
+#: Hop of the loudness envelope the onset finder walks (ms).
+HOP_MS = 10
 #: How many letters a transcript match must run before `heard_clock` believes it. Two letters
 #: shared by chance are enough to drag a repeated lyric to the wrong repeat.
 HEARD_SOLID = 6
@@ -2212,6 +2242,12 @@ def heard_song(path: Path, language: str | None = None, vad: bool = False,
             if said:
                 #: 쏠림은 여기서 한 번만 걷는다. 아래로 내려가는 모든 것이 같은 시각을 보게.
                 return [(one, max(0, at + HEARD_LEAN_MS)) for one, at in said]
+        #: whisper 가 있는데 못 돌았다면 그것은 고장이지 「없음」이 아니다. 조용히 kresnik 으로
+        #: 물러나면 열 배 못한 받아쓰기로 정렬되면서 아무도 모른다 — 맥의 파이썬 3.9 에서
+        #: `str | None` 에 걸려 죽은 것을 한 세션 내내 못 봤다. 소리는 내고, 물러서기는 한다.
+        why = (ran.stderr or ran.stdout or "").strip().splitlines()
+        print(f"[heard_song] whisper 가 못 돌았다 · {path.name} · {why[-1][:160] if why else '까닭 없음'}",
+              file=sys.stderr)
     return kresnik_song(path)
 
 
@@ -2517,12 +2553,23 @@ def lyric_segments(path: Path, lines: list[dict], tokenize) -> list[tuple[float,
     @param {callable} tokenize - Splits a line into words.
     @returns {list[tuple[float, float]]} Start and end, in seconds, of each segment to keep.
     """
+    #: 한 곡에 한 번만 셈한다. `align_one` 은 한 곡에 예닐곱 번 불리고, 그 가운데 레인별
+    #: 되맞추기는 **다른 레인의 줄 글월을 비운 목록**을 넘긴다(`only = … {**line, "text": ""}`).
+    #: 그 목록으로 여기까지 오면 가사장이 74 음절짜리로 줄어 `heard_clock` 이 빈 줄들을 음절 0
+    #: 으로 세고, 고른 짐작이 24.7 초에 멈춘 채 `.clock.json` 을 덮어썼다 — 야해에서 그랬다.
+    #: 글월이 살아 있는 줄이 가장 많은 부름이 곡의 참모습이고, 그 답을 모두가 쓴다.
+    alive = sum(1 for one in lines if tokenize(one.get("text", "")))
+    kept_here = _segs.get(str(path))
+    if kept_here and kept_here[0] >= alive:
+        return kept_here[1]
+
     said = voices_apart(path)
     who = said.get("쪽") or []
     if not who:
         return []
     every = [(a, b) for one in who for a, b in one["토막"]]
     if len(who) < 2:
+        _segs[str(path)] = (alive, every)
         return every
 
     main = max(range(len(who)), key=lambda one: who[one].get("부른 시간", 0))
@@ -2555,7 +2602,47 @@ def lyric_segments(path: Path, lines: list[dict], tokenize) -> list[tuple[float,
                     or any(a * 1000 <= at <= b * 1000 for at in marks)
                     or any(since <= at <= until for at in owed)):
                 out.append((a, b))
+    _segs[str(path)] = (alive, out)
     return out
+
+
+
+def onsets_of(stem: Path) -> list[int]:
+    """Find where loudness climbs sharply in a stem, in ms.
+
+    A climb is the loudness now minus one hop ago, floored at zero; a peak is the sharpest climb
+    within ±60 ms that is also loud enough to be a voice rather than noise. Lived in
+    `probe_onset` as a measuring stick; it is here now because the clock uses it to refuse pins
+    that sit on silence.
+
+    @param {Path} stem - The audio to read.
+    @returns {list[int]} Onset times in ms, ascending.
+    """
+    import torch
+    wave = read_audio(stem, 16_000, 1)[0]
+    hop = 16_000 * HOP_MS // 1000
+    win = hop * 3
+    pad = torch.nn.functional.pad(wave.unsqueeze(0).unsqueeze(0), (win, win))
+    loud = torch.nn.functional.avg_pool1d(pad.abs(), kernel_size=win * 2, stride=hop)[0, 0]
+    climb = torch.clamp(loud[1:] - loud[:-1], min=0)
+    out: list[int] = []
+    for at in range(6, len(climb) - 6):
+        if climb[at] == climb[at - 6:at + 7].max() and climb[at] > 0.004 and loud[at + 1] > 0.02:
+            out.append(at * HOP_MS)
+    return out
+
+
+def on_voice(at: int, marks: list[int], within: int) -> bool:
+    """Say whether some onset lies within `within` ms of `at`.
+
+    @param {int} at - A time in ms.
+    @param {list[int]} marks - Onset times, ascending.
+    @param {int} within - Tolerance in ms.
+    @returns {bool} True when voice starts near enough.
+    """
+    import bisect
+    where = bisect.bisect_left(marks, at)
+    return any(abs(marks[one] - at) <= within for one in (where - 1, where) if 0 <= one < len(marks))
 
 
 def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
@@ -2638,6 +2725,16 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
         })
         return coarse
 
+    #: 소리 없는 자리에 선 못은 버린다. whisper 는 후렴 글을 빈 구간에 지어내고, 그 글은 가사와
+    #: 굵게 짝지어진다 — 짝의 길이로는 못 가른다. 그 자리에 목소리가 솟는지만이 가른다.
+    silent = 0
+    if HEARD_ONSET_MS > 0:
+        heard_on = onsets_of(lead)
+        for grain in list(marks):
+            if not on_voice(marks[grain], heard_on, HEARD_ONSET_MS):
+                del marks[grain]
+                silent += 1
+
     #: 뒤로 가는 짝은 버린다. 짝은 차례대로 나오지만 한 음절이 여러 짝에 걸릴 수 있다.
     pairs: list[tuple[int, int]] = []
     for grain in sorted(marks):
@@ -2656,6 +2753,44 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     for grain, (_, line) in enumerate(sheet):
         if starts[line] is None:
             starts[line] = grain
+
+    #: 급한 못은 버린다. 줄 단위로 잰다 — 한 낱말의 음절은 같은 시각을 받으므로 음절 단위로는
+    #: 늘 급해 보인다. 앞 못박힌 줄에서 이 줄까지 음절 수를 시간으로 나눈 것이 곡의 가운뎃값의
+    #: `HEARD_RUSH` 배를 넘으면 이 줄의 못을 뽑고, 그 줄의 음절 짝을 표에서 지운 뒤 다시 잇는다.
+    rushed = 0
+    if HEARD_RUSH > 0:
+        for _ in range(8):
+            pin_at = {}
+            for grain, when in pairs:
+                line = sheet[grain][1]
+                if starts[line] == grain:
+                    pin_at[line] = when
+            rows = sorted(pin_at)
+            paces = []
+            for a, b in zip(rows, rows[1:]):
+                gap = (pin_at[b] - pin_at[a]) / 1000
+                if gap > 0.2:
+                    paces.append(((starts[b] - starts[a]) / gap, b))
+            if len(paces) < 4:
+                break
+            middle = sorted(one for one, _ in paces)[len(paces) // 2]
+            bad = next((line for pace, line in paces
+                        if pace > max(HEARD_RUSH * middle, 0) and pace > HEARD_RUSH_MOST / 2
+                        and (pace > HEARD_RUSH * middle or pace > HEARD_RUSH_MOST)), None)
+            if bad is None:
+                break
+            rushed += 1
+            lo = starts[bad]
+            hi = next((starts[one] for one in range(bad + 1, len(lines)) if starts[one] is not None),
+                      len(sheet))
+            for grain in [one for one in marks if lo <= one < hi]:
+                del marks[grain]
+            pairs = []
+            for grain in sorted(marks):
+                if not pairs or marks[grain] >= pairs[-1][1]:
+                    pairs.append((grain, marks[grain]))
+            if len(pairs) < 2:
+                break
 
     #: 표 밖으로 나간 줄은 표의 기울기로 늘여 잡는다. 거친 짐작으로 되돌리면 안 된다 — 그
     #: 짐작이야말로 앞머리 중얼거림에 끌려 있고, 첫 줄이 거기로 떨어지면 `align_one` 의 앞머리
@@ -2701,6 +2836,8 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
         "닮은 만큼": round(alike, 4),
         "받아쓰기를 믿나": trust,
         "짝 지은 음절": len(pairs),
+        "소리 없는 못": silent,
+        "급한 못": rushed,
     })
     return made
 

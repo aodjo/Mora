@@ -14,6 +14,12 @@ whisper 는 한국어와 영어를 함께 하고 낱말마다 시각을 준다. 
 @example
   echo '{"path": "song.lead.wav"}' | ~/ears/bin/python hear.py
 """
+#: 맥의 `~/ears` 는 시스템 파이썬 3.9 로 만들어졌다. `str | None` 은 3.10 부터 실행 시점에
+#: 통하므로, 이 줄이 없으면 이 파일은 맥에서 첫 함수 정의에서 죽는다 — 그리고 `heard_song`
+#: 은 그것을 「받아쓰기가 없다」로 읽고 조용히 kresnik 으로 물러나, 맥에서 받아 적은 모든
+#: 곡이 16% 짜리 받아쓰기로 정렬됐다. 야해가 「흉터」부터 밀린 것이 그 자국이다.
+from __future__ import annotations
+
 import json
 import os
 import sys

@@ -41,27 +41,7 @@ def words_of(text: str) -> list[str]:
     return [one for one in text.split() if one and not NOT_A_WORD.match(one)]
 
 
-def onsets_of(stem: Path) -> list[int]:
-    """Find where loudness climbs sharply in a stem, in ms.
-
-    A climb is the loudness now minus one hop ago, floored at zero; a peak is the sharpest
-    climb within ±60 ms that is also loud enough to be a voice rather than noise.
-
-    @param {Path} stem - The audio to read.
-    @returns {list[int]} Onset times in ms, ascending.
-    """
-    import torch
-    wave = align.read_audio(stem, 16_000, 1)[0]
-    hop = 16_000 * HOP_MS // 1000
-    win = hop * 3
-    pad = torch.nn.functional.pad(wave.unsqueeze(0).unsqueeze(0), (win, win))
-    loud = torch.nn.functional.avg_pool1d(pad.abs(), kernel_size=win * 2, stride=hop)[0, 0]
-    climb = torch.clamp(loud[1:] - loud[:-1], min=0)
-    out: list[int] = []
-    for at in range(6, len(climb) - 6):
-        if climb[at] == climb[at - 6:at + 7].max() and climb[at] > 0.004 and loud[at + 1] > 0.02:
-            out.append(at * HOP_MS)
-    return out
+onsets_of = align.onsets_of
 
 
 def nearest(marks: list[int], at: int) -> int:
