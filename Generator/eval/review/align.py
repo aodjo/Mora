@@ -576,6 +576,30 @@ def packed_run(chars: list[dict]) -> bool:
     return len(chars) >= 3 and run == len(chars)
 
 
+def health_of(rows: list[dict]) -> int:
+    """Grade one alignment of a line by what it looks like, not by which stage made it.
+
+    Forced through a masked frame (sureness −1e4) is the worst: the line's sound is not in this stem
+    and forced alignment put it anywhere. Next, every gap identical — a wreck that has been covered
+    evenly, whichever function did the covering (`spread_crammed` sometimes flattens a whole line as
+    one run, so a stamp alone cannot tell). Next, a packed run or a flattened run inside an otherwise
+    real line. Then clean.
+
+    Used to choose between stems (never trade down a grade) and to keep later stages from redrawing
+    a clean line: 붉은 노을 1·3·21 were clean out of the lead stem and `settle_turns` laid them evenly
+    onto a speaker turn anyway.
+
+    @param {list[dict]} rows - One line's (or one run's) characters, in order.
+    @returns {int} 0 forced through a mask, 1 whole uniform, 2 packed or flattened, 3 clean.
+    """
+    if min((one.get("sure", 0.0) for one in rows), default=0.0) <= -1000:
+        return 0
+    gaps = [b["at"] - a["at"] for a, b in zip(rows, rows[1:])]
+    if len(gaps) >= 2 and max(gaps) - min(gaps) <= 3:
+        return 1
+    return 2 if packed_run(rows) or any(one.get("flat") for one in rows) else 3
+
+
 def unpack_song(out: list[list[dict]]) -> None:
     """Spread every crammed run in a song, reading the whole song as one stream of characters.
 
@@ -2075,6 +2099,15 @@ def settle_turns(path: Path, lines: list[dict], out: list[list[dict]],
             chars = [one for word in run for one in (word.get("chars") or []) if one["at"] is not None]
             if len(chars) < 2:
                 continue
+            #: 멀쩡한 도막은 안 옮긴다. 이 단계는 정렬기가 놓을 소리가 없던 도막 — 리드 갈래가
+            #: 조용한 자리의 서브 도막, 잔해를 고르게 덮은 줄 — 을 화자 토막 위로 되돌리려는
+            #: 것인데, 겹침이 절반 이하면 무조건 옮기니 리드에서 제대로 맞춘 줄도 화자 토막 하나
+            #: 위에 고르게 깔렸다. 붉은 노을 1·3·21 번이 재시도·시계·펴기·다듬기를 등급 3 으로
+            #: 지나 여기서 314·373·183 ms 균일이 됐다(21 번은 −1.83 초). 화자 자르기는 보컬 갈래를
+            #: 굵게 본 것이고 CTC 는 그 소리를 낱자마다 본 것이라, 멀쩡한 도막은 CTC 가 이긴다.
+            if health_of(chars) >= 3:
+                floor = max(floor, chars[-1]["at"])
+                continue
             #: 낱말에 레인이 없으면 **줄의** 레인을 쓴다. 0 으로 떨어뜨렸더니 61 번(줄 레인 2,
             #: 낱말 레인 없음)이 메인으로 읽혀 메인이 부르는 자리로 통째로 끌려갔다.
             lane = run[0].get("lane")
@@ -3048,23 +3081,12 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             #: 낱자를 0.9 초로 뭉갰다. 보컬 갈래는 같은 줄을 3 초로 제대로 놓는데 3 > 0.9 × 1.8
             #: 이라 버려졌다. 쉰두 줄 가운데 열넷이 그렇게 남았다. 옛 결과가 빽빽하고 새 결과가
             #: 아니면 폭은 묻지 않는다 — 다음 줄이 시작하기 전에 들어가는지만 본다.
-            #: 결과의 건강 등급. 막힌 프레임(−1e4)을 뚫은 것이 가장 나쁘다 — 그 줄의 소리가 이
-            #: 갈래에 없어 강제정렬이 아무 데나 놓은 것이다. 그다음이 펴 놓은 것(잔해를 고르게
-            #: 덮은 것), 그다음이 빽빽한 것, 그리고 멀쩡한 것. **등급이 낮은 후보로는 절대 안
-            #: 바꾼다.** 붉은 노을 13 번은 보컬 갈래의 멀쩡한 결과로 바뀐 뒤 원본 갈래의 펴 놓은
-            #: 잔해로 도로 덮였다 — 잔해가 확신 −10 으로 −11 보다 「나아 보였다」.
-            def health(rows):
-                if min((one.get("sure", 0.0) for one in rows), default=0.0) <= -1000:
-                    return 0
-                #: 줄 통째로 편 것은 잔해를 덮은 것이고, 토막 하나만 편 것은 나머지가 진짜다.
-                #: 붉은 노을 13 번은 보컬 갈래가 한국어 토막만 펴진 채 나머지를 제대로 놓았는데,
-                #: 원본 갈래의 통째 펴진 잔해와 같은 등급에 두니 확신 한 점 차이로 잔해가 이겼다.
-                #: 어느 함수가 폈는지로는 못 가른다 — `spread_crammed` 가 줄 전체를 한 토막으로
-                #: 펴기도 한다. **결과로** 가른다: 줄의 간격이 전부 같으면 통째 잔해다.
-                gaps = [b["at"] - a["at"] for a, b in zip(rows, rows[1:])]
-                if len(gaps) >= 2 and max(gaps) - min(gaps) <= 3:
-                    return 1
-                return 2 if packed_run(rows) or any(one.get("flat") for one in rows) else 3
+            #: 결과의 건강 등급(`health_of`). **등급이 낮은 후보로는 절대 안 바꾼다.** 붉은 노을
+            #: 13 번은 보컬 갈래의 멀쩡한 결과로 바뀐 뒤 원본 갈래의 펴 놓은 잔해로 도로 덮였다 —
+            #: 잔해가 확신 −10 으로 −11 보다 「나아 보였다」. 그리고 보컬 갈래가 한국어 토막만
+            #: 펴진 채 나머지를 제대로 놓은 것을 원본 갈래의 통째 펴진 잔해와 같은 등급에 두니
+            #: 확신 한 점 차이로 잔해가 이겼다 — 통째 균일과 토막 펴짐은 다른 등급이다.
+            health = health_of
             if was and health(now) < health(was):
                 continue
             wrecked = bool(was) and health(was) < health(now)
@@ -3119,23 +3141,12 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             #: 낱자를 0.9 초로 뭉갰다. 보컬 갈래는 같은 줄을 3 초로 제대로 놓는데 3 > 0.9 × 1.8
             #: 이라 버려졌다. 쉰두 줄 가운데 열넷이 그렇게 남았다. 옛 결과가 빽빽하고 새 결과가
             #: 아니면 폭은 묻지 않는다 — 다음 줄이 시작하기 전에 들어가는지만 본다.
-            #: 결과의 건강 등급. 막힌 프레임(−1e4)을 뚫은 것이 가장 나쁘다 — 그 줄의 소리가 이
-            #: 갈래에 없어 강제정렬이 아무 데나 놓은 것이다. 그다음이 펴 놓은 것(잔해를 고르게
-            #: 덮은 것), 그다음이 빽빽한 것, 그리고 멀쩡한 것. **등급이 낮은 후보로는 절대 안
-            #: 바꾼다.** 붉은 노을 13 번은 보컬 갈래의 멀쩡한 결과로 바뀐 뒤 원본 갈래의 펴 놓은
-            #: 잔해로 도로 덮였다 — 잔해가 확신 −10 으로 −11 보다 「나아 보였다」.
-            def health(rows):
-                if min((one.get("sure", 0.0) for one in rows), default=0.0) <= -1000:
-                    return 0
-                #: 줄 통째로 편 것은 잔해를 덮은 것이고, 토막 하나만 편 것은 나머지가 진짜다.
-                #: 붉은 노을 13 번은 보컬 갈래가 한국어 토막만 펴진 채 나머지를 제대로 놓았는데,
-                #: 원본 갈래의 통째 펴진 잔해와 같은 등급에 두니 확신 한 점 차이로 잔해가 이겼다.
-                #: 어느 함수가 폈는지로는 못 가른다 — `spread_crammed` 가 줄 전체를 한 토막으로
-                #: 펴기도 한다. **결과로** 가른다: 줄의 간격이 전부 같으면 통째 잔해다.
-                gaps = [b["at"] - a["at"] for a, b in zip(rows, rows[1:])]
-                if len(gaps) >= 2 and max(gaps) - min(gaps) <= 3:
-                    return 1
-                return 2 if packed_run(rows) or any(one.get("flat") for one in rows) else 3
+            #: 결과의 건강 등급(`health_of`). **등급이 낮은 후보로는 절대 안 바꾼다.** 붉은 노을
+            #: 13 번은 보컬 갈래의 멀쩡한 결과로 바뀐 뒤 원본 갈래의 펴 놓은 잔해로 도로 덮였다 —
+            #: 잔해가 확신 −10 으로 −11 보다 「나아 보였다」. 그리고 보컬 갈래가 한국어 토막만
+            #: 펴진 채 나머지를 제대로 놓은 것을 원본 갈래의 통째 펴진 잔해와 같은 등급에 두니
+            #: 확신 한 점 차이로 잔해가 이겼다 — 통째 균일과 토막 펴짐은 다른 등급이다.
+            health = health_of
             if was and health(now) < health(was):
                 continue
             wrecked = bool(was) and health(was) < health(now)
