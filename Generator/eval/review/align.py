@@ -553,6 +553,7 @@ def spread_crammed(chars: list[dict], roof: int | None = None) -> None:
                 step = room / count
                 for at in range(count):
                     chars[spot + at]["at"] = int(base + step * at)
+                    chars[spot + at]["flat"] = chars[spot + at].get("flat") or "run"
                     chars[spot + at]["end"] = int(base + step * (at + 1))
         spot = last + 1
 
@@ -626,8 +627,23 @@ def unpack_song(out: list[list[dict]]) -> None:
         #: 여기도 여섯 개 문이 있었다. 고스트시티 67 번 `소외된 노예` 는 낱자 다섯 — 첫 낱자 뒤 2.1 초가
         #: 비고 나머지 넷이 한 순간에 포개져 있는데, 다섯이라 줄째 나누는 길에 못 들어와 그대로 남았다.
         #: 붙었는지는 `packed_run` 이 가리고, 여기서는 나눌 만한 수(셋)만 본다.
+        #: 자르기가 남긴 겹침 하나는 그 낱자만 고친다. `settle_lanes` 와 `settle_clock` 은 꼬리를
+        #: 한 순간으로 끌어당겨 앞 낱자와 포개 놓는데, `packed_run` 은 포개짐 하나만 있어도 줄을
+        #: 못 믿는다고 하고, 그러면 여기서 멀쩡한 줄이 통째로 펴진다 — 붉은 노을 34 번
+        #: 「노을빛에 슬퍼지네 (ah, ah, ah)」는 보컬 갈래에서 제대로 놓인 뒤 −20ms 겹침 하나로
+        #: 147ms 균일이 됐다. 나머지가 빽빽하지 않으면 그것은 잔해가 아니라 자국이다.
+        tight = sum(1 for a, b in zip(chars, chars[1:]) if 0 < b["at"] - a["at"] <= PACKED_MS)
+        if tight < CRAMP_RUN:
+            for before, now in zip(chars, chars[1:]):
+                if now["at"] <= before["at"]:
+                    now["at"] = before["at"] + LEAST_MS
+                    now["end"] = max(now.get("end") or 0, now["at"] + 20)
         if len(chars) < 3 or not packed_run(chars):
             continue
+        #: 통째로 편 줄에는 자국을 남긴다. 편 뒤에는 간격이 고르니 `packed_run` 이 더는 잔해로
+        #: 못 알아보고, 다른 갈래 재시도가 그 줄을 멀쩡한 줄로 알고 제대로 된 결과를 버린다.
+        for one in chars:
+            one["flat"] = "whole"
         base = chars[0]["at"]
         later = [one for one in after if one > base]
         #: 방은 **다음 줄이 시작하는 데까지**다. 이 줄의 끝을 함께 재면 안 된다 — 몰린 줄의 끝은
@@ -1572,6 +1588,14 @@ def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True,
                 since = max(0, int((a * 1000 - VOICE_MASK_EDGE_MS) / per_frame))
                 until = min(log_probs.shape[1], int((b * 1000 + VOICE_MASK_EDGE_MS) / per_frame))
                 keep[since:until] = True
+            #: 화자 자르기가 못 본 빈 자리. 소리가 곡 평균보다 한참 아래로 `HOLE_MS` 넘게 내려앉은
+            #: 곳은 누가 부른다고 했든 쉼이다. 여닫이 여유는 쉼 막기와 같게 둔다.
+            if HOLE_MS > 0:
+                for a, b in quiet_holes(path):
+                    since = min(log_probs.shape[1], int((a + HOLE_EDGE_MS) / per_frame))
+                    until = max(0, int((b - HOLE_EDGE_MS) / per_frame))
+                    if until > since:
+                        keep[since:until] = False
             if bool(keep.any()):
                 log_probs = log_probs.clone()
                 log_probs[0, ~keep, :] = -1e4
@@ -1894,6 +1918,23 @@ HEARD_ONSET_MS = int(os.environ.get("MORA_ONSET_MS", "0"))
 HEARD_RUSH = float(os.environ.get("MORA_RUSH", "2.5"))
 #: And never faster than this many syllables a second, whatever the song's pace.
 HEARD_RUSH_MOST = 12.0
+#: A hole in the lead stem this long and this far below the song's own loudness is masked like a
+#: rest, whoever the diarizer thinks is singing through it. Forced alignment has to spend every
+#: token, so a stretch nobody sings gets filled by stretching the line before it or pulling the
+#: line after it forward — a person put it as "it spits a line, sees a gap, keeps trying to fill
+#: it strangely, and collapses". The diarizer's rests catch most gaps, but not 야해's: it heard
+#: 36–80 s as one voice while the lead stem sits 27–45 dB under the song's level for 2.75 s at
+#: 44.75–47.5 s, and line 7 was laid across that silence three seconds early. 0 turns it off.
+#: Read from `MORA_HOLE_MS` and `MORA_HOLE_DB`.
+HOLE_MS = int(os.environ.get("MORA_HOLE_MS", "1000"))
+HOLE_DB = float(os.environ.get("MORA_HOLE_DB", "25"))
+#: Two holes with less than this between them are one hole. 야해's 2.2 s of silence came out as
+#: 44.8–45.8 and 45.9–47.0 around a 0.1 s click, each barely a second, and each vanished under
+#: the mask's edge margin.
+HOLE_GLUE_MS = 250
+#: How much of a hole's edge is left unmasked (ms). Smaller than `VOICE_MASK_EDGE_MS` because a
+#: loudness envelope places silence to the hop, where a diarizer's turn boundary is coarse.
+HOLE_EDGE_MS = 200
 #: Hop of the loudness envelope the onset finder walks (ms).
 HOP_MS = 10
 #: How many letters a transcript match must run before `heard_clock` believes it. Two letters
@@ -2607,6 +2648,43 @@ def lyric_segments(path: Path, lines: list[dict], tokenize) -> list[tuple[float,
 
 
 
+
+def quiet_holes(stem: Path) -> list[tuple[int, int]]:
+    """Stretches of a stem that sit far below its own loudness for long enough to be a rest.
+
+    Measured against the song's own RMS rather than an absolute floor, so a soft ballad and a
+    loud rap are judged by the same rule. Windows are `HOP_MS` wide; a hole must run at least
+    `HOLE_MS` to count, which keeps a breath between words from becoming a wall.
+
+    @param {Path} stem - The audio to read.
+    @returns {list[tuple[int, int]]} Start and end of each hole, in ms.
+    """
+    import torch
+    wave = read_audio(stem, 16_000, 1)[0]
+    hop = 16_000 * HOP_MS // 1000
+    pad = torch.nn.functional.pad(wave.unsqueeze(0).unsqueeze(0), (hop, hop))
+    loud = torch.nn.functional.avg_pool1d(pad.pow(2), kernel_size=hop * 2, stride=hop)[0, 0].sqrt()
+    floor = float(wave.pow(2).mean().sqrt()) * (10 ** (-HOLE_DB / 20))
+    out: list[tuple[int, int]] = []
+    since = None
+    for at, one in enumerate(loud.tolist()):
+        if one < floor:
+            since = at if since is None else since
+        elif since is not None:
+            out.append((since * HOP_MS, at * HOP_MS))
+            since = None
+    if since is not None:
+        out.append((since * HOP_MS, len(loud) * HOP_MS))
+    #: 짧은 잡음으로 갈린 구멍은 하나로 잇는다. 이은 뒤에 다시 길이를 본다.
+    glued: list[list[int]] = []
+    for a, b in out:
+        if glued and a - glued[-1][1] <= HOLE_GLUE_MS:
+            glued[-1][1] = b
+        else:
+            glued.append([a, b])
+    return [(a, b) for a, b in glued if b - a >= HOLE_MS]
+
+
 def onsets_of(stem: Path) -> list[int]:
     """Find where loudness climbs sharply in a stem, in ms.
 
@@ -2964,12 +3042,44 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
 
             span = now[-1]["at"] - now[0]["at"]
             held = (was[-1]["at"] - was[0]["at"]) if len(was) > 1 else span
-            if len(now) > 1 and held > 0 and span > held * STRETCH:
+            #: `STRETCH` 는 새 결과가 잔해일 때를 막으려고 둔 것인데, 잔해가 **옛 결과** 쪽일
+            #: 때는 거꾸로 든다. 붉은 노을의 후렴은 노래방 가르기가 통째로 서브로 보내서 리드
+            #: 갈래에는 무음뿐이고(13 번 50.8~51.6 초 −85~−159 dB), 정렬기는 그 무음 위에 열두
+            #: 낱자를 0.9 초로 뭉갰다. 보컬 갈래는 같은 줄을 3 초로 제대로 놓는데 3 > 0.9 × 1.8
+            #: 이라 버려졌다. 쉰두 줄 가운데 열넷이 그렇게 남았다. 옛 결과가 빽빽하고 새 결과가
+            #: 아니면 폭은 묻지 않는다 — 다음 줄이 시작하기 전에 들어가는지만 본다.
+            #: 결과의 건강 등급. 막힌 프레임(−1e4)을 뚫은 것이 가장 나쁘다 — 그 줄의 소리가 이
+            #: 갈래에 없어 강제정렬이 아무 데나 놓은 것이다. 그다음이 펴 놓은 것(잔해를 고르게
+            #: 덮은 것), 그다음이 빽빽한 것, 그리고 멀쩡한 것. **등급이 낮은 후보로는 절대 안
+            #: 바꾼다.** 붉은 노을 13 번은 보컬 갈래의 멀쩡한 결과로 바뀐 뒤 원본 갈래의 펴 놓은
+            #: 잔해로 도로 덮였다 — 잔해가 확신 −10 으로 −11 보다 「나아 보였다」.
+            def health(rows):
+                if min((one.get("sure", 0.0) for one in rows), default=0.0) <= -1000:
+                    return 0
+                #: 줄 통째로 편 것은 잔해를 덮은 것이고, 토막 하나만 편 것은 나머지가 진짜다.
+                #: 붉은 노을 13 번은 보컬 갈래가 한국어 토막만 펴진 채 나머지를 제대로 놓았는데,
+                #: 원본 갈래의 통째 펴진 잔해와 같은 등급에 두니 확신 한 점 차이로 잔해가 이겼다.
+                #: 어느 함수가 폈는지로는 못 가른다 — `spread_crammed` 가 줄 전체를 한 토막으로
+                #: 펴기도 한다. **결과로** 가른다: 줄의 간격이 전부 같으면 통째 잔해다.
+                gaps = [b["at"] - a["at"] for a, b in zip(rows, rows[1:])]
+                if len(gaps) >= 2 and max(gaps) - min(gaps) <= 3:
+                    return 1
+                return 2 if packed_run(rows) or any(one.get("flat") for one in rows) else 3
+            if was and health(now) < health(was):
+                continue
+            wrecked = bool(was) and health(was) < health(now)
+            if wrecked:
+                room = next((one[0]["at"] for one in (
+                    [x for word in out[later] for x in (word.get("chars") or []) if x.get("at") is not None]
+                    for later in range(index + 1, len(out))) if one), None)
+                if room is not None and now[-1]["at"] > room:
+                    continue
+            elif len(now) > 1 and held > 0 and span > held * STRETCH:
                 continue
 
             after = min(one.get("sure", -9.0) for one in now)
             before = min((one.get("sure", -9.0) for one in was), default=-9.0)
-            if after - before <= VOICE_EDGE:
+            if not wrecked and after - before <= VOICE_EDGE:
                 continue
             if not in_order(out, index, now):
                 continue
@@ -3003,7 +3113,39 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
                 continue
             span = now[-1]["at"] - now[0]["at"]
             held = (was[-1]["at"] - was[0]["at"]) if len(was) > 1 else span
-            if len(now) > 1 and held > 0 and span > held * STRETCH:
+            #: `STRETCH` 는 새 결과가 잔해일 때를 막으려고 둔 것인데, 잔해가 **옛 결과** 쪽일
+            #: 때는 거꾸로 든다. 붉은 노을의 후렴은 노래방 가르기가 통째로 서브로 보내서 리드
+            #: 갈래에는 무음뿐이고(13 번 50.8~51.6 초 −85~−159 dB), 정렬기는 그 무음 위에 열두
+            #: 낱자를 0.9 초로 뭉갰다. 보컬 갈래는 같은 줄을 3 초로 제대로 놓는데 3 > 0.9 × 1.8
+            #: 이라 버려졌다. 쉰두 줄 가운데 열넷이 그렇게 남았다. 옛 결과가 빽빽하고 새 결과가
+            #: 아니면 폭은 묻지 않는다 — 다음 줄이 시작하기 전에 들어가는지만 본다.
+            #: 결과의 건강 등급. 막힌 프레임(−1e4)을 뚫은 것이 가장 나쁘다 — 그 줄의 소리가 이
+            #: 갈래에 없어 강제정렬이 아무 데나 놓은 것이다. 그다음이 펴 놓은 것(잔해를 고르게
+            #: 덮은 것), 그다음이 빽빽한 것, 그리고 멀쩡한 것. **등급이 낮은 후보로는 절대 안
+            #: 바꾼다.** 붉은 노을 13 번은 보컬 갈래의 멀쩡한 결과로 바뀐 뒤 원본 갈래의 펴 놓은
+            #: 잔해로 도로 덮였다 — 잔해가 확신 −10 으로 −11 보다 「나아 보였다」.
+            def health(rows):
+                if min((one.get("sure", 0.0) for one in rows), default=0.0) <= -1000:
+                    return 0
+                #: 줄 통째로 편 것은 잔해를 덮은 것이고, 토막 하나만 편 것은 나머지가 진짜다.
+                #: 붉은 노을 13 번은 보컬 갈래가 한국어 토막만 펴진 채 나머지를 제대로 놓았는데,
+                #: 원본 갈래의 통째 펴진 잔해와 같은 등급에 두니 확신 한 점 차이로 잔해가 이겼다.
+                #: 어느 함수가 폈는지로는 못 가른다 — `spread_crammed` 가 줄 전체를 한 토막으로
+                #: 펴기도 한다. **결과로** 가른다: 줄의 간격이 전부 같으면 통째 잔해다.
+                gaps = [b["at"] - a["at"] for a, b in zip(rows, rows[1:])]
+                if len(gaps) >= 2 and max(gaps) - min(gaps) <= 3:
+                    return 1
+                return 2 if packed_run(rows) or any(one.get("flat") for one in rows) else 3
+            if was and health(now) < health(was):
+                continue
+            wrecked = bool(was) and health(was) < health(now)
+            if wrecked:
+                room = next((one[0]["at"] for one in (
+                    [x for word in out[later] for x in (word.get("chars") or []) if x.get("at") is not None]
+                    for later in range(index + 1, len(out))) if one), None)
+                if room is not None and now[-1]["at"] > room:
+                    continue
+            elif len(now) > 1 and held > 0 and span > held * STRETCH:
                 continue
             if not in_order(out, index, now):
                 continue
