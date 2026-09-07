@@ -485,7 +485,8 @@ CRAMP_ROOM = 2.0
 SPREAD_MOST_MS = 500
 
 
-def spread_crammed(chars: list[dict], roof: int | None = None) -> None:
+def spread_crammed(chars: list[dict], roof: int | None = None,
+                   walls: list[tuple[int, int]] | None = None) -> None:
     """Spread a run of characters stuck at the minimum spacing across the room it actually has.
 
     Characters sitting exactly `CRAMP_MS` apart are not a measurement. They are what is left after
@@ -521,6 +522,9 @@ def spread_crammed(chars: list[dict], roof: int | None = None) -> None:
     @param {list[dict]} chars - One line's character dicts carrying "at"/"end", modified in place.
     @param {int | None} [roof=None] - Where the next line's first character starts, in ms; the
         room a run at the end of this line may spread into. None means the line's own end.
+    @param {list[tuple[int, int]] | None} [walls=None] - Rests of the song, in ms. A run is never
+        spread into one: 야해's line 7 was packed into 44.0~44.6 s by an aligner that had been kept
+        out of the 44.4~47.6 s rest, and this spread it evenly across that rest anyway.
     @returns {None}
     """
     if any(one["at"] is None for one in chars):
@@ -548,6 +552,9 @@ def spread_crammed(chars: list[dict], roof: int | None = None) -> None:
             else:
                 edge = chars[last]["end"] or chars[last]["at"]
             base = chars[spot]["at"]
+            for a, _ in walls or []:
+                if base < a < edge:
+                    edge = a
             room = min(edge - base, count * SPREAD_MOST_MS)
             if room > max(count * CRAMP_MS, chars[last]["at"] - base) * CRAMP_ROOM:
                 step = room / count
@@ -600,7 +607,7 @@ def health_of(rows: list[dict]) -> int:
     return 2 if packed_run(rows) or any(one.get("flat") for one in rows) else 3
 
 
-def unpack_song(out: list[list[dict]]) -> None:
+def unpack_song(out: list[list[dict]], walls: list[tuple[int, int]] | None = None) -> None:
     """Spread every crammed run in a song, reading the whole song as one stream of characters.
 
     Doing this a line at a time was not enough. When the **whole** line is crammed there is no
@@ -634,6 +641,8 @@ def unpack_song(out: list[list[dict]]) -> None:
     said it had been fixed — the correction was real and then quietly undone downstream.
 
     @param {list[list[dict]]} out - Per-line word dicts, modified in place.
+    @param {list[tuple[int, int]] | None} [walls=None] - Rests of the song, in ms; no spread
+        reaches into one.
     @returns {None}
     """
     mine = [[one for word in words for one in (word.get("chars") or []) if one["at"] is not None]
@@ -646,7 +655,7 @@ def unpack_song(out: list[list[dict]]) -> None:
         if not chars:
             continue
         later = [one for one in after if one > chars[0]["at"]]
-        spread_crammed(chars, min(later) if later else None)
+        spread_crammed(chars, min(later) if later else None, walls)
     for chars in mine:
         #: 여기도 여섯 개 문이 있었다. 고스트시티 67 번 `소외된 노예` 는 낱자 다섯 — 첫 낱자 뒤 2.1 초가
         #: 비고 나머지 넷이 한 순간에 포개져 있는데, 다섯이라 줄째 나누는 길에 못 들어와 그대로 남았다.
@@ -675,6 +684,9 @@ def unpack_song(out: list[list[dict]]) -> None:
         #: 단위에서 한 번 밟은 함정을 줄 단위에 그대로 남겨 두었다: 붉은 노을 23 번은 4.18 초가
         #: 비어 있는데 열네 자를 0.82 초에 담은 채였다.
         roof = min(later) if later else (chars[-1]["end"] or chars[-1]["at"])
+        for a, _ in walls or []:
+            if base < a < roof:
+                roof = a
         room = min(roof - base, len(chars) * SPREAD_MOST_MS)
         if room <= 0:
             continue
@@ -1614,8 +1626,14 @@ def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True,
                 keep[since:until] = True
             #: 화자 자르기가 못 본 빈 자리. 소리가 곡 평균보다 한참 아래로 `HOLE_MS` 넘게 내려앉은
             #: 곳은 누가 부른다고 했든 쉼이다. 여닫이 여유는 쉼 막기와 같게 둔다.
+            #: 구멍은 **리드 갈래**에서 잰다, 지금 정렬하는 갈래가 무엇이든. 야해는 `clearest` 가
+            #: 보컬 갈래를 바탕으로 골랐고, 보컬 갈래에는 리드가 쉬는 44.4~47.6 초에 애드리브가
+            #: 있어 구멍이 아니었다 — 7 번 「워낙 넌 착해서 그렇게는 못할걸」이 그 위에 놓였다.
+            #: kresnik 자유 해독은 그 자리에서 낱 음절 둘만 듣는다. 쉼은 메인이 쉬는 자리다.
+            #: 다만 시계가 그 구멍 안에 줄을 둔다면 쉼이 아니라 **메인이 안 부르는 줄**이다 —
+            #: 붉은 노을의 합창 후렴은 리드에 없고 서브에 있다. 그 구멍은 열어 둔다.
             if HOLE_MS > 0:
-                for a, b in quiet_holes(path):
+                for a, b in rests_of(source or path, lines):
                     since = min(log_probs.shape[1], int((a + HOLE_EDGE_MS) / per_frame))
                     until = max(0, int((b - HOLE_EDGE_MS) / per_frame))
                     if until > since:
@@ -1707,7 +1725,7 @@ def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True,
             })
         out.append(words_out)
     settle_clock(lines, out)
-    unpack_song(out)
+    unpack_song(out, rests_of(source or path, lines))
     flag_stuck(lines, out, quiet_of(source or path))
     return out
 
@@ -1791,7 +1809,7 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True,
         for word in words:
             word.pop("stuck", None)
     settle_clock(lines, out)
-    unpack_song(out)
+    unpack_song(out, rests_of(source or path, lines))
     flag_stuck(lines, out, quiet_of(source or path))
     return out
 
@@ -2718,6 +2736,36 @@ def quiet_holes(stem: Path) -> list[tuple[int, int]]:
     return [(a, b) for a, b in glued if b - a >= HOLE_MS]
 
 
+_holes: dict[str, list[tuple[int, int]]] = {}
+
+
+def rests_of(path: Path, lines: list[dict]) -> list[tuple[int, int]]:
+    """The song's rests: the lead stem's quiet holes, less any hole a line is timed inside.
+
+    Measured on the **lead** whatever stem is being aligned. 야해's base stem was the vocals
+    (`clearest` chose it), and the vocals carry an ad-lib through 44.4~47.6 s where the lead is
+    silent, so the hole was not a hole there and line 7 was laid on it; kresnik's free decode hears
+    two stray syllables in that stretch. A rest is where the main voice rests.
+
+    A hole that a line is clocked inside is not a rest but a line the main voice does not sing —
+    붉은 노을's group chorus is absent from the lead and present in the backing stem. Those stay
+    open. The holes are read once per stem and kept.
+
+    @param {Path} path - The original audio or any stem of it; the lead is found beside it.
+    @param {list[dict]} lines - Lyric lines with whatever start times are known.
+    @returns {list[tuple[int, int]]} Start and end of each rest, in ms.
+    """
+    if HOLE_MS <= 0:
+        return []
+    lead = path.parent / (path.name.split(".")[0] + ".lead.wav")
+    stem = lead if lead.exists() else path
+    key = str(stem)
+    if key not in _holes:
+        _holes[key] = quiet_holes(stem)
+    told = [one["at"] for one in lines if one.get("at") is not None]
+    return [(a, b) for a, b in _holes[key] if not any(a < at < b for at in told)]
+
+
 def onsets_of(stem: Path) -> list[int]:
     """Find where loudness climbs sharply in a stem, in ms.
 
@@ -3090,18 +3138,32 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             if was and health(now) < health(was):
                 continue
             wrecked = bool(was) and health(was) < health(now)
-            if wrecked:
-                room = next((one[0]["at"] for one in (
-                    [x for word in out[later] for x in (word.get("chars") or []) if x.get("at") is not None]
-                    for later in range(index + 1, len(out))) if one), None)
-                if room is not None and now[-1]["at"] > room:
-                    continue
-            elif len(now) > 1 and held > 0 and span > held * STRETCH:
+            #: 다음 줄이 시작하기 전에 들어가야 한다 — 잔해를 살릴 때만이 아니라 언제나. NOT SORRY
+            #: 53 번 「나 물어볼 게 있어」는 리드가 101.25~102.47 초로 멀쩡했는데 서브 갈래의 더
+            #: 확신하는 결과(102.33~103.57, 다음 줄 시작을 1.1 초 넘음)가 이겼고, `settle_lanes`
+            #: 가 그것을 다음 줄 앞 0.14 초로 눌러 172 ms 균일 잔해가 됐다.
+            room = next((one[0]["at"] for one in (
+                [x for word in out[later] for x in (word.get("chars") or []) if x.get("at") is not None]
+                for later in range(index + 1, len(out))) if one), None)
+            if room is not None and now[-1]["at"] > room:
+                continue
+            if not wrecked and len(now) > 1 and held > 0 and span > held * STRETCH:
                 continue
 
             after = min(one.get("sure", -9.0) for one in now)
             before = min((one.get("sure", -9.0) for one in was), default=-9.0)
-            if not wrecked and after - before <= VOICE_EDGE:
+            #: 시계가 가른다. 둘 다 멀쩡한데 옛 결과는 시계에서 멀고 새 결과는 시계 안이면 확신은
+            #: 묻지 않는다 — 어차피 마지막 `settle_clock` 이 그 줄을 시계로 끌어가는데, 그때는
+            #: 낱자를 통째로 미는 것이라 긴 결과가 다음 줄을 덮쳐 잔해가 된다. 야해 15 번 「내
+            #: 앞에선 솔직해지기로 했잖아」: 보컬 갈래 88.85~94.78(간격 1.76 초 포함), 원본 갈래
+            #: 84.37~87.31, 시계 85.0. 확신 −6.2 대 −6.3 으로 원본이 버려졌고, 시계가 보컬 결과를
+            #: 85.06 으로 밀자 16 번과 포개져 15·16·17 이 모두 균일 잔해가 됐다.
+            clock = lines[index].get("at")
+            tight = CLOCK_OURS_TIGHT_MS if ours else CLOCK_TIGHT_MS
+            told = (clock is not None and bool(was)
+                    and abs(was[0]["at"] - (clock + bias)) > tight
+                    and abs(now[0]["at"] - (clock + bias)) <= tight)
+            if not wrecked and not told and after - before <= VOICE_EDGE:
                 continue
             if not in_order(out, index, now):
                 continue
@@ -3150,13 +3212,16 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             if was and health(now) < health(was):
                 continue
             wrecked = bool(was) and health(was) < health(now)
-            if wrecked:
-                room = next((one[0]["at"] for one in (
-                    [x for word in out[later] for x in (word.get("chars") or []) if x.get("at") is not None]
-                    for later in range(index + 1, len(out))) if one), None)
-                if room is not None and now[-1]["at"] > room:
-                    continue
-            elif len(now) > 1 and held > 0 and span > held * STRETCH:
+            #: 다음 줄이 시작하기 전에 들어가야 한다 — 잔해를 살릴 때만이 아니라 언제나. NOT SORRY
+            #: 53 번 「나 물어볼 게 있어」는 리드가 101.25~102.47 초로 멀쩡했는데 서브 갈래의 더
+            #: 확신하는 결과(102.33~103.57, 다음 줄 시작을 1.1 초 넘음)가 이겼고, `settle_lanes`
+            #: 가 그것을 다음 줄 앞 0.14 초로 눌러 172 ms 균일 잔해가 됐다.
+            room = next((one[0]["at"] for one in (
+                [x for word in out[later] for x in (word.get("chars") or []) if x.get("at") is not None]
+                for later in range(index + 1, len(out))) if one), None)
+            if room is not None and now[-1]["at"] > room:
+                continue
+            if not wrecked and len(now) > 1 and held > 0 and span > held * STRETCH:
                 continue
             if not in_order(out, index, now):
                 continue
@@ -3167,7 +3232,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 그때 새로 튀는 줄이 생긴다 — 고스트시티 63 번이 −4.59 초로 남아 있었다(`RESCUE_REACH_MS`
     #: 4 초 안이라 고르기는 통과한다). 섞은 뒤의 최종 결과에 한 번 더 건다.
     settle_clock(lines, out, ours)
-    unpack_song(out)
+    unpack_song(out, rests_of(path, lines))
     #: 줄 자리가 다 잡힌 뒤에, 그 창 안에서 음절만 Qwen3 로 다시 놓는다. 펴기 뒤여야 한다 —
     #: 펴기는 「모델이 못 들은 줄」의 마지막 수단이고, 여기서는 그 줄을 실제로 듣는다.
     polish(path, lines, out)
