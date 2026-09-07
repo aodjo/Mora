@@ -332,7 +332,7 @@ def run_align(song_id: int, fresh: bool = False) -> None:
 
         if fresh:
             gone = []
-            for tail in MADE_FROM:
+            for tail in REMADE:
                 one = AUDIO / f"{row['video_id']}{tail}"
                 if one.exists():
                     one.unlink()
@@ -856,7 +856,7 @@ def search_youtube(q: str, want: int = 8) -> list[dict]:
 #: Taken from the aligner rather than kept here. Two copies of this list is how `.lead16.wav` —
 #: the refiner's cache — got past the server's filter while the aligner's own already knew it:
 #: the server would have handed the 16 kHz lead stem out as the song. The list lives in one place.
-from align import MADE_FROM  # noqa: E402
+from align import MADE_FROM, REMADE  # noqa: E402
 
 
 def audio_path(video_id: str) -> Path | None:

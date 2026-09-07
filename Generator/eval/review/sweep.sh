@@ -17,6 +17,6 @@ export MORA_HEARD=1
 for one in "$@"; do
   echo "############ 되돌림 기준 ${one}ms ############"
   MORA_OURS_APART="$one" ./.venv/bin/python -u probe_blind.py 13 2>&1 \
-    | grep -E "쌩 가사:|Traceback|Error"
+    | grep --line-buffered -E "쌩 가사:|Traceback|Error"
 done
 echo "=== 끝남 ==="

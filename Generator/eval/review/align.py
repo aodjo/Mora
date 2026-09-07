@@ -175,6 +175,10 @@ RESCUE_REACH_MS = 4000
 #: 곡으로 알고 ffmpeg 에 넘긴다. `.lead16.wav` 로 한 번, `.heard.json` 으로 또 한 번 그랬다.
 MADE_FROM = (".vocals.wav", ".lead.wav", ".back.wav", ".lead16.wav",
              ".dia.json", ".heard.json", ".clock.json")
+#: Of those, the ones a **fresh** run throws away. The stems only — diarization, the transcript
+#: and the clock are cheap to keep and expensive to make, and `fresh` means "separate again",
+#: not "forget everything". Deleting by `MADE_FROM` took the diarization with it.
+REMADE = (".vocals.wav", ".lead.wav", ".back.wav", ".lead16.wav")
 
 
 def source_in(folder: Path, video_id: str) -> Path | None:
@@ -461,7 +465,10 @@ def fill_gaps(chars: list[dict]) -> None:
 #: that stood empty after the line, and nothing was spread. What is being looked for is not the
 #: floor itself but a stretch nobody could sing, and the room test below is what keeps genuinely
 #: fast singing safe — its next character arrives immediately, so there is nothing to spread into.
-PACKED_MS = 120
+#: 랩은 실제로 이보다 빠르게도 부른다. 120ms/음절은 초당 8.3 자인데 한국어 랩은 그것을 넘고,
+#: 그러면 진짜로 그렇게 부른 줄이 「모델이 못 찾은 줄」로 오판되어 배치가 통째로 버려진다.
+#: 하치와레girl(랩)은 서른두 줄 가운데 열하나가 그렇게 균일하게 덮였다. `MORA_PACKED_MS` 로 훑는다.
+PACKED_MS = int(os.environ.get("MORA_PACKED_MS", "120"))
 #: How many characters in a row must sit packed together before the run is spread out.
 CRAMP_RUN = 6
 #: How many times its own width a crammed run must have free before it is spread into it.
@@ -1553,7 +1560,7 @@ def align_one(path: Path, lines: list[dict], tokenize, separate: bool = True,
     if VOICE_MASK:
         #: `spans` 는 이 함수에서 이미 줄마다의 낱자 수다 — 같은 이름을 쓰는 바람에 `rethink` 이
         #: 화자 토막을 낱자 수로 알고 터졌다. 이 갈래에서만 세 번째 겪는 그림자다.
-        sung = [(a, b) for one in voices_apart(source or path).get("쪽", []) for a, b in one["토막"]]
+        sung = lyric_segments(source or path, lines, tokenize)
         if sung:
             import torch
             keep = torch.zeros(log_probs.shape[1], dtype=torch.bool)
@@ -2461,6 +2468,94 @@ def best_heard(path: Path, mine: str, lines: list[dict],
                     "닮은 만큼": round(alike, 4), "들어 본 갈래": len(seen),
                     "가사가 말하는 말": tongue})
     return said, alike
+
+
+
+def hear_song(path: Path, lines: list[dict], tokenize) -> tuple[list[tuple[str, int]], float]:
+    """Transcribe the song once, for anyone who needs to know what was actually sung.
+
+    @param {Path} path - The original audio.
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @returns {tuple[list[tuple[str, int]], float]} What was heard, and how much of the sheet it got.
+    """
+    sheet = [(grain, at) for at, line in enumerate(lines)
+             for word in tokenize(line.get("text", ""))
+             for grain in grains_of(speakable(word))]
+    return best_heard(path, jamo_of(sheet)[0], lines, tokenize) if sheet else ([], 0.0)
+
+
+def lyric_segments(path: Path, lines: list[dict], tokenize) -> list[tuple[float, float]]:
+    """The diarizer's segments that actually carry lyric — the ones the aligner may use.
+
+    Forced alignment must spend every token somewhere, so a stretch of voice with no lyric in
+    it is a trap: the aligner stretches the nearest line across it. 하치와레girl has a second
+    voice muttering in Japanese at 62.5–65.2 s, in the **lead** stem (the karaoke split left it
+    there, −23 dB against −45 dB in the backing). Line 10 was pulled over it to 64.2 s, line 11
+    was pushed to 64.4 s, and `told_apart` then handed line 11 to that voice by overlap, so it
+    was snapped onto the muttering and shown five seconds late. The transcript heard line 11
+    where the sheet says it is, 57.7–60.3 s, and heard **nothing** inside the muttering.
+
+    So a segment is kept when it belongs to the voice that sings most of the song, when at
+    least one transcribed word inside it matches the sheet, **or when the sheet expects a line
+    there** — its outside time, or failing that the clock read off the transcript, falls inside.
+    A minor voice's segment the sheet neither matches nor expects is not lyric, and is masked
+    like a rest.
+
+    The last test is what keeps this from silencing singing. Whisper hears nothing inside the
+    Japanese muttering *and* nothing inside 고스트시티's second rapper at 175–192 s, and by the
+    transcript alone the two are the same. The share of the song a voice sings does not separate
+    them either — that voice is 44% of the main one, and the real featured singers on To. 난간,
+    Daddy and Small girl are 49–51%. What separates them is that no line is owed to the
+    muttering, while `소외된 노예` is owed to 175.6 s. Masking on "no match" alone dropped
+    고스트시티 from 60% of lines in place to 55%.
+
+    The majority voice is never masked regardless.
+
+    @param {Path} path - The original audio; the diarization and transcript sit beside it.
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @returns {list[tuple[float, float]]} Start and end, in seconds, of each segment to keep.
+    """
+    said = voices_apart(path)
+    who = said.get("쪽") or []
+    if not who:
+        return []
+    every = [(a, b) for one in who for a, b in one["토막"]]
+    if len(who) < 2:
+        return every
+
+    main = max(range(len(who)), key=lambda one: who[one].get("부른 시간", 0))
+    heard, _ = hear_song(path, lines, tokenize)
+    if not heard:
+        return every
+    sheet = [(grain, at) for at, line in enumerate(lines)
+             for word in tokenize(line.get("text", ""))
+             for grain in grains_of(speakable(word))]
+    mine, _ = jamo_of(sheet)
+    yours, from_yours = jamo_of(heard)
+    hit: set[int] = set()
+    for a, b, size in difflib.SequenceMatcher(None, mine, yours, autojunk=False).get_matching_blocks():
+        if size >= HEARD_SOLID:
+            hit.update(from_yours[b + step] for step in range(size))
+    marks = sorted(heard[one][1] for one in hit)
+
+    #: 가사장이 어디에 줄을 빚지고 있나. 밖에서 온 시각이 있으면 그것, 없으면 받아쓰기로 지어낸
+    #: 시계. 그 자리에 든 토막은 부르는 곳이다 — 받아쓰기가 못 알아들었을 뿐.
+    clock = heard_clock(path, lines, tokenize) or []
+    owed = [line.get("at") if line.get("at") is not None else (clock[at] if at < len(clock) else None)
+            for at, line in enumerate(lines)]
+    owed = [one for one in owed if one is not None]
+
+    out: list[tuple[float, float]] = []
+    for index, one in enumerate(who):
+        for a, b in one["토막"]:
+            since, until = a * 1000 - VOICE_MASK_EDGE_MS, b * 1000 + VOICE_MASK_EDGE_MS
+            if (index == main
+                    or any(a * 1000 <= at <= b * 1000 for at in marks)
+                    or any(since <= at <= until for at in owed)):
+                out.append((a, b))
+    return out
 
 
 def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
