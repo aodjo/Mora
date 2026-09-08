@@ -3862,6 +3862,9 @@ HEARD_PULL_MS = int(os.environ.get("MORA_PULL_MS", "600"))
 HEARD_PULL_ABS_MS = int(os.environ.get("MORA_PULL_ABS_MS", "300"))
 #: 줄이 쉼 구멍 「안에 들었다」고 보는 데 필요한, 구멍 안에 있는 낱자의 몫.
 HOLE_MOST = 0.8
+#: 받아쓴 못으로 줄을 옮기거나 누를 때 낱자 사이가 이보다 좁아지면 못이 틀린 것이다(ms). 빠른
+#: 랩이 음절 하나에 100~130 ms 다.
+PACE_LEAST_MS = int(os.environ.get("MORA_PACE_LEAST_MS", "130"))
 #: 못을 절대 시각으로 쓸지 가르는 데 필요한 최소 못 수, 우리가 맞는 곡에서 「우리 − whisper」의
 #: 평소값(ms), 그리고 거기서 얼마나 벗어나야 이 곡의 정렬이 밀린 것으로 보는지(ms).
 HEARD_WHO_LEAST = 20
@@ -3893,7 +3896,11 @@ def squeeze_before(out: list[list[dict]], index: int, roof: int) -> bool:
         first, last = chars[0]["at"], chars[-1]["at"]
         if last < roof:
             return False
-        if first + LEAST_MS * len(chars) > roof or last <= first:
+        #: 사람이 못 부르는 빠르기로는 안 누른다. 야해 5 번 「다시 새겨진 흉터 마냥 더 진하게」는
+        #: 6 번 「남겨줘」의 들은 시각(41.06)에 맞추느라 열세 음절이 0.9 초(70 ms 간격)에 눌렸고,
+        #: 화면에서 한꺼번에 켜졌다. whisper 가 그 사이 낱말들을 건너뛴 자리라 그 시각이 틀린
+        #: 것이다. 간격이 `PACE_LEAST_MS` 아래로 가야 하면 못이 틀린 것으로 보고 앞 줄을 둔다.
+        if first + PACE_LEAST_MS * len(chars) > roof or last <= first:
             return False
         scale = (roof - first) / (last - first)
         for one in chars:
@@ -4089,6 +4096,10 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
             if new[at] < new[at - 1] + LEAST_MS:
                 new[at] = new[at - 1] + LEAST_MS
         if roof is not None and new[-1] > roof:
+            continue
+        #: 못 사이가 사람이 못 부르는 빠르기로 뭉치면(`packed_run`) 못 하나가 틀린 것이다. 그 줄은
+        #: 둔다. 낱자 둘이 80 ms 붙는 것은 「또 남겨줘」처럼 흔해서 간격 하나로는 안 가른다.
+        if packed_run([{"at": one} for one in new]):
             continue
         for at, one in enumerate(chars):
             hold = max(20, (one.get("end") or old[at] + 20) - old[at])
