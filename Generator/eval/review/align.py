@@ -3924,7 +3924,9 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
     68.8 — the tail 1.5 s late, and the next line's 조용히 (heard 70.6) squeezed in after it. The
     words whisper heard are matched to the sheet letter by letter exactly as the clock matches
     them; where a heard word's first letter meets a sheet word's first letter inside a solid
-    block, that word's start is known to within whisper's own scatter.
+    block, that word's start is known to within whisper's own scatter. The saved transcript
+    times already carry the clock's lean; against the sheet-timed songs our word starts sit
+    `HEARD_TYPICAL_MS` (−170 ms) before them, and that is where a pinned word is put.
 
     Only a difference beyond `HEARD_PULL_MS` moves anything — inside that the sound wins, since
     whisper's word times wander a few hundred ms on their own. Usually only the **shape** inside
@@ -3985,7 +3987,10 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
             key = mine_head.get(a + step)
             word = yours_head.get(b + step)
             if key is not None and word is not None:
-                when = said[word][1] + HEARD_LEAN_MS
+                #: `.heard.json` 의 시각은 `heard_song` 이 이미 쏠림(`HEARD_LEAN_MS`)을 더한 값이다.
+                #: 여기에 360 을 또 더한 판이 있었다 — 야해의 낱말을 0.5 초 늦게 놓았다. 시트 시각이
+                #: 있는 열두 곡에서 우리 자리는 그 저장값보다 `HEARD_TYPICAL_MS` 만큼(−170) 앞이다.
+                when = said[word][1] + HEARD_TYPICAL_MS
                 if key not in pins or when < pins[key]:
                     pins[key] = when
     if not pins:
@@ -4023,8 +4028,8 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
     if not plans:
         return 0
 
-    #: **이 곡에서 우리 정렬이 밀렸나.** 못박힌 낱말마다 우리 시각에서 whisper 의 시각(쏠림 더하기
-    #: 전)을 뺀 값의 가운뎃값을 잰다. whisper 의 치우침은 곡마다 거의 같아서, 시트 시각이 있고
+    #: **이 곡에서 우리 정렬이 밀렸나.** 못박힌 낱말마다 우리 시각에서 whisper 의 저장 시각을 뺀
+    #: 값의 가운뎃값을 잰다. whisper 의 치우침은 곡마다 거의 같아서, 시트 시각이 있고
     #: 우리가 맞는 곡들에서는 이 값이 좁게 모인다(붉은 노을 −136, NOT SORRY −231, 하치와레girl
     #: −209 ms, 사분위 폭 150 안팎). 야해는 +501 ms 였다 — 사람 귀가 「뒤 낱말들이 다음 줄 앞
     #: 낱말들을 먹는다」고 한 그 곡이다. 그 평소값(`HEARD_TYPICAL_MS`)에서 `HEARD_SHIFT_MS` 넘게
@@ -4033,7 +4038,7 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
     #: 소리 솟음 위에 누가 더 자주 있는지로 가르려던 것은 버렸다. 촘촘한 노래에서는 솟음이
     #: 어디에나 있어 절반쯤은 우연히 맞고, 너와 나에서 whisper 가 솟음에서 2 점 앞섰는데 시트로는
     #: 100 → 63% 로 무너졌다(열세 곡 시각 있음 672 → 651).
-    shifts = sorted(chars[at]["at"] - (when - HEARD_LEAN_MS)
+    shifts = sorted(chars[at]["at"] - (when - HEARD_TYPICAL_MS)
                     for held, chars, marks in plans.values() for at, when in marks)
     absolute = (len(shifts) >= HEARD_WHO_LEAST
                 and abs(shifts[len(shifts) // 2] - HEARD_TYPICAL_MS) > HEARD_SHIFT_MS)
