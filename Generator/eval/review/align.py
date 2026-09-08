@@ -4044,9 +4044,21 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
                     for held, chars, marks in plans.values() for at, when in marks)
     absolute = (len(shifts) >= HEARD_WHO_LEAST
                 and abs(shifts[len(shifts) // 2] - HEARD_TYPICAL_MS) > HEARD_SHIFT_MS)
+    #: 절대 모드에서 못을 **어디에** 놓나 — 저장값 + `HEARD_LEAN_MS`(360), 시계와 같은 자리다.
+    #: 야해 첫 줄 「조용히」로 재 보면 리드가 24.6 초까지 완전 무음이고 목소리가 24.8 초에
+    #: 시작하는데, 이 자리(24.86)가 첫 솟음 24.83 에 얹힌다. 다른 후보는 다 틀렸다: 시트 곡들의
+    #: 관계(저장값 − 170 → 24.35)는 소리보다 0.5 초 앞이었고(「첫 라인부터 한 박자 빠르다」), 솟음
+    #: 위에 가장 많이 얹히는 치우침은 촘촘한 랩에서 −320 이 나왔고(솟음이 어디에나 있다), 줄
+    #: 머리의 CTC 자리 가운뎃값은 +802 로 12 번 「조용히」를 들은 시각보다 0.8 초 뒤에 두었다.
+    #: whisper 의 치우침은 곡 안에서도 반 초쯤 흔들리므로 어느 상수도 다 맞을 수는 없다.
+    lean = HEARD_LEAN_MS
+    if absolute:
+        plans = {index: (held, chars, [(at, when - HEARD_TYPICAL_MS + lean) for at, when in marks])
+                 for index, (held, chars, marks) in plans.items()}
     if os.environ.get("MORA_TRACE_HEARD"):
         print(f"[settle_heard] 못 {len(shifts)} · 우리 − whisper 가운뎃값 "
-              f"{shifts[len(shifts) // 2] if shifts else None} ms · 절대 {absolute}", file=sys.stderr, flush=True)
+              f"{shifts[len(shifts) // 2] if shifts else None} ms · 절대 {absolute} · 치우침 {lean}",
+              file=sys.stderr, flush=True)
 
     done = 0
     for index, (held, chars, marks) in plans.items():
