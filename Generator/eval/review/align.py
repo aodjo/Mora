@@ -3230,8 +3230,12 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     polish(path, lines, out)
     #: 받아쓰기가 낱말 단위로 들은 자리에 줄 안의 낱말을 맞춘다 — 크게 어긋난 곳만.
     settle_heard(path, lines, out, tokenize)
-    #: 메인이 쉬는 구멍 안에 통째로 들어간 줄을, 시계가 가리키는 쪽으로 꺼낸다.
-    settle_rests(path, lines, out)
+    #: 리드가 쉬는 구멍 안에 든 줄을 밖으로 꺼내는 단계를 두었다가 거뒀다. 야해 7 번 「워낙 넌 착해서
+    #: 그렇게는 못할걸」은 리드가 −33 dB 인 44.4~47.6 초에서 **속삭이듯** 불리고, 분리기가 그 약한
+    #: 목소리를 보컬 갈래로 보냈다. 보컬 갈래의 CTC 는 거기에 열세 낱자를 확신 −3~−7 로 놓았고
+    #: kresnik 과 whisper 도 희미한 음절을 듣는다. 꺼낸 자리(42.6~44.0)는 사람 귀에 「가사가 아직
+    #: 안 왔는데 켜진다」였다. 리드의 쉼은 메인이 크게 부르지 않는 자리일 뿐, 아무도 안 부르는
+    #: 자리가 아니다 — 다른 갈래가 확신으로 놓은 것은 근거다.
     #: 그리고 마지막으로, 한 줄이 여러 번에 나뉘어 불린 자리에 쉼을 되돌린다. Qwen3 도 그 줄에서는
     #: 못 듣는다 — 리드 갈래가 통째로 조용하다 — 그러니 화자 토막이 유일한 증거다.
     settle_turns(path, lines, out, lanes)
@@ -3860,8 +3864,6 @@ def quiet_of(path: Path) -> list[tuple[int, int]]:
 #: 낱말 시각 자체가 몇백 ms 흔들리므로 그 안의 차이는 소리가 이긴다.
 HEARD_PULL_MS = int(os.environ.get("MORA_PULL_MS", "600"))
 HEARD_PULL_ABS_MS = int(os.environ.get("MORA_PULL_ABS_MS", "300"))
-#: 줄이 쉼 구멍 「안에 들었다」고 보는 데 필요한, 구멍 안에 있는 낱자의 몫.
-HOLE_MOST = 0.8
 #: 받아쓴 못으로 줄을 옮기거나 누를 때 낱자 사이가 이보다 좁아지면 못이 틀린 것이다(ms). 빠른
 #: 랩이 음절 하나에 100~130 ms 다.
 PACE_LEAST_MS = int(os.environ.get("MORA_PACE_LEAST_MS", "130"))
@@ -4115,89 +4117,6 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
             own = [two for two in one["chars"] if two.get("at") is not None]
             one["at"] = own[0]["at"]
             one["end"] = own[-1]["end"]
-        done += 1
-    return done
-
-
-def settle_rests(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
-    """Lift a line that sits wholly inside a rest of the lead out of it, to the side its clock says.
-
-    The lead stem is silent from 44.4 to 47.6 s in 야해 and line 7 「워낙 넌 착해서 그렇게는 못할걸」
-    was laid entirely inside that silence: the base stem was the vocals, which carry an ad-lib
-    there, and forced alignment used it. Whisper and kresnik both hear a dense run of syllables
-    from 42.4 to 44.4 s — right after line 6 ends at 42.8 s — and next to nothing inside the rest.
-    Masking the lead's rests on every stem was tried and cost 24 lines elsewhere; this is the
-    narrow form. Only a line whose **every** character lies inside one rest of at least
-    `HOLE_MS`, and whose clock time (the sheet's or the invented one) lies **outside** it, is
-    moved. A backing-only chorus that really is sung while the lead rests keeps its clock inside
-    the rest and stays; so does anything the lead itself carries.
-
-    The line is spread evenly over the room between its neighbour and the rest's edge, on the
-    side the clock names — there is no sound to shape it by, so an even spread is the honest
-    guess — and stamped `flat: "rest"`.
-
-    @param {Path} path - The original audio; the lead stem sits beside it.
-    @param {list[dict]} lines - Lyric lines with whatever start times are known.
-    @param {list[list[dict]]} out - Per-line word dicts, whose character times are rewritten.
-    @returns {int} How many lines were moved.
-    """
-    lead = beside(path, ".lead.wav")
-    if not lead.exists():
-        return 0
-    holes = rests_of(lead)
-    if not holes:
-        return 0
-    done = 0
-    for index, words in enumerate(out):
-        chars = [two for one in words for two in (one.get("chars") or []) if two.get("at") is not None]
-        if len(chars) < 2:
-            continue
-        first = chars[0]["at"]
-        #: 마지막 낱자 하나쯤은 구멍 밖에 걸릴 수 있다 — 야해 7 번의 「걸」은 47.97 초, 구멍 끝
-        #: 47.58 초 바로 뒤의 다음 줄 소리 위에 있었다. 머리가 구멍 안이고 낱자 여덟 중 일곱이
-        #: 안이면 안에 든 줄이다.
-        hole = next(((a, b) for a, b in holes
-                     if a <= first <= b
-                     and sum(1 for one in chars if a <= one["at"] <= b) >= max(2, len(chars) * HOLE_MOST)), None)
-        if hole is None:
-            continue
-        told = lines[index].get("at")
-        if told is None or hole[0] <= told <= hole[1]:
-            continue
-        a, b = hole
-        if told < a:
-            floor = 0
-            for earlier in range(index - 1, -1, -1):
-                before = [two for one in out[earlier] for two in (one.get("chars") or []) if two.get("at") is not None]
-                if before:
-                    floor = before[-1]["at"] + LEAST_MS
-                    break
-            roof = a
-        else:
-            floor = b
-            roof = None
-            for later in range(index + 1, len(out)):
-                after = [two for one in out[later] for two in (one.get("chars") or []) if two.get("at") is not None]
-                if after:
-                    roof = after[0]["at"] - LEAST_MS
-                    break
-            if roof is None:
-                roof = floor + len(chars) * SPREAD_MOST_MS
-        room = roof - floor
-        if room < len(chars) * LEAST_MS:
-            continue
-        room = min(room, len(chars) * SPREAD_MOST_MS)
-        base = floor if told >= b else roof - room
-        step = room / len(chars)
-        for at, one in enumerate(chars):
-            one["at"] = int(base + step * at)
-            one["end"] = int(base + step * (at + 1))
-            one["flat"] = "rest"
-        for one in words:
-            own = [two for two in (one.get("chars") or []) if two.get("at") is not None]
-            if own:
-                one["at"] = own[0]["at"]
-                one["end"] = own[-1]["end"]
         done += 1
     return done
 

@@ -134,7 +134,7 @@ def main() -> int:
         setattr(align, name, traced)
 
     for name, where in (("split_runs", 2), ("settle_lanes", 0), ("settle_clock", 1), ("unpack_song", 0),
-                        ("polish", 2), ("settle_heard", 2), ("settle_rests", 2), ("settle_turns", 2), ("hush_tails", 0)):
+                        ("polish", 2), ("settle_heard", 2), ("settle_turns", 2), ("hush_tails", 0)):
         wrap(name, where)
 
     real_order = align.in_order
