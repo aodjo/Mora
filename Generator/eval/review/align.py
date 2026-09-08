@@ -2696,7 +2696,8 @@ def lyric_segments(path: Path, lines: list[dict], tokenize) -> list[tuple[float,
 
 
 
-def quiet_holes(stem: Path) -> list[tuple[int, int]]:
+def quiet_holes(stem: Path, db: float | None = None, least: int | None = None,
+                glue: int | None = None) -> list[tuple[int, int]]:
     """Stretches of a stem that sit far below its own loudness for long enough to be a rest.
 
     Measured against the song's own RMS rather than an absolute floor, so a soft ballad and a
@@ -2704,14 +2705,20 @@ def quiet_holes(stem: Path) -> list[tuple[int, int]]:
     `HOLE_MS` to count, which keeps a breath between words from becoming a wall.
 
     @param {Path} stem - The audio to read.
+    @param {float | None} [db=None] - How far below the song's own loudness counts as quiet; `HOLE_DB`.
+    @param {int | None} [least=None] - Shortest hole to keep, in ms; `HOLE_MS`.
+    @param {int | None} [glue=None] - Gap under which two holes are one, in ms; `HOLE_GLUE_MS`.
     @returns {list[tuple[int, int]]} Start and end of each hole, in ms.
     """
     import torch
+    db = HOLE_DB if db is None else db
+    least = HOLE_MS if least is None else least
+    glue = HOLE_GLUE_MS if glue is None else glue
     wave = read_audio(stem, 16_000, 1)[0]
     hop = 16_000 * HOP_MS // 1000
     pad = torch.nn.functional.pad(wave.unsqueeze(0).unsqueeze(0), (hop, hop))
     loud = torch.nn.functional.avg_pool1d(pad.pow(2), kernel_size=hop * 2, stride=hop)[0, 0].sqrt()
-    floor = float(wave.pow(2).mean().sqrt()) * (10 ** (-HOLE_DB / 20))
+    floor = float(wave.pow(2).mean().sqrt()) * (10 ** (-db / 20))
     out: list[tuple[int, int]] = []
     since = None
     for at, one in enumerate(loud.tolist()):
@@ -2725,14 +2732,48 @@ def quiet_holes(stem: Path) -> list[tuple[int, int]]:
     #: 짧은 잡음으로 갈린 구멍은 하나로 잇는다. 이은 뒤에 다시 길이를 본다.
     glued: list[list[int]] = []
     for a, b in out:
-        if glued and a - glued[-1][1] <= HOLE_GLUE_MS:
+        if glued and a - glued[-1][1] <= glue:
             glued[-1][1] = b
         else:
             glued.append([a, b])
-    return [(a, b) for a, b in glued if b - a >= HOLE_MS]
+    return [(a, b) for a, b in glued if b - a >= least]
 
+
+#: 쉼의 **끝**을 찾을 때의 쉼: 곡 평균보다 이만큼(dB) 아래로 이 길이(ms) 넘게. `quiet_holes` 의 1 초
+#: 구멍보다 훨씬 짧은 숨 자리까지 잡는다 — 줄과 줄 사이의 숨이 곧 줄의 시작 표지다.
+REST_DB = 18.0
+REST_MS = 250
+#: 머리에서 쉼 끝을 찾는 창(앞·뒤, ms), 머리를 옮기게 하는 최소 거리(ms), 절대/상대를 가르는 데 필요한
+#: 쉼 앞 줄의 수, 그리고 whisper 가 CTC 를 얼마나 이겨야 절대 모드인지(ms).
+REST_BEFORE_MS = 1500
+REST_AFTER_MS = 800
+REST_SNAP_MS = 250
+REST_LEAST = 3
+REST_EDGE_MS = 250
+#: 쉼 끝에서 CTC 머리까지의 관례 거리(ms), 앞 줄이 쉼 시작을 넘어도 봐주는 여유(ms), 앞 줄 마지막
+#: 낱자를 늘어진 꼬리로 보는 간격(ms).
+REST_LEAD_MS = 170
+REST_SLACK_MS = 300
+TAIL_STRETCH_MS = 1000
 
 _holes: dict[str, list[tuple[int, int]]] = {}
+_rests: dict[str, list[tuple[int, int]]] = {}
+
+
+def rest_ends(stem: Path) -> list[tuple[int, int]]:
+    """A stem's breaths — stretches `REST_DB` below its own loudness for `REST_MS` or longer.
+
+    Read once per stem and kept. Where one of these ends, a voice comes back in; unlike the dense
+    loudness onsets inside a sung line, that moment is rarely matched by chance, so it is the
+    one audio-only anchor a line head can be trusted to.
+
+    @param {Path} stem - The audio to read.
+    @returns {list[tuple[int, int]]} Start and end of each breath, in ms, ascending.
+    """
+    key = str(stem)
+    if key not in _rests:
+        _rests[key] = quiet_holes(stem, REST_DB, REST_MS, 0)
+    return _rests[key]
 
 
 def rests_of(stem: Path) -> list[tuple[int, int]]:
@@ -3229,7 +3270,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 펴기는 「모델이 못 들은 줄」의 마지막 수단이고, 여기서는 그 줄을 실제로 듣는다.
     polish(path, lines, out)
     #: 받아쓰기가 낱말 단위로 들은 자리에 줄 안의 낱말을 맞춘다 — 크게 어긋난 곳만.
-    settle_heard(path, lines, out, tokenize)
+    settle_heard(path, lines, out, tokenize, anchor=ours)
     #: 리드가 쉬는 구멍 안에 든 줄을 밖으로 꺼내는 단계를 두었다가 거뒀다. 야해 7 번 「워낙 넌 착해서
     #: 그렇게는 못할걸」은 리드가 −33 dB 인 44.4~47.6 초에서 **속삭이듯** 불리고, 분리기가 그 약한
     #: 목소리를 보컬 갈래로 보냈다. 보컬 갈래의 CTC 는 거기에 열세 낱자를 확신 −3~−7 로 놓았고
@@ -3917,7 +3958,8 @@ def squeeze_before(out: list[list[dict]], index: int, roof: int) -> bool:
     return False
 
 
-def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize) -> int:
+def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize,
+                 anchor: bool = True) -> int:
     """Pull a line's words onto the transcript's word times where the two disagree by a lot.
 
     The transcript anchors **lines** (`heard_clock`) and then has no more say; inside a line the
@@ -3949,6 +3991,9 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
     @param {list[dict]} lines - Lyric lines.
     @param {list[list[dict]]} out - Per-line word dicts, whose character times are rewritten.
     @param {callable} tokenize - Splits a line into words, the way the aligner did.
+    @param {bool} [anchor=True] - Also snap line heads to the end of a breath in the lead. Off when
+        the sheet supplied the line times: those are authoritative, and snapping cost 파란달팽이
+        and 고스트시티 lines while the blind path gained (twelve songs: sheet 672 → 666, blind 566 → 567).
     @returns {int} How many lines were re-laid.
     """
     heard = kept(beside(path, ".heard.json"))
@@ -4042,8 +4087,27 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
     #: 100 → 63% 로 무너졌다(열세 곡 시각 있음 672 → 651).
     shifts = sorted(chars[at]["at"] - (when - HEARD_TYPICAL_MS)
                     for held, chars, marks in plans.values() for at, when in marks)
-    absolute = (len(shifts) >= HEARD_WHO_LEAST
-                and abs(shifts[len(shifts) // 2] - HEARD_TYPICAL_MS) > HEARD_SHIFT_MS)
+    #: 「우리 − 저장값」의 가운뎃값이 평소에서 벗어나면 절대 모드 — 로 했다가 야해에서 틀렸다. 야해의
+    #: whisper 는 0.3~0.9 초 이르고 CTC 머리는 맞았는데, 가운뎃값은 그 둘을 못 가른다(+182 는
+    #: 「CTC 가 늦다」로도 「whisper 가 이르다」로도 읽힌다). 가르는 것은 **쉼의 끝**이다: 리드가
+    #: 조용했다가 목소리가 다시 나는 자리는 촘촘한 솟음과 달리 우연히 맞는 일이 없다. 머리 앞에 쉼이
+    #: 있는 줄마다 CTC 머리와 whisper 자리(저장값 + 360) 가운데 누가 쉼 끝에 가까운지 재고, whisper 가
+    #: `REST_EDGE_MS` 넘게 이기는 곡에서만 절대 모드다. 야해: 0 번 쉼 끝 24.79 — 우리 25.02, 들음
+    #: 24.52 / 1 번 27.69 — 27.62, 26.8 / 13 번 76.52 — 76.60, 76.24 / 14 번 81.48 — 81.58, 81.22.
+    lead = beside(path, ".lead.wav")
+    rests = rest_ends(lead) if lead.exists() else []
+    ours_off: list[int] = []
+    theirs_off: list[int] = []
+    for index, (held, chars, marks) in plans.items():
+        head = chars[0]["at"]
+        near = [b for a, b in rests if head - REST_BEFORE_MS <= b <= head + REST_AFTER_MS]
+        if not near or marks[0][0] != 0:
+            continue
+        end = min(near, key=lambda b: abs(b - head))
+        ours_off.append(abs(head - end))
+        theirs_off.append(abs(marks[0][1] - HEARD_TYPICAL_MS + HEARD_LEAN_MS - end))
+    absolute = (len(ours_off) >= REST_LEAST
+                and sorted(theirs_off)[len(theirs_off) // 2] + REST_EDGE_MS < sorted(ours_off)[len(ours_off) // 2])
     #: 절대 모드에서 못을 **어디에** 놓나 — 저장값 + `HEARD_LEAN_MS`(360), 시계와 같은 자리다.
     #: 야해 첫 줄 「조용히」로 재 보면 리드가 24.6 초까지 완전 무음이고 목소리가 24.8 초에
     #: 시작하는데, 이 자리(24.86)가 첫 솟음 24.83 에 얹힌다. 다른 후보는 다 틀렸다: 시트 곡들의
@@ -4057,7 +4121,9 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
                  for index, (held, chars, marks) in plans.items()}
     if os.environ.get("MORA_TRACE_HEARD"):
         print(f"[settle_heard] 못 {len(shifts)} · 우리 − whisper 가운뎃값 "
-              f"{shifts[len(shifts) // 2] if shifts else None} ms · 절대 {absolute} · 치우침 {lean}",
+              f"{shifts[len(shifts) // 2] if shifts else None} ms · 쉼 앞 줄 {len(ours_off)} "
+              f"(우리 {sorted(ours_off)[len(ours_off) // 2] if ours_off else None} · "
+              f"whisper {sorted(theirs_off)[len(theirs_off) // 2] if theirs_off else None}) · 절대 {absolute}",
               file=sys.stderr, flush=True)
 
     done = 0
@@ -4119,6 +4185,75 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize)
         #: 못 사이가 사람이 못 부르는 빠르기로 뭉치면(`packed_run`) 못 하나가 틀린 것이다. 그 줄은
         #: 둔다. 낱자 둘이 80 ms 붙는 것은 「또 남겨줘」처럼 흔해서 간격 하나로는 안 가른다.
         if packed_run([{"at": one} for one in new]):
+            continue
+        for at, one in enumerate(chars):
+            hold = max(20, (one.get("end") or old[at] + 20) - old[at])
+            limit = new[at + 1] if at + 1 < len(new) else (roof if roof is not None else new[at] + hold)
+            one["at"] = new[at]
+            one["end"] = max(new[at] + 20, min(new[at] + hold, limit))
+        for one in held:
+            own = [two for two in one["chars"] if two.get("at") is not None]
+            one["at"] = own[0]["at"]
+            one["end"] = own[-1]["end"]
+        done += 1
+
+    #: **쉼 끝에 머리를 붙인다.** 머리 앞 창 안에 쉼의 끝이 있고 머리가 거기서 `REST_SNAP_MS` 넘게
+    #: 떨어져 있으면, 머리를 쉼 끝으로 옮긴다. 야해 8 번 「작은 손목위엔」은 48.55 에 있었는데 리드는
+    #: 47.61 에 다시 소리를 낸다 — 7 번(속삭임)의 꼬리가 그 소리를 물고 있었다. 24 번은 104.10 →
+    #: 104.51. 절대 모드에서 못이 박힌 줄은 머리와 첫 못 사이만 늘이고, 아니면 줄을 통째로 민다.
+    #: 꼬리가 다음 줄에 닿으면 그 안에 맞춰 줄이고, 그래서 뭉치면 두지 않는다.
+    if not anchor:
+        return done
+    pinned = {index: marks for index, (held, chars, marks) in plans.items()}
+    for index, words in enumerate(out):
+        held = [one for one in words if (one.get("chars") or []) and one["chars"][0].get("at") is not None]
+        chars = [two for one in held for two in one["chars"] if two.get("at") is not None]
+        if len(chars) < 2:
+            continue
+        head = chars[0]["at"]
+        near = [(a, b) for a, b in rests if head - REST_BEFORE_MS <= b <= head + REST_AFTER_MS]
+        if not near:
+            continue
+        start, end = min(near, key=lambda one: abs(one[1] - head))
+        #: 앞 줄이 그 쉼 **앞에서** 끝나야 줄과 줄 사이의 쉼이다. 리드가 쉬는 동안 서브가 이어 부르는
+        #: 곡(붉은 노을·고스트시티·하치와레girl)에서는 앞 줄 한가운데의 숨이 잡혀 열두 곡 시각 있음이
+        #: 672 → 631 로 무너졌다. 앞 줄의 마지막 낱자 하나가 1 초 넘게 늘어져 있으면 그것은 다음
+        #: 소리를 문 꼬리라 그 앞 낱자로 잰다 — 야해 7 번 「걸」이 47.97 로 쉼 끝 47.61 뒤에 있었다.
+        before: list[dict] = []
+        for earlier in range(index - 1, -1, -1):
+            before = [two for one in out[earlier] for two in (one.get("chars") or []) if two.get("at") is not None]
+            if before:
+                break
+        if before:
+            tail = before[-1]["at"]
+            if len(before) >= 2 and before[-1]["at"] - before[-2]["at"] > TAIL_STRETCH_MS:
+                tail = before[-2]["at"]
+            if tail > start + REST_SLACK_MS:
+                continue
+        #: CTC 의 머리는 열두 곡에서 쉼 끝보다 145~232 ms 뒤에 앉는다 — 목소리가 문턱을 넘고 낱자가
+        #: 서는 사이다. 그 자리에 둔다.
+        end = end + REST_LEAD_MS
+        if abs(head - end) <= REST_SNAP_MS:
+            continue
+        if end < head:
+            squeeze_before(out, index, end - LEAST_MS)
+        roof = None
+        for later in range(index + 1, len(out)):
+            after = [two for one in out[later] for two in (one.get("chars") or []) if two.get("at") is not None]
+            if after:
+                roof = after[0]["at"] - LEAST_MS
+                break
+        old = [one["at"] for one in chars]
+        pin = next((at for at, when in pinned.get(index, []) if at > 0), None) if absolute else None
+        if pin is not None:
+            span = max(1, old[pin] - old[0])
+            new = [int(end + (old[pin] - end) * (old[at] - old[0]) / span) if at <= pin else old[at]
+                   for at in range(len(old))]
+        else:
+            new = [one + (end - head) for one in old]
+            if roof is not None and new[-1] > roof and new[-1] > new[0]:
+                new = [int(new[0] + (one - new[0]) * (roof - new[0]) / (new[-1] - new[0])) for one in new]
+        if any(b - a < LEAST_MS for a, b in zip(new, new[1:])) or packed_run([{"at": one} for one in new]):
             continue
         for at, one in enumerate(chars):
             hold = max(20, (one.get("end") or old[at] + 20) - old[at])
