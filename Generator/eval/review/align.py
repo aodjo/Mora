@@ -1956,6 +1956,12 @@ HEARD_ONSET_MS = int(os.environ.get("MORA_ONSET_MS", "0"))
 HEARD_RUSH = float(os.environ.get("MORA_RUSH", "2.5"))
 #: And never faster than this many syllables a second, whatever the song's pace.
 HEARD_RUSH_MOST = 12.0
+#: 못이 고른 짐작에서 벗어난 만큼이 이웃 못들의 그것과 이보다 더 다르면 잘못 붙은 반복으로 본다(ms).
+#: 붉은 노을 43·44 는 이웃과 13~18 초 달랐고, 잘못 붙은 반복은 후렴 사이 거리(10 초 넘게)만큼 튄다.
+HEARD_LOCAL_MS = int(os.environ.get("MORA_LOCAL_MS", "8000"))
+#: 줄 시작이 이보다 촘촘히 이어지는 것이 이 수 넘게 잇달으면 더미다(ms, 줄 수).
+HEARD_PILE_MS = 300
+HEARD_PILE_LEAST = 4
 #: A hole in the lead stem this long and this far below the song's own loudness is masked like a
 #: rest, whoever the diarizer thinks is singing through it. Forced alignment has to spend every
 #: token, so a stretch nobody sings gets filled by stretching the line before it or pulling the
@@ -2949,9 +2955,13 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     #: 급한 못은 버린다. 줄 단위로 잰다 — 한 낱말의 음절은 같은 시각을 받으므로 음절 단위로는
     #: 늘 급해 보인다. 앞 못박힌 줄에서 이 줄까지 음절 수를 시간으로 나눈 것이 곡의 가운뎃값의
     #: `HEARD_RUSH` 배를 넘으면 이 줄의 못을 뽑고, 그 줄의 음절 짝을 표에서 지운 뒤 다시 잇는다.
+    #: 고스트시티 67~84 번은 같은 네 줄 후렴이 거듭되는 자리인데 짝짓기가 반복을 엉뚱한 자리에 붙여
+    #: 열여섯 줄의 못이 194.0~195.4 초 1.4 초 안에 쌓였고, 정렬은 그 시계를 그대로 따라 스물여덟 줄이
+    #: 무너졌다(쌩 가사 63%). 0.2 초보다 가까운 못을 빠르기 셈에서 건너뛰던 것이 그 더미를 못 보게
+    #: 했다 — 이제 아주 가까운 못이 가장 급한 못이다. 뽑는 횟수도 여덟 번에 묶지 않는다.
     rushed = 0
     if HEARD_RUSH > 0:
-        for _ in range(8):
+        for _ in range(len(lines)):
             pin_at = {}
             for grain, when in pairs:
                 line = sheet[grain][1]
@@ -2960,17 +2970,24 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
             rows = sorted(pin_at)
             paces = []
             for a, b in zip(rows, rows[1:]):
-                gap = (pin_at[b] - pin_at[a]) / 1000
-                if gap > 0.2:
-                    paces.append(((starts[b] - starts[a]) / gap, b))
+                gap = max((pin_at[b] - pin_at[a]) / 1000, 0.05)
+                paces.append(((starts[b] - starts[a]) / gap, a, b))
             if len(paces) < 4:
                 break
-            middle = sorted(one for one, _ in paces)[len(paces) // 2]
-            bad = next((line for pace, line in paces
-                        if pace > max(HEARD_RUSH * middle, 0) and pace > HEARD_RUSH_MOST / 2
-                        and (pace > HEARD_RUSH * middle or pace > HEARD_RUSH_MOST)), None)
-            if bad is None:
+            middle = sorted(one for one, _, _ in paces)[len(paces) // 2]
+            spot = next((k for k, (pace, a, b) in enumerate(paces)
+                         if pace > max(HEARD_RUSH * middle, 0) and pace > HEARD_RUSH_MOST / 2
+                         and (pace > HEARD_RUSH * middle or pace > HEARD_RUSH_MOST)), None)
+            if spot is None:
                 break
+            _, a, b = paces[spot]
+            #: 급한 짝의 **앞**이 느리면(앞 못에서 이 못까지가 가운뎃값의 1/`HEARD_RUSH` 아래) 늦게
+            #: 붙은 것은 뒤 못이 아니라 앞 못이다. 붉은 노을 45 번 「난 너를 사랑해」는 42 번에서 25 초를
+            #: 건너뛰어 12 초 뒤의 반복(아웃트로 애드리브)에 붙었고, 그 뒤 46~49 가 1.6 초에 몰렸다.
+            #: 뒤 못만 뽑던 판은 맞는 49 번을 뽑고 틀린 45 번을 남겼다.
+            bad = b
+            if spot > 0 and paces[spot - 1][0] < middle / HEARD_RUSH:
+                bad = a
             rushed += 1
             lo = starts[bad]
             hi = next((starts[one] for one in range(bad + 1, len(lines)) if starts[one] is not None),
@@ -2990,6 +3007,59 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     span = max(1, pairs[-1][0] - pairs[0][0])
     rate = (pairs[-1][1] - pairs[0][1]) / span
 
+    #: 줄 첫 낱알의 못.
+    pin_at = {}
+    for grain, when in pairs:
+        line = sheet[grain][1]
+        if starts[line] == grain:
+            pin_at[line] = when
+
+    #: **잘못 붙은 반복을 뽑는다.** 못 하나가 이웃 못으로 곧게 읽은 자리에서도, 고른 짐작에서도 같은
+    #: 쪽으로 `HEARD_LOCAL_MS` 넘게 벗어나면 그것이다. 붉은 노을 43·44 번은 179.2·183.0 초에 붙었는데
+    #: (시트 165·168) 이웃 42·49 번 사이로 읽으면 165 쯤이고 고른 짐작은 168.8·170.1 이다 — 둘 다에서
+    #: +10 초 넘게 뒤다. 하나만 보면 안 된다: 이웃 못과의 편차만 보던 판(v21)은 짐작이 곡 구조를 따라
+    #: 출렁이는 붉은 노을에서 맞는 못 열한 개를 뽑고 틀린 둘을 남겨 뒷부분이 통째로 12 초 밀렸고,
+    #: 짐작만 보면 짐작 자체가 스무 초 틀린 하치와레girl 의 맞는 못이 다 뽑힌다(v19). 둘 다 어긋나야
+    #: 반복이다. 뽑은 줄의 낱알 짝도 표에서 지운다 — 급한 못과 같다.
+    jumpy = 0
+    while coarse and len(pin_at) >= 3:
+        rows = sorted(pin_at)
+        bad = None
+        for k in range(1, len(rows) - 1):
+            one, p, q = rows[k], rows[k - 1], rows[k + 1]
+            guess = pin_at[p] + (pin_at[q] - pin_at[p]) * (starts[one] - starts[p]) / max(1, starts[q] - starts[p])
+            off_pin = pin_at[one] - guess
+            off_coarse = pin_at[one] - coarse[one]
+            if (abs(off_pin) > HEARD_LOCAL_MS and abs(off_coarse) > HEARD_LOCAL_MS
+                    and (off_pin > 0) == (off_coarse > 0)):
+                bad = one
+                break
+        if bad is None:
+            break
+        lo = starts[bad]
+        hi = next((starts[one] for one in range(bad + 1, len(lines)) if starts[one] is not None), len(sheet))
+        for grain in [one for one in marks if lo <= one < hi]:
+            del marks[grain]
+        del pin_at[bad]
+        jumpy += 1
+    if jumpy:
+        pairs = []
+        for grain in sorted(marks):
+            if not pairs or marks[grain] >= pairs[-1][1]:
+                pairs.append((grain, marks[grain]))
+        if len(pairs) < 2:
+            keep(beside(path, ".clock.json"), {
+                "시계": coarse, "못박힌 줄": [], "고른 짐작": coarse,
+                "닮은 만큼": round(alike, 4), "받아쓰기를 믿나": trust, "짝 지은 음절": len(pairs),
+                "물러섬": "반복을 뽑고 나니 짝이 둘도 안 된다",
+            })
+            return coarse
+        span = max(1, pairs[-1][0] - pairs[0][0])
+        rate = (pairs[-1][1] - pairs[0][1]) / span
+
+    #: 표 밖으로 나간 줄은 표의 기울기로 늘여 잡는다. 거친 짐작으로 되돌리면 안 된다 — 그
+    #: 짐작이야말로 앞머리 중얼거림에 끌려 있고, 첫 줄이 거기로 떨어지면 `align_one` 의 앞머리
+    #: 막기가 「첫 줄이 3 초」로 읽어 아무것도 못 막는다. 곡이 통째로 14 초 앞으로 밀렸다.
     out: list[int | None] = []
     for at in range(len(lines)):
         here = starts[at]
@@ -3008,11 +3078,47 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
                 (a, at_a), (b, at_b) = pairs[after - 1], pairs[after]
                 out.append(at_a + int((at_b - at_a) * (here - a) / max(1, b - a)))
 
+    #: **더미를 고른 짐작으로 바꾼다.** 줄 넷 넘게가 `HEARD_PILE_MS` 안에 잇달아 시작하는 일은 없다.
+    #: 고스트시티 66~96 은 같은 네 줄 후렴이 여덟 번 거듭되는 자리라 줄 안 낱알들이 받아쓰기의 한
+    #: 자리(194~195 초)에 몰렸고, 줄 첫 낱알은 하나도 안 붙은 채 보간이 그 더미를 따라 서른 줄을
+    #: 무너뜨렸다(쌩 가사 62%). 급한 못 규칙은 줄 단위라 못 본다. 더미가 있으면 앞 못에서 뒤 못까지
+    #: 못 아닌 줄을 **고른 짐작에 그 두 못의 편차를 더한 것**으로 놓는다 — 짐작은 누가 언제 부르는지를
+    #: 알고 있고, 그 구간에서 시트와 1~3 초 안이었다.
+    piled = 0
+    if coarse:
+        pinned = sorted(pin_at)
+        at = 0
+        while at < len(out):
+            if out[at] is None:
+                at += 1
+                continue
+            end = at
+            while (end + 1 < len(out) and out[end + 1] is not None
+                   and out[end + 1] - out[end] < HEARD_PILE_MS):
+                end += 1
+            if end - at + 1 < HEARD_PILE_LEAST:
+                at = end + 1
+                continue
+            before = next((one for one in reversed(pinned) if one < at), None)
+            after = next((one for one in pinned if one > end), None)
+            drifts = [pin_at[one] - coarse[one] for one in (before, after) if one is not None]
+            drift = sum(drifts) // len(drifts) if drifts else 0
+            lo = before + 1 if before is not None else 0
+            hi = after - 1 if after is not None else len(out) - 1
+            for k in range(lo, hi + 1):
+                if k not in pin_at and starts[k] is not None:
+                    out[k] = coarse[k] + drift
+                    piled += 1
+            at = hi + 1
+
     seen = -1
     for at, one in enumerate(out):
         if one is None:
             continue
-        #: 뒤로 가는 못은 언제나 버린다. 거친 짐작의 검문은 받아쓰기를 못 믿을 때만 든다.
+        #: 뒤로 가는 못은 언제나 버린다. 거친 짐작의 검문은 받아쓰기를 못 믿을 때만 든다 — 언제나
+        #: 들고 열 초로 좁혀 봤더니(v19) 하치와레girl 은 고른 짐작 자체가 스무 초 틀린 곡이라(일본어
+        #: 인트로를 노래로 본다) 맞는 못까지 버리고 0~3 번이 −21 초로 갔고, 열두 곡 쌩 가사가 567 → 522
+        #: 였다. 잘못 붙은 반복은 여기서 못 가른다 — 위의 급한 못 규칙이 가른다.
         if one < seen or (not trust and abs(one - coarse[at]) > HEARD_APART_MS):
             out[at] = None
         else:
@@ -3030,6 +3136,8 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
         "짝 지은 음절": len(pairs),
         "소리 없는 못": silent,
         "급한 못": rushed,
+        "튀는 못": jumpy,
+        "더미 대신 짐작": piled,
     })
     return made
 

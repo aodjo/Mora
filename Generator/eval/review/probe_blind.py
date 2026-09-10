@@ -98,6 +98,24 @@ def main() -> int:
             key = "with" if name == "시각 있음" else "blind"
             tally[key][0] += sum(1 for one in off if abs(one - mid) <= 0.5)
             tally[key][1] += len(off)
+            #: 줄마다의 결과를 남긴다 — 어느 줄이 왜 빠지는지는 곡 평균으로는 안 보인다.
+            if os.environ.get("MORA_BLIND_DUMP") and key == "blind":
+                rows_out = []
+                for index, words in enumerate(out):
+                    chars = [one for word in words for one in (word.get("chars") or []) if one.get("at") is not None]
+                    gaps = [b["at"] - a["at"] for a, b in zip(chars, chars[1:])]
+                    rows_out.append({
+                        "index": index, "text": lines[index].get("text", ""),
+                        "sheet": said.get(index), "ours": chars[0]["at"] if chars else None,
+                        "last": chars[-1]["at"] if chars else None, "n": len(chars),
+                        "flat": sorted({one.get("flat") for one in chars if one.get("flat")}),
+                        "gap_min": min(gaps) if gaps else None, "gap_max": max(gaps) if gaps else None,
+                        "sure": round(min((one.get("sure", 0.0) for one in chars), default=0.0), 1),
+                        "lane": (words[0].get("lane") if words else None),
+                    })
+                with open(os.environ["MORA_BLIND_DUMP"], "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"id": row["id"], "title": row["title"], "mid": mid, "lines": rows_out},
+                                        ensure_ascii=False) + "\n")
             head = f"[{row['id']}] {row['title'][:16]}" if name == "시각 있음" else ""
             print(f"  {head:<26} {name:>6} {mid:+6.2f}s {off[-1] - off[0]:6.1f}s "
                   f"{near * 100:>6.0f}% {hit * 100:>7.0f}% {broke:>5}", flush=True)
