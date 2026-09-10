@@ -59,15 +59,22 @@ def main() -> int:
             pin_at[line] = when
     dropped = {sheet[g][1] for g in marks if starts[sheet[g][1]] == g} - set(pin_at)
     print(f"  [{song_id}] {row['title'][:16]} 닮음 {alike:.2f} · 못(차례 지킴) {len(pin_at)} · 차례로 버림 {len(dropped)}")
+    rows = sorted(pin_at)
     for index in range(lo, hi + 1):
         at = lines[index].get("at")
         pin = pin_at.get(index)
         heard_word = ""
+        judge = ""
         if pin is not None:
             near = [w for w, t in said if abs(t - pin) <= 10]
             heard_word = near[0] if near else ""
+            k = rows.index(index)
+            if 0 < k < len(rows) - 1:
+                p, q = rows[k - 1], rows[k + 1]
+                guess = pin_at[p] + (pin_at[q] - pin_at[p]) * (starts[index] - starts[p]) / max(1, starts[q] - starts[p])
+                judge = f"이웃 {(pin - guess) / 1000:+5.1f} 짐작 {(pin - (coarse[index] or 0)) / 1000:+5.1f}"
         print(f"  [{index:>2}] 시트 {(at or 0) / 1000:6.1f}  짐작 {(coarse[index] or 0) / 1000:6.1f}  "
-              f"못 {(pin / 1000) if pin is not None else '   —  ':>6} {heard_word:<8} "
+              f"못 {(pin / 1000) if pin is not None else '   —  ':>6} {heard_word:<8} {judge:<22}"
               f"{'(차례로 버림)' if index in dropped else '':<8} {lines[index]['text'][:22]}")
     return 0
 

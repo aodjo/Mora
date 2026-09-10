@@ -2959,6 +2959,64 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     #: 열여섯 줄의 못이 194.0~195.4 초 1.4 초 안에 쌓였고, 정렬은 그 시계를 그대로 따라 스물여덟 줄이
     #: 무너졌다(쌩 가사 63%). 0.2 초보다 가까운 못을 빠르기 셈에서 건너뛰던 것이 그 더미를 못 보게
     #: 했다 — 이제 아주 가까운 못이 가장 급한 못이다. 뽑는 횟수도 여덟 번에 묶지 않는다.
+    #: **잘못 붙은 반복을 먼저 뽑는다** — 급한 못 규칙보다 앞에. 못 하나가 이웃 못으로 곧게 읽은
+    #: 자리에서도, 고른 짐작에서도 같은 쪽으로 `HEARD_LOCAL_MS` 넘게 벗어나면 그것이다. 붉은 노을
+    #: 43·44 번은 179.2·183.0 초에 붙었는데(시트 165·168) 이웃 41·49 번 사이로 읽으면 165 쯤이고 고른
+    #: 짐작은 168.8·170.1 이다 — 둘 다에서 +10 초 넘게 뒤다. 하나만 보면 안 된다: 이웃 못과의 편차만
+    #: 보던 판(v21)은 짐작이 곡 구조를 따라 출렁이는 붉은 노을에서 맞는 못 열한 개를 뽑고 틀린 둘을
+    #: 남겨 뒷부분이 통째로 12 초 밀렸고, 짐작만 보면 짐작 자체가 스무 초 틀린 하치와레girl 의 맞는
+    #: 못이 다 뽑힌다(v19). 둘 다 어긋나야 반복이다. 급한 못 규칙 뒤에 두었더니(v23) 그 규칙이
+    #: 「44→49 가 급하다」며 맞는 49 번을 먼저 뽑아 한 칸 건너 이웃이 사라졌다. 뽑은 줄의 낱알 짝도
+    #: 표에서 지운다.
+    jumpy = 0
+    while coarse:
+        pin_at = {}
+        for grain, when in pairs:
+            line = sheet[grain][1]
+            if starts[line] == grain:
+                pin_at[line] = when
+        rows = sorted(pin_at)
+        if len(rows) < 3:
+            break
+        bad = None
+        for k in range(1, len(rows) - 1):
+            one = rows[k]
+            off_coarse = pin_at[one] - coarse[one]
+            if abs(off_coarse) <= HEARD_LOCAL_MS:
+                continue
+            #: 바로 옆 이웃만 보면 잘못 붙은 못 둘이 서로를 받친다 — 붉은 노을 43 번의 이웃은 42 와
+            #: 역시 틀린 44 라 곧게 읽은 자리가 43 근처(+3.9 초)였다. 한 칸 건너 이웃(41 과 49)으로도
+            #: 읽는다: +14 초.
+            for width in (1, 2):
+                if k - width < 0 or k + width >= len(rows):
+                    continue
+                p, q = rows[k - width], rows[k + width]
+                guess = pin_at[p] + (pin_at[q] - pin_at[p]) * (starts[one] - starts[p]) / max(1, starts[q] - starts[p])
+                off_pin = pin_at[one] - guess
+                if abs(off_pin) > HEARD_LOCAL_MS and (off_pin > 0) == (off_coarse > 0):
+                    bad = one
+                    break
+            if bad is not None:
+                break
+        if bad is None:
+            break
+        lo = starts[bad]
+        hi = next((starts[one] for one in range(bad + 1, len(lines)) if starts[one] is not None), len(sheet))
+        for grain in [one for one in marks if lo <= one < hi]:
+            del marks[grain]
+        jumpy += 1
+        pairs = []
+        for grain in sorted(marks):
+            if not pairs or marks[grain] >= pairs[-1][1]:
+                pairs.append((grain, marks[grain]))
+        if len(pairs) < 2:
+            keep(beside(path, ".clock.json"), {
+                "시계": coarse, "못박힌 줄": [], "고른 짐작": coarse,
+                "닮은 만큼": round(alike, 4), "받아쓰기를 믿나": trust, "짝 지은 음절": len(pairs),
+                "물러섬": "반복을 뽑고 나니 짝이 둘도 안 된다",
+            })
+            return coarse
+
     rushed = 0
     if HEARD_RUSH > 0:
         for _ in range(len(lines)):
@@ -3007,55 +3065,12 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     span = max(1, pairs[-1][0] - pairs[0][0])
     rate = (pairs[-1][1] - pairs[0][1]) / span
 
-    #: 줄 첫 낱알의 못.
+    #: 줄 첫 낱알의 못 — 급한 못 규칙과 반복 뽑기를 지난 뒤의 것.
     pin_at = {}
     for grain, when in pairs:
         line = sheet[grain][1]
         if starts[line] == grain:
             pin_at[line] = when
-
-    #: **잘못 붙은 반복을 뽑는다.** 못 하나가 이웃 못으로 곧게 읽은 자리에서도, 고른 짐작에서도 같은
-    #: 쪽으로 `HEARD_LOCAL_MS` 넘게 벗어나면 그것이다. 붉은 노을 43·44 번은 179.2·183.0 초에 붙었는데
-    #: (시트 165·168) 이웃 42·49 번 사이로 읽으면 165 쯤이고 고른 짐작은 168.8·170.1 이다 — 둘 다에서
-    #: +10 초 넘게 뒤다. 하나만 보면 안 된다: 이웃 못과의 편차만 보던 판(v21)은 짐작이 곡 구조를 따라
-    #: 출렁이는 붉은 노을에서 맞는 못 열한 개를 뽑고 틀린 둘을 남겨 뒷부분이 통째로 12 초 밀렸고,
-    #: 짐작만 보면 짐작 자체가 스무 초 틀린 하치와레girl 의 맞는 못이 다 뽑힌다(v19). 둘 다 어긋나야
-    #: 반복이다. 뽑은 줄의 낱알 짝도 표에서 지운다 — 급한 못과 같다.
-    jumpy = 0
-    while coarse and len(pin_at) >= 3:
-        rows = sorted(pin_at)
-        bad = None
-        for k in range(1, len(rows) - 1):
-            one, p, q = rows[k], rows[k - 1], rows[k + 1]
-            guess = pin_at[p] + (pin_at[q] - pin_at[p]) * (starts[one] - starts[p]) / max(1, starts[q] - starts[p])
-            off_pin = pin_at[one] - guess
-            off_coarse = pin_at[one] - coarse[one]
-            if (abs(off_pin) > HEARD_LOCAL_MS and abs(off_coarse) > HEARD_LOCAL_MS
-                    and (off_pin > 0) == (off_coarse > 0)):
-                bad = one
-                break
-        if bad is None:
-            break
-        lo = starts[bad]
-        hi = next((starts[one] for one in range(bad + 1, len(lines)) if starts[one] is not None), len(sheet))
-        for grain in [one for one in marks if lo <= one < hi]:
-            del marks[grain]
-        del pin_at[bad]
-        jumpy += 1
-    if jumpy:
-        pairs = []
-        for grain in sorted(marks):
-            if not pairs or marks[grain] >= pairs[-1][1]:
-                pairs.append((grain, marks[grain]))
-        if len(pairs) < 2:
-            keep(beside(path, ".clock.json"), {
-                "시계": coarse, "못박힌 줄": [], "고른 짐작": coarse,
-                "닮은 만큼": round(alike, 4), "받아쓰기를 믿나": trust, "짝 지은 음절": len(pairs),
-                "물러섬": "반복을 뽑고 나니 짝이 둘도 안 된다",
-            })
-            return coarse
-        span = max(1, pairs[-1][0] - pairs[0][0])
-        rate = (pairs[-1][1] - pairs[0][1]) / span
 
     #: 표 밖으로 나간 줄은 표의 기울기로 늘여 잡는다. 거친 짐작으로 되돌리면 안 된다 — 그
     #: 짐작이야말로 앞머리 중얼거림에 끌려 있고, 첫 줄이 거기로 떨어지면 `align_one` 의 앞머리
