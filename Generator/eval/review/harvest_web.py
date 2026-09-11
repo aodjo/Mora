@@ -47,6 +47,10 @@ HOT: list[int] = []
 #: 아티스트 훑기 스위치. 끄면 가사만 받는다 — 훑다가 찾은 아티스트는 「안 훑음」으로 장부에 남아
 #: 기다리고, 다시 켜면 그 줄부터 훑는다. 「먼저 훑기」로 콕 집은 사람은 꺼져 있어도 훑는다.
 SETTINGS: dict = {"훑기": True}
+#: 막힌 곡(403)을 로그인 세션으로 받는 중인지. 켜지면 가사 일꾼이 보통 곡보다 이것을 먼저 한다.
+LOGIN_PASS = threading.Event()
+#: 이번 로그인 판을 시작한 시각(장부의 `got_at` 과 같은 꼴). 그 뒤에 받은 곡은 다시 집지 않는다.
+LOGIN_SINCE = [""]
 
 
 def load_settings() -> None:
@@ -205,6 +209,18 @@ def lyric_loop(lock: threading.Lock, over: threading.Event) -> None:
     """
     conn = harvest.open_db(DB)
     while not (_stop.is_set() or over.is_set()):
+        if LOGIN_PASS.is_set():
+            #: 로그인으로 막힌 곡을 받는다 — 두 곡씩, 느리게. 받아도 403 이면 그대로 막힌 곡으로 남고
+            #: `got_at` 이 새로 찍히므로, 한 번 돈 곡은 이번 판에서 다시 집지 않는다.
+            barred = conn.execute(
+                "SELECT track_id, title, artist FROM tracks WHERE state='forbidden'"
+                " AND (got_at IS NULL OR got_at < ?) LIMIT 20", (LOGIN_SINCE[0],)).fetchall()
+            if barred:
+                DOING["가사"] = f"로그인으로 막힌 곡 {len(barred)}곡"
+                harvest.take_lyrics(conn, lock, barred, watch=push, login=True)
+                continue
+            LOGIN_PASS.clear()
+            push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 로그인  막힌 곡 다 돌았다"})
         rows = conn.execute(
             "SELECT track_id, title, artist FROM tracks WHERE state='new' AND has_sync=1"
             " AND duration BETWEEN ? AND ? LIMIT ?",
@@ -355,7 +371,8 @@ def make_app():
             conn = sqlite3.connect(DB)
             STATE.update(counts(conn))
             conn.close()
-        return {**STATE, "씨앗": harvest.seed_words(), "지난 줄": list(RECENT)}
+        return {**STATE, "씨앗": harvest.seed_words(), "지난 줄": list(RECENT),
+                "로그인": bool(harvest.login_cookie()), "쿠키 자리": harvest.COOKIE_FILE}
 
     @app.post("/api/start")
     async def begin(request: Request):
@@ -388,6 +405,47 @@ def make_app():
         words = [one.strip() for one in str(asked.get("낱말", "")).replace(",", "\n").split("\n")
                  if one.strip()]
         return add_seeds(words)
+
+    @app.post("/api/login-pass")
+    def login_pass():
+        """Fetch the blocked songs' lyrics again with the saved Naver session.
+
+        @returns {dict} Whether a session is saved, and how many songs will be asked for.
+        """
+        if not harvest.login_cookie():
+            return {"시작": False, "까닭": f"로그인 쿠키가 없다 — {harvest.COOKIE_FILE} 에 넣어 주세요"}
+        conn = sqlite3.connect(DB)
+        barred = conn.execute("SELECT COUNT(*) FROM tracks WHERE state='forbidden'").fetchone()[0]
+        LOGIN_SINCE[0] = conn.execute("SELECT datetime('now')").fetchone()[0]
+        conn.close()
+        LOGIN_PASS.set()
+        if not STATE["도는 중"]:
+            start(0)
+        push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 로그인  막힌 곡 {barred:,}곡을"
+                                      " 로그인 세션으로 다시 받는다 · 두 곡씩 천천히"})
+        return {"시작": True, "막힌 곡": barred}
+
+    @app.post("/api/recheck")
+    def recheck():
+        """Put songs that came back with no timings back in the queue, to sort the blocked from the empty.
+
+        Before 403 was told apart, a song Vibe refused was written down as 「시각 없음」 like one
+        that really has no timings. Asking again anonymously sorts them: a 403 now lands as a
+        blocked song, which the login pass can then take.
+
+        @returns {dict} How many songs went back in the queue.
+        """
+        conn = harvest.open_db(DB)
+        back = conn.execute(
+            "UPDATE tracks SET state='new' WHERE state='nosync' AND has_sync=1"
+            " AND COALESCE(line_count, 0) = 0").rowcount
+        conn.commit()
+        conn.close()
+        if not STATE["도는 중"]:
+            start(0)
+        push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 재확인  시각 없음 {back:,}곡을"
+                                      " 다시 받는다 · 403 이면 막힌 곡으로 갈라진다"})
+        return {"다시": back}
 
     @app.post("/api/walking")
     async def walking(request: Request):

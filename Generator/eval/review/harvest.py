@@ -54,6 +54,28 @@ class Forbidden(Exception):
     """Vibe refused this one resource (403) — usually an adult-rated song that needs a login."""
 
 
+#: 로그인 세션(네이버 쿠키)을 두는 곳. **저장소 밖**이다 — 이 쿠키는 네이버 계정 전체를 여는 열쇠라
+#: 커밋에 섞이면 안 된다. 성인 인증이 있어야 가사를 주는 막힌 곡에만 쓴다: 수만 번의 요청을 계정에
+#: 걸면 네이버가 계정을 의심할 수 있으므로, 익명으로 되는 것은 끝까지 익명으로 받는다.
+COOKIE_FILE = os.path.expanduser(os.environ.get("MORA_VIBE_COOKIE", "~/.mora/vibe_cookie"))
+#: 로그인으로 부를 때 요청마다 더 쉬는 시간(초). 계정에 걸린 요청은 사람처럼 느리게.
+LOGIN_REST = 1.0
+
+
+def login_cookie() -> str:
+    """The saved Naver session, as a `Cookie` header value.
+
+    @returns {str} The cookie line, or empty when none has been saved.
+    """
+    try:
+        with open(COOKIE_FILE, encoding="utf-8") as file:
+            said = file.read().strip()
+    except OSError:
+        return ""
+    #: 개발자 도구에서 통째로 복사하면 「Cookie: 」 머리가 붙어 올 수 있다.
+    return said[len("cookie:"):].strip() if said.lower().startswith("cookie:") else said
+
+
 def slow_down(code: int) -> None:
     """Double the rest between requests after Vibe pushes back.
 
@@ -93,17 +115,22 @@ SEEDS = [
 ]
 
 
-def vibe_get(path: str, tries: int = 3) -> dict:
+def vibe_get(path: str, tries: int = 3, login: bool = False) -> dict:
     """GET one Vibe endpoint, retrying rather than coming back empty-handed on one break.
 
     @param {str} path - Path under the Vibe API base.
     @param {int} [tries=3] - How many attempts to make.
+    @param {bool} [login=False] - Send the saved Naver session, for songs that need a login.
     @returns {dict} The decoded response, or an empty dict when every attempt failed.
     """
-    request = urllib.request.Request(
-        VIBE + path,
-        headers={"Referer": "https://vibe.naver.com/", "Accept": "application/json",
-                 "User-Agent": BROWSER})
+    headers = {"Referer": "https://vibe.naver.com/", "Accept": "application/json",
+               "User-Agent": BROWSER}
+    if login:
+        cookie = login_cookie()
+        if cookie:
+            headers["Cookie"] = cookie
+        time.sleep(LOGIN_REST)
+    request = urllib.request.Request(VIBE + path, headers=headers)
     for attempt in range(tries):
         try:
             with urllib.request.urlopen(request, timeout=15) as answer:
@@ -366,7 +393,7 @@ def fold_same(conn: sqlite3.Connection, lock: threading.Lock) -> tuple[int, int]
     return done, every
 
 
-def lines_of(track_id: int) -> list[dict] | None:
+def lines_of(track_id: int, login: bool = False) -> list[dict] | None:
     """Fetch one track's synced lyric and reshape it into our line form.
 
     The sync arrives as two parallel arrays: `startTimeIndex[i]` in seconds and
@@ -374,10 +401,11 @@ def lines_of(track_id: int) -> list[dict] | None:
     the arrays are what decide, not the flag.
 
     @param {int} track_id - Which track.
+    @param {bool} [login=False] - Ask with the saved Naver session.
     @returns {list[dict] | None} Lines with `at` in ms and `text`, or None when there is no sync.
     @throws {Forbidden} When Vibe refuses this track's lyric (403), usually an adult-rated song.
     """
-    got = vibe_get(f"/v3/lyric/{track_id}")
+    got = vibe_get(f"/v3/lyric/{track_id}", login=login)
     if got.get("_막힘") == 403:
         raise Forbidden(track_id)
     lyric = result_of(got).get("lyric") or {}
@@ -393,25 +421,27 @@ def lines_of(track_id: int) -> list[dict] | None:
     return out or None
 
 
-def take_lyrics(conn: sqlite3.Connection, lock: threading.Lock, rows: list[tuple], watch=None) -> int:
+def take_lyrics(conn: sqlite3.Connection, lock: threading.Lock, rows: list[tuple], watch=None,
+                login: bool = False) -> int:
     """Fetch the lyrics of a batch of tracks and write what came back.
 
     @param {sqlite3.Connection} conn - The harvest store.
     @param {threading.Lock} lock - Guards writes to the store.
     @param {list[tuple]} rows - `(track_id, title, artist)` rows to fetch.
     @param {callable | None} [watch=None] - Called with each track, for a watcher to draw.
+    @param {bool} [login=False] - Ask with the saved Naver session, two at a time and slowly.
     @returns {int} How many came back with a usable sync.
     """
     def one(row: tuple) -> tuple[tuple, list[dict] | None, bool]:
         try:
-            return row, lines_of(row[0]), False
+            return row, lines_of(row[0], login=login), False
         except Forbidden:
             return row, None, True
         except Exception:  # noqa: BLE001
             return row, None, False
 
     kept = 0
-    with ThreadPoolExecutor(max_workers=HANDS) as pool:
+    with ThreadPoolExecutor(max_workers=2 if login else HANDS) as pool:
         for row, lines, barred in pool.map(one, rows):
             good = bool(lines) and len(lines) >= LEAST_LINES
             #: 막힌 곡은 「시각 없음」과 따로 적는다 — 없는 것이 아니라 못 받은 것이라, 로그인할 수

@@ -258,11 +258,11 @@ def fit(text: str, room: int) -> str:
 
 
 class Board:
-    """The terminal display: one tidy line per song above a progress bar that stays at the bottom.
+    """The terminal display: one tidy pair of lines per song above a tqdm bar at the bottom.
 
-    Several songs are worked on at once, so lines arrive out of order; each is printed whole
-    under one lock, the bar is wiped before and redrawn after, and when output is not a terminal
-    (piped into a file) the bar is left out altogether.
+    Several songs are worked on at once, so lines arrive out of order; each song's lines go out
+    whole through `tqdm.write`, which lifts the bar, prints above it and puts it back. The tallies
+    (고름·받음·못 찾음…) ride on the bar as its postfix.
     """
 
     def __init__(self, total: int):
@@ -270,53 +270,34 @@ class Board:
 
         @param {int} total - How many songs this run will handle.
         """
-        self.total = total
-        self.done = 0
+        from tqdm import tqdm
+        self.write = tqdm.write
         self.count: dict[str, int] = {}
-        self.began = time.time()
         self.lock = threading.Lock()
-        self.live = sys.stdout.isatty()
-
-    def bar(self) -> str:
-        """The progress bar line.
-
-        @returns {str} Bar, count, tallies and time left.
-        """
-        share = self.done / max(1, self.total)
-        full = int(share * 24)
-        spent = time.time() - self.began
-        left = spent / self.done * (self.total - self.done) if self.done else 0
-        tail = f"약 {int(left // 60)}분 {int(left % 60)}초 남음" if self.done else "…"
-        counts = " · ".join(f"{key} {value}" for key, value in self.count.items())
-        return f"  [{'█' * full}{'░' * (24 - full)}] {self.done}/{self.total} {share:4.0%}  {counts}  {tail}"
+        self.bar = tqdm(total=total, unit="곡", dynamic_ncols=True, leave=True,
+                        bar_format="  {bar:28} {n_fmt}/{total_fmt} {percentage:3.0f}%"
+                                   "  {desc}  [{elapsed} 지남 · {remaining} 남음]")
 
     def say(self, lines: list[str], kind: str) -> None:
-        """Print one song's lines and move the bar on.
+        """Print one song's lines above the bar and move it on.
 
         @param {list[str]} lines - What to print for this song.
         @param {str} kind - Which tally this song counts under.
         @returns {None}
         """
         with self.lock:
-            self.done += 1
             self.count[kind] = self.count.get(kind, 0) + 1
-            if self.live:
-                sys.stdout.write("\r\033[K")
-            sys.stdout.write("\n".join(lines) + "\n")
-            if self.live:
-                sys.stdout.write(self.bar())
-            sys.stdout.flush()
+            self.write("\n".join(lines))
+            self.bar.set_description_str(
+                " · ".join(f"{key} {value}" for key, value in self.count.items()), refresh=False)
+            self.bar.update(1)
 
     def end(self) -> None:
-        """Leave the finished bar in place and move past it.
+        """Close the bar, leaving it in place.
 
         @returns {None}
         """
-        with self.lock:
-            if self.live:
-                sys.stdout.write("\r\033[K")
-            sys.stdout.write(self.bar() + "\n")
-            sys.stdout.flush()
+        self.bar.close()
 
 
 def open_book(where: str) -> sqlite3.Connection:

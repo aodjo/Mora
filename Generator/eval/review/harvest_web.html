@@ -159,6 +159,16 @@
         </div>
         <p class="hint">넣으면 바로 검색하고 seeds.txt 에도 적힌다.</p>
       </section>
+      <section>
+        <h2>막힌 곡 <span id="barred-n" style="color:var(--dim);text-transform:none;letter-spacing:0"></span></h2>
+        <div class="put">
+          <button class="push" id="recheck" type="button"
+                  title="예전에 403 도 「시각 없음」으로 적혔다. 다시 받아서 막힌 곡과 진짜 없는 곡을 가른다.">시각 없음 다시 보기</button>
+          <button class="push" id="login-pass" type="button"
+                  title="막힌 곡의 가사를 로그인 세션으로 받는다. 두 곡씩 천천히.">로그인으로 받기</button>
+        </div>
+        <p class="hint" id="login-hint">로그인 세션이 있어야 한다.</p>
+      </section>
       <section style="border-bottom:0;padding-bottom:2px">
         <h2>지금 씨앗 <span id="seed-n" style="color:var(--dim);text-transform:none;letter-spacing:0"></span></h2>
       </section>
@@ -441,6 +451,38 @@
   el('tab-log').addEventListener('click', function () { show('log'); });
   el('tab-files').addEventListener('click', function () { show('files'); });
 
+  /**
+   * Show whether a login session is saved, and where it goes when it is not.
+   *
+   * @param {object} said - The state from the server.
+   * @returns {void}
+   */
+  function drawLogin(said) {
+    var on = !!said['로그인'];
+    el('login-pass').disabled = !on;
+    el('login-hint').textContent = on
+      ? '로그인 세션 있음 · 막힌 곡에만 쓴다'
+      : '로그인 세션 없음 — ' + (said['쿠키 자리'] || '~/.mora/vibe_cookie') + ' 에 쿠키를 넣으면 켜진다';
+    if (said['막힌 곡'] !== undefined) {
+      el('barred-n').textContent = Number(said['막힌 곡']).toLocaleString('ko-KR') + '곡';
+    }
+  }
+
+  el('recheck').addEventListener('click', function () {
+    el('recheck').disabled = true;
+    fetch('/api/recheck', { method: 'POST' }).then(function (answer) { return answer.json(); })
+      .then(function (said) {
+        say('note', '시각 없음 ' + Number(said['다시'] || 0).toLocaleString('ko-KR') + '곡을 다시 받는다');
+        el('recheck').disabled = false;
+      });
+  });
+  el('login-pass').addEventListener('click', function () {
+    fetch('/api/login-pass', { method: 'POST' }).then(function (answer) { return answer.json(); })
+      .then(function (said) {
+        if (!said['시작']) { say('note', said['까닭'] || '로그인 판을 못 시작함'); }
+      });
+  });
+
   el('walking').addEventListener('click', function () {
     var on = el('walking').getAttribute('aria-pressed') !== 'true';
     drawWalking(on);
@@ -482,6 +524,7 @@
 
   fetch('/api/state').then(function (answer) { return answer.json(); }).then(function (said) {
     tally(said);
+    drawLogin(said);
     drawSeeds(said['씨앗'] || []);
     (said['지난 줄'] || []).forEach(function (one) { say(one.kind, one.line); });
     if (!(said['지난 줄'] || []).length) { say('note', '시작을 누르면 여기에 걸음이 흐른다.'); }
@@ -492,6 +535,9 @@
     var said = JSON.parse(event.data);
     if (said.line) { say(said.kind, said.line); }
     if (said.kind === 'count' || said.kind === 'state') { tally(said); }
+    if (said.kind === 'count' && said['막힌 곡'] !== undefined) {
+      el('barred-n').textContent = Number(said['막힌 곡']).toLocaleString('ko-KR') + '곡';
+    }
   };
   wire.onerror = function () { el('doing').textContent = '서버와 끊김 · 다시 잇는 중'; };
 })();
