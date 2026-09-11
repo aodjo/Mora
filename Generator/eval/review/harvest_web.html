@@ -335,6 +335,7 @@
         item.innerHTML = '<span class="name"></span><span class="side"></span>';
         item.firstChild.textContent = shown.name;
         item.lastChild.textContent = shown.side;
+        item.title = shown.full || shown.name;
         item.addEventListener('click', function () {
           Array.prototype.forEach.call(where.children, function (other) { other.classList.remove('on'); });
           item.classList.add('on');
@@ -360,29 +361,30 @@
               side: row['시각 있는 곡'] + '/' + row['곡'],
               dim: !row['시각 있는 곡']
             };
-          }, function (row) { loadSongs(row['이름']); });
-          if (q && rows.length) { loadSongs(rows[0]['이름']); }
+          }, function (row) { loadSongs(row); });
+          if (q && rows.length) { loadSongs(rows[0]); }
         });
     }
 
     /**
-     * Load one artist's songs.
+     * Load one artist's songs — every song they are credited on, not only the ones they lead.
      *
-     * @param {string} name - Whose songs.
+     * @param {object} artist - The row from the left column.
      * @returns {void}
      */
-    function loadSongs(name) {
-      chosen.artist = name;
+    function loadSongs(artist) {
+      chosen.artist = artist['번호'];
       topArtist.innerHTML = '<b></b>';
-      topArtist.firstChild.textContent = name;
-      fetch('/api/tracks?limit=500&artist=' + encodeURIComponent(name))
+      topArtist.firstChild.textContent = artist['이름'];
+      fetch('/api/tracks?limit=500&artist_id=' + artist['번호'])
         .then(function (answer) { return answer.json(); })
         .then(function (rows) {
           topArtist.innerHTML = '<b></b> · 곡 ' + rows.length;
-          topArtist.firstChild.textContent = name;
+          topArtist.firstChild.textContent = artist['이름'];
           fill(songs, rows, function (row) {
             return {
               name: row['제목'],
+              full: row['제목'] + ' — ' + row['아티스트'],
               side: row['상태'] === 'synced' ? row['줄'] + '줄' : (row['상태'] === 'new' ? '아직' : '시각 없음'),
               dim: row['상태'] !== 'synced'
             };
@@ -400,9 +402,10 @@
       chosen.song = row['번호'];
       fetch('/api/track/' + row['번호']).then(function (answer) { return answer.json(); })
         .then(function (song) {
-          topSong.innerHTML = '<b></b> · ' + (song['줄'] || []).length + '줄 · ' +
-            Math.round(song['길이'] || 0) + '초';
+          topSong.innerHTML = '<b></b> · ' + (song['아티스트'] || '') + ' · ' +
+            (song['줄'] || []).length + '줄 · ' + Math.round(song['길이'] || 0) + '초';
           topSong.firstChild.textContent = song['제목'] || '';
+          topSong.title = (song['제목'] || '') + ' — ' + (song['아티스트'] || '');
           lines.innerHTML = '';
           if (!(song['줄'] || []).length) {
             lines.innerHTML = '<p class="empty">' +

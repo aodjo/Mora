@@ -252,42 +252,45 @@ def make_app():
 
     @app.get("/api/artists")
     def artists(q: str = "", limit: int = 400):
-        """List the artists in the store, biggest first, as the browsing pane's left column.
+        """List the artists in the store, most synced songs first, for the left column.
 
-        Grouped by the artist string on the track rather than by artist id: that is the name a
-        person reads on the song, and it sidesteps matching against the id list a track carries.
+        One folder per **person**, not per credit line. Grouping by the artist string on the track
+        made a folder called 「권인하, 김광석, 우현, 이서환, 장현…」 holding one song, and the name
+        did not even fit the column. A track's `artist_ids` is opened with `json_each` so a song
+        shows up under everyone who sang it.
 
-        @param {str} [q=""] - Filter on artist or song name.
+        @param {str} [q=""] - Filter on the artist's name.
         @param {int} [limit=400] - How many to return.
         @returns {list[dict]} Artists with song counts and line totals.
         """
         conn = sqlite3.connect(DB)
         where, args = "", []
         if q:
-            where = " WHERE artist LIKE ? OR title LIKE ?"
-            args = [f"%{q}%", f"%{q}%"]
+            where = " WHERE a.name LIKE ?"
+            args = [f"%{q}%"]
         rows = conn.execute(
-            "SELECT artist, COUNT(*), SUM(CASE WHEN state='synced' THEN 1 ELSE 0 END),"
-            " COALESCE(SUM(line_count), 0) FROM tracks" + where +
-            " GROUP BY artist ORDER BY 3 DESC, 2 DESC LIMIT ?", args + [limit]).fetchall()
+            "SELECT a.id, a.name, COUNT(*),"
+            " SUM(CASE WHEN t.state='synced' THEN 1 ELSE 0 END), COALESCE(SUM(t.line_count), 0)"
+            " FROM tracks t, json_each(t.artist_ids) j JOIN artists a ON a.id = j.value" + where +
+            " GROUP BY a.id ORDER BY 4 DESC, 3 DESC LIMIT ?", args + [limit]).fetchall()
         conn.close()
-        return [{"이름": one[0] or "(이름 없음)", "곡": one[1], "시각 있는 곡": one[2], "줄": one[3]}
-                for one in rows]
+        return [{"번호": one[0], "이름": one[1] or "(이름 없음)", "곡": one[2],
+                 "시각 있는 곡": one[3], "줄": one[4]} for one in rows]
 
     @app.get("/api/tracks")
-    def tracks(artist: str = "", q: str = "", limit: int = 500):
+    def tracks(artist_id: int = 0, q: str = "", limit: int = 500):
         """List one artist's songs, or the songs matching a search.
 
-        @param {str} [artist=""] - Whose songs to list.
-        @param {str} [q=""] - Filter on song title.
+        @param {int} [artist_id=0] - Whose songs to list; every song they are credited on.
+        @param {str} [q=""] - Filter on song title or credit line.
         @param {int} [limit=500] - How many to return.
         @returns {list[dict]} Songs with duration, state and line count.
         """
         conn = sqlite3.connect(DB)
         where, args = [], []
-        if artist:
-            where.append("artist = ?")
-            args.append(artist)
+        if artist_id:
+            where.append("EXISTS (SELECT 1 FROM json_each(tracks.artist_ids) j WHERE j.value = ?)")
+            args.append(artist_id)
         if q:
             where.append("(title LIKE ? OR artist LIKE ?)")
             args += [f"%{q}%", f"%{q}%"]
