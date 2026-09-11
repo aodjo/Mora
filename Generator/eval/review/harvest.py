@@ -176,6 +176,8 @@ def open_db(where: str) -> sqlite3.Connection:
     #: 이미 찾아 본 씨앗. 없으면 켤 때마다 예순 낱말을 다시 검색하고 로그가 「아티스트 0」으로 찬다.
     conn.execute("""CREATE TABLE IF NOT EXISTS seeds (
         word TEXT PRIMARY KEY, found INTEGER DEFAULT 0, done_at TEXT)""")
+    #: 켜고 끄는 설정. 서버를 다시 띄워도 기억해야 하므로 장부에 둔다.
+    conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
     return conn
 

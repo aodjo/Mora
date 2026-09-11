@@ -34,7 +34,7 @@ STEPS: "queue.Queue[dict]" = queue.Queue(maxsize=2000)
 RECENT: "collections.deque[dict]" = collections.deque(maxlen=300)
 #: 크롤의 지금 상태.
 STATE: dict = {"도는 중": False, "지금": "멈춰 있음", "곡": 0, "줄": 0, "아티스트": 0,
-               "남은 아티스트": 0, "받을 곡": 0, "같은 곡": 0, "막힘": 0, "쉼 배": 1.0}
+               "남은 아티스트": 0, "받을 곡": 0, "같은 곡": 0, "막힘": 0, "쉼 배": 1.0, "훑기": True}
 HERE = Path(__file__).parent
 DB = os.environ.get("MORA_VIBE_DB", "vibe.db")
 LOG = "harvest.log"
@@ -44,6 +44,35 @@ WAITING: list[str] = []
 #: 사람이 목록에서 「먼저 훑기」를 누른 아티스트. 안 훑은 줄이 천팔백 명이라, 보고 있는 그 사람을
 #: 지금 훑을 방법이 없으면 목록은 영영 비어 보인다.
 HOT: list[int] = []
+#: 아티스트 훑기 스위치. 끄면 가사만 받는다 — 훑다가 찾은 아티스트는 「안 훑음」으로 장부에 남아
+#: 기다리고, 다시 켜면 그 줄부터 훑는다. 「먼저 훑기」로 콕 집은 사람은 꺼져 있어도 훑는다.
+SETTINGS: dict = {"훑기": True}
+
+
+def load_settings() -> None:
+    """Read the switches back out of the store, so a restart keeps them as they were.
+
+    @returns {None}
+    """
+    conn = harvest.open_db(DB)
+    row = conn.execute("SELECT value FROM settings WHERE key='훑기'").fetchone()
+    conn.close()
+    if row:
+        SETTINGS["훑기"] = row[0] == "1"
+    STATE["훑기"] = SETTINGS["훑기"]
+
+
+def save_setting(key: str, on: bool) -> None:
+    """Write one switch into the store.
+
+    @param {str} key - Which switch.
+    @param {bool} on - Its new position.
+    @returns {None}
+    """
+    conn = harvest.open_db(DB)
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, "1" if on else "0"))
+    conn.commit()
+    conn.close()
 _hand: threading.Thread | None = None
 _stop = threading.Event()
 
@@ -226,7 +255,11 @@ def walk_loop(lock: threading.Lock, over: threading.Event) -> None:
                 row = conn.execute("SELECT name FROM artists WHERE id=?", (artist_id,)).fetchone()
                 if row:
                     picks.append((artist_id, row[0]))
-            if len(picks) < harvest.WALKERS:
+            if not picks and not SETTINGS["훑기"]:
+                DOING["훑기"] = "훑기 꺼짐"
+                time.sleep(2)
+                continue
+            if SETTINGS["훑기"] and len(picks) < harvest.WALKERS:
                 taken = {one for one, _ in picks}
                 picks += [one for one in conn.execute(
                     "SELECT id, name FROM artists WHERE done=0"
@@ -299,6 +332,7 @@ def make_app():
     from fastapi.responses import FileResponse, StreamingResponse
 
     app = FastAPI(title="수확 지켜보기")
+    load_settings()
 
     @app.get("/")
     def page():
@@ -353,6 +387,27 @@ def make_app():
         words = [one.strip() for one in str(asked.get("낱말", "")).replace(",", "\n").split("\n")
                  if one.strip()]
         return add_seeds(words)
+
+    @app.post("/api/walking")
+    async def walking(request: Request):
+        """Switch artist walking on or off. Lyric fetching carries on either way.
+
+        @param {Request} request - Carries `{"켬": true}` or `{"켬": false}`.
+        @returns {dict} The switch's new position and how many artists are waiting for it.
+        """
+        asked = await request.json()
+        on = bool(asked.get("켬"))
+        SETTINGS["훑기"] = on
+        STATE["훑기"] = on
+        save_setting("훑기", on)
+        conn = sqlite3.connect(DB)
+        left = conn.execute("SELECT COUNT(*) FROM artists WHERE done=0").fetchone()[0]
+        conn.close()
+        push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 설정  아티스트 훑기 "
+                                      + ("켬 · 기다리던 " + f"{left:,}명부터" if on
+                                         else f"끔 · 가사만 받는다 · 찾은 아티스트 {left:,}명은 기다림")})
+        push({"kind": "state", **STATE})
+        return {"훑기": on, "기다리는 아티스트": left}
 
     @app.post("/api/walk")
     async def walk(request: Request):

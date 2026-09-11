@@ -57,6 +57,8 @@
   button.push.main { background: var(--go); border-color: var(--go); color: #06100d; font-weight: 600; }
   button.push:disabled { opacity: .4; cursor: default; }
   button.push.tiny { padding: 2px 8px; font-size: 11.5px; flex: 0 0 auto; }
+  button.push.switch[aria-pressed="true"] { border-color: var(--go); color: var(--go); }
+  button.push.switch[aria-pressed="false"] { border-color: var(--seed); color: var(--seed); }
   .row .wait { color: var(--seed); }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--go); outline-offset: 1px; }
 
@@ -137,6 +139,8 @@
   <span class="grow"></span>
   <span class="doing"><i class="dot" id="dot"></i><span id="doing">멈춰 있음</span></span>
   <div class="act">
+    <button class="push switch" id="walking" type="button" aria-pressed="true"
+            title="끄면 가사만 받는다. 찾은 아티스트는 기다렸다가 다시 켜면 훑는다.">아티스트 훑기 켬</button>
     <button class="push main" id="start" type="button">시작</button>
     <button class="push" id="stop" type="button">멈춤</button>
   </div>
@@ -227,6 +231,19 @@
       el('dot').classList.toggle('on', !!said['도는 중']);
       el('start').disabled = !!said['도는 중'];
     }
+    if (said['훑기'] !== undefined) { drawWalking(!!said['훑기']); }
+  }
+
+  /**
+   * Show the walking switch in its current position.
+   *
+   * @param {boolean} on - Whether artists are being walked.
+   * @returns {void}
+   */
+  function drawWalking(on) {
+    var knob = el('walking');
+    knob.setAttribute('aria-pressed', on ? 'true' : 'false');
+    knob.textContent = on ? '아티스트 훑기 켬' : '아티스트 훑기 끔 · 가사만';
   }
 
   /**
@@ -422,6 +439,15 @@
   }
   el('tab-log').addEventListener('click', function () { show('log'); });
   el('tab-files').addEventListener('click', function () { show('files'); });
+
+  el('walking').addEventListener('click', function () {
+    var on = el('walking').getAttribute('aria-pressed') !== 'true';
+    drawWalking(on);
+    fetch('/api/walking', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ '켬': on })
+    });
+  });
 
   el('start').addEventListener('click', function () {
     fetch('/api/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
