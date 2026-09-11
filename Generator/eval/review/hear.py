@@ -74,6 +74,9 @@ _it: dict = {}
 #: 557 로 갈렸다. 그 폭이 잣대를 훑어 얻은 폭(80~83%)만 해서 무엇이 나은지 가릴 수가 없었다.
 #: 지어내기를 막자고 둔 되풀이지만, 재현되지 않는 것은 고칠 수가 없으므로 재현을 택한다.
 STEADY = 0.0
+#: 한 번에 푸는 30 초 창의 수. spark(GB10)는 GPU 메모리가 곧 시스템 메모리이고 컨테이너가 16 GB 로
+#: 묶여 있어, 여덟 개씩 묶으니 커널이 프로세스를 죽였다(cgroup oom_kill 2). 둘이면 넉넉하다.
+BATCH = int(os.environ.get("MORA_HEAR_BATCH", "2"))
 
 
 def by_mlx(path: str, which: str, language: str | None, vad: bool = False,
@@ -155,7 +158,7 @@ def by_torch(path: str, which: str, language: str | None, vad: bool = False,
     ask = {"task": "transcribe", "temperature": STEADY}
     if language:
         ask["language"] = language
-    said = _it["torch"](path, return_timestamps="word", chunk_length_s=30, batch_size=8,
+    said = _it["torch"](path, return_timestamps="word", chunk_length_s=30, batch_size=BATCH,
                         generate_kwargs=ask)
     return [(one["text"].strip(), int(one["timestamp"][0] * 1000))
             for one in said.get("chunks", [])

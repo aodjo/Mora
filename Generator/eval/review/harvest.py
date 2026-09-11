@@ -310,6 +310,32 @@ def take_lyrics(conn: sqlite3.Connection, lock: threading.Lock, rows: list[tuple
     return kept
 
 
+def log_step(step: dict) -> None:
+    """Write one step of the crawl as a line someone can follow with `tail -f`.
+
+    The counts alone never showed **where** the crawl went. A line per step does: which artist was
+    walked, which track carried it to whom, and what the lyric that came back starts with.
+
+    @param {dict} step - What just happened, as `take_artist` and friends report it.
+    @returns {None}
+    """
+    when = time.strftime("%H:%M:%S")
+    kind = step.get("kind")
+    if kind == "seed":
+        names = ", ".join(one["name"] for one in (step.get("artists") or [])[:4])
+        print(f"{when} 씨앗  {step['word']} → 아티스트 {len(step.get('artists') or [])}"
+              + (f" · {names}" if names else ""), flush=True)
+    elif kind == "artist":
+        found = step.get("found") or []
+        bridge = next((one for one in found if one.get("by")), None)
+        print(f"{when} 훑음  {step['name']} · 곡 {step['tracks']} (시각 {step.get('sync', 0)})"
+              f" · 새 아티스트 {len(found)}"
+              + (f" · 다리 「{bridge['by'][:24]}」→ {bridge['name']}" if bridge else ""), flush=True)
+    elif kind == "lyric" and step.get("ok"):
+        print(f"{when} 가사  {step['title'][:30]} — {step['artist'][:20]}"
+              f" · {step['lines']}줄 · “{step.get('first', '')[:24]}”", flush=True)
+
+
 def main() -> int:
     """Harvest until the target count of synced songs is reached or the queue runs dry.
 
@@ -320,7 +346,7 @@ def main() -> int:
     lock = threading.Lock()
 
     if "--새로" in sys.argv or not conn.execute("SELECT 1 FROM artists LIMIT 1").fetchone():
-        print(f"  씨앗 아티스트 {seed_artists(conn, lock)} 명", flush=True)
+        print(f"  씨앗 아티스트 {seed_artists(conn, lock, watch=log_step)} 명", flush=True)
 
     began = time.time()
     while True:
@@ -329,8 +355,10 @@ def main() -> int:
             "SELECT COUNT(*) FROM tracks WHERE state='new' AND has_sync=1"
             " AND duration BETWEEN ? AND ?", (LEAST_SECONDS, MOST_SECONDS)).fetchone()[0]
         left = conn.execute("SELECT COUNT(*) FROM artists WHERE done=0").fetchone()[0]
-        print(f"  줄 시각 있는 곡 {synced} · 받을 곡 {waiting} · 남은 아티스트 {left}"
-              f" · {time.time() - began:.0f}초", flush=True)
+        print(f"{time.strftime('%H:%M:%S')} 셈    곡 {synced:,} · 줄 "
+              f"{conn.execute('SELECT COALESCE(SUM(line_count),0) FROM tracks').fetchone()[0]:,}"
+              f" · 받을 곡 {waiting:,} · 남은 아티스트 {left:,} · {time.time() - began:.0f}초",
+              flush=True)
         if synced >= want:
             break
 
@@ -340,15 +368,14 @@ def main() -> int:
             rows = conn.execute(
                 "SELECT track_id, title, artist FROM tracks WHERE state='new' AND has_sync=1"
                 " AND duration BETWEEN ? AND ? LIMIT 200", (LEAST_SECONDS, MOST_SECONDS)).fetchall()
-            take_lyrics(conn, lock, rows)
+            take_lyrics(conn, lock, rows, watch=log_step)
             continue
         if not left:
             print("  더 볼 아티스트가 없다", flush=True)
             break
         for artist_id, name in conn.execute(
                 "SELECT id, name FROM artists WHERE done=0 LIMIT 12").fetchall():
-            got, more = take_artist(conn, lock, artist_id, name)
-            print(f"    {name}: 새 곡 {got} · 새 아티스트 {more}", flush=True)
+            take_artist(conn, lock, artist_id, name, watch=log_step)
 
     rows = conn.execute(
         "SELECT COUNT(*), SUM(line_count), SUM(duration)/3600.0 FROM tracks WHERE state='synced'").fetchone()
