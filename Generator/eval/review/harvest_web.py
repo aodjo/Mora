@@ -26,7 +26,16 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import fetch_audio  # noqa: E402
 import harvest  # noqa: E402
+
+#: 음원 쪽 기록과 음원을 둘 곳. 음원 받기(`fetch_audio.py`)를 터미널에서 돌려도 같은 곳을 쓴다.
+AUDIO_BOOK = os.environ.get("MORA_AUDIO_BOOK", "audio.db")
+AUDIO_OUT = os.environ.get("MORA_AUDIO_OUT", "vibe_audio")
+#: 대시보드에서 띄운 음원 받기 판의 상태.
+AUDIO_RUN: dict = {"도는 중": False, "total": 0, "done": 0, "dry": False, "tally": {}}
+_audio_hand: "threading.Thread | None" = None
+_audio_halt = threading.Event()
 
 #: 화면으로 흘려보낼 줄. 보는 사람이 없어도 크롤은 돌아야 하므로 넘치면 오래된 것부터 버린다.
 STEPS: "queue.Queue[dict]" = queue.Queue(maxsize=2000)
@@ -340,6 +349,59 @@ def add_seeds(words: list[str]) -> dict:
             "기다림": len(WAITING)}
 
 
+def audio_watch(event: dict) -> None:
+    """Pass the audio fetcher's progress on to the dashboard.
+
+    @param {dict} event - A `start` or `song` event from `fetch_audio.run`.
+    @returns {None}
+    """
+    if event["kind"] == "start":
+        AUDIO_RUN.update({"total": event["total"], "done": 0, "tally": {}, "dry": event["dry"]})
+    else:
+        AUDIO_RUN["done"] += 1
+        AUDIO_RUN["tally"][event["state"]] = AUDIO_RUN["tally"].get(event["state"], 0) + 1
+    push({"kind": "audio-" + event["kind"], **event, "run": dict(AUDIO_RUN)})
+
+
+def audio_start(limit: int, hands: int, dry: bool) -> bool:
+    """Start an audio fetching batch in the background, if none is running.
+
+    @param {int} limit - How many songs.
+    @param {int} hands - How many at once.
+    @param {bool} dry - Choose only.
+    @returns {bool} True when this call started it.
+    """
+    global _audio_hand
+    if _audio_hand and _audio_hand.is_alive():
+        return False
+    _audio_halt.clear()
+
+    def go() -> None:
+        AUDIO_RUN["도는 중"] = True
+        try:
+            fetch_audio.run(DB, AUDIO_BOOK, AUDIO_OUT, limit, hands, dry, watch=audio_watch,
+                            halt=_audio_halt)
+        finally:
+            AUDIO_RUN["도는 중"] = False
+            push({"kind": "audio-end", "run": dict(AUDIO_RUN)})
+
+    _audio_hand = threading.Thread(target=go, daemon=True)
+    _audio_hand.start()
+    return True
+
+
+def audio_row(one: tuple) -> dict:
+    """Shape one audio record row for the dashboard.
+
+    @param {tuple} one - A row from the list query.
+    @returns {dict} The row as the page reads it.
+    """
+    return {"번호": one[0], "상태": one[1], "영상": one[2], "영상 제목": one[3] or "",
+            "채널": one[4] or "", "영상 길이": one[5] or 0, "바이브 길이": one[6] or 0,
+            "점수": one[7], "까닭": one[8] or "", "파일": bool(one[9]), "파일 길이": one[10] or 0,
+            "때": one[11] or "", "가수": one[12] or "", "제목": one[13] or "", "사람이 고름": bool(one[14])}
+
+
 def make_app():
     """Build the little FastAPI app that serves the console and the stream.
 
@@ -588,6 +650,140 @@ def make_app():
             return {"없음": True}
         return {"번호": row[0], "제목": row[1], "아티스트": row[2], "앨범": row[3], "길이": row[4],
                 "상태": row[5], "줄 수": row[7], "줄": json.loads(row[6]) if row[6] else []}
+
+    @app.get("/api/audio/summary")
+    def audio_summary():
+        """How the audio side stands: songs per state, disk used, and the batch in flight.
+
+        @returns {dict} Counts, bytes on disk, and the running batch.
+        """
+        book = fetch_audio.open_book(AUDIO_BOOK)
+        counts = dict(book.execute("SELECT state, COUNT(*) FROM audio GROUP BY state").fetchall())
+        book.close()
+        size = 0
+        if os.path.isdir(AUDIO_OUT):
+            size = sum(entry.stat().st_size for entry in os.scandir(AUDIO_OUT) if entry.is_file())
+        return {"상태별": counts, "디스크": size, "판": dict(AUDIO_RUN)}
+
+    @app.get("/api/audio/list")
+    def audio_list(state: str = "", q: str = "", limit: int = 300, offset: int = 0):
+        """List songs on the audio side, newest first.
+
+        @param {str} [state=""] - Only this state (picked, got, suspect, miss, fail, wrong).
+        @param {str} [q=""] - Filter on artist, title or the chosen upload's title.
+        @param {int} [limit=300] - How many.
+        @param {int} [offset=0] - Skip this many.
+        @returns {list[dict]} Rows for the list.
+        """
+        book = fetch_audio.open_book(AUDIO_BOOK)
+        where, args = [], []
+        if state:
+            where.append("state = ?")
+            args.append(state)
+        if q:
+            where.append("(artist LIKE ? OR title LIKE ? OR video_title LIKE ?)")
+            args += [f"%{q}%"] * 3
+        rows = book.execute(
+            "SELECT track_id, state, video_id, video_title, channel, video_duration, want_duration,"
+            " score, why, file, file_duration, tried_at, artist, title, manual FROM audio" +
+            (" WHERE " + " AND ".join(where) if where else "") +
+            " ORDER BY tried_at DESC LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
+        book.close()
+        return [audio_row(one) for one in rows]
+
+    @app.get("/api/audio/one/{track_id}")
+    def audio_one(track_id: int):
+        """One song in full: the chosen upload, every candidate, and the first lyric lines to check by ear.
+
+        @param {int} track_id - Which song.
+        @returns {dict} The song.
+        """
+        book = fetch_audio.open_book(AUDIO_BOOK)
+        row = book.execute(
+            "SELECT track_id, state, video_id, video_title, channel, video_duration, want_duration,"
+            " score, why, file, file_duration, tried_at, artist, title, manual, candidates, album"
+            " FROM audio WHERE track_id=?", (track_id,)).fetchone()
+        book.close()
+        if not row:
+            return {"없음": True}
+        lines = []
+        conn = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+        got = conn.execute("SELECT lines FROM tracks WHERE track_id=?", (track_id,)).fetchone()
+        conn.close()
+        if got and got[0]:
+            lines = json.loads(got[0])[:8]
+        return {**audio_row(row), "후보": json.loads(row[15] or "[]"), "앨범": row[16] or "",
+                "첫 줄": lines}
+
+    @app.post("/api/audio/start")
+    async def audio_begin(request: Request):
+        """Start an audio batch from the dashboard.
+
+        @param {Request} request - Carries `{"곡": 100, "동시": 3, "고르기만": false}`.
+        @returns {dict} Whether it started.
+        """
+        asked = await request.json()
+        began = audio_start(int(asked.get("곡") or 100), int(asked.get("동시") or 3),
+                            bool(asked.get("고르기만")))
+        return {"시작": began}
+
+    @app.post("/api/audio/stop")
+    def audio_halt():
+        """Stop the audio batch after the songs already in flight.
+
+        @returns {dict} Confirmation.
+        """
+        _audio_halt.set()
+        return {"멈춤": True}
+
+    @app.post("/api/audio/choose")
+    async def audio_choose(request: Request):
+        """Fetch a different candidate for one song, chosen by a person.
+
+        @param {Request} request - Carries `{"번호": 123, "영상": "abc"}`.
+        @returns {dict} Confirmation; the result arrives on the stream.
+        """
+        asked = await request.json()
+        track_id, video_id = int(asked["번호"]), str(asked["영상"])
+
+        def go() -> None:
+            result = fetch_audio.choose(AUDIO_BOOK, AUDIO_OUT, track_id, video_id)
+            push({"kind": "audio-song", **result, "run": dict(AUDIO_RUN)})
+
+        threading.Thread(target=go, daemon=True).start()
+        return {"받는 중": True}
+
+    @app.post("/api/audio/mark")
+    async def audio_mark(request: Request):
+        """Mark a song's pick as wrong, or put it back to be searched again.
+
+        @param {Request} request - Carries `{"번호": 123, "상태": "wrong"}` or `{"번호": 123, "상태": "again"}`.
+        @returns {dict} The new state.
+        """
+        asked = await request.json()
+        track_id, state = int(asked["번호"]), str(asked["상태"])
+        book = fetch_audio.open_book(AUDIO_BOOK)
+        if state == "again":
+            book.execute("DELETE FROM audio WHERE track_id=?", (track_id,))
+        else:
+            book.execute("UPDATE audio SET state=?, tried_at=datetime('now') WHERE track_id=?",
+                         (state, track_id))
+        book.commit()
+        book.close()
+        return {"번호": track_id, "상태": state}
+
+    @app.get("/media/{track_id}")
+    def media(track_id: int):
+        """Serve a downloaded song so the dashboard can play it.
+
+        @param {int} track_id - Which song.
+        @returns {FileResponse} The audio file.
+        """
+        from fastapi import HTTPException
+        path = os.path.join(AUDIO_OUT, f"{track_id}.m4a")
+        if not os.path.exists(path):
+            raise HTTPException(404, "받은 음원이 없다")
+        return FileResponse(path, media_type="audio/mp4")
 
     @app.get("/stream")
     def stream():

@@ -6,6 +6,7 @@
 <title>수확 지켜보기</title>
 <style>
   :root {
+    color-scheme: dark;
     --ground: #0d1211;
     --panel: #121918;
     --raise: #182120;
@@ -60,6 +61,93 @@
   button.push.switch[aria-pressed="true"] { border-color: var(--go); color: var(--go); }
   button.push.switch[aria-pressed="false"] { border-color: var(--seed); color: var(--seed); }
   .row .wait { color: var(--seed); }
+
+  /* ── 음원 ── */
+  .audio { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 42%); width: 100%; min-height: 0; }
+  @media (max-width: 1000px) {
+    .audio { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+    .adetail { border-left: 0; border-top: 1px solid var(--line); }
+  }
+  .arow > div { min-width: 0; }
+  .alist:focus { outline: none; }
+  .alist:focus-visible { outline: 1px solid var(--go); outline-offset: -1px; }
+  .alist .more { margin: 10px 12px 24px; }
+  .verdict { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; color: var(--mid); font-size: 12.5px; }
+  .verdict .badge { padding: 2px 8px; }
+  .busy { margin: 0; color: var(--seed); font-size: 12.5px; }
+  .cwrap { overflow-x: auto; }
+  .cands td:first-child { overflow-wrap: anywhere; }
+  .cands td.n { white-space: pre; }
+  .say button:disabled { cursor: default; opacity: .6; }
+  .adetail .put input { font: inherit; }
+  .apanel { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .actl, .afilter {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  .actl label { color: var(--mid); display: flex; align-items: center; gap: 5px; }
+  .actl input[type="number"] {
+    width: 74px; font: inherit; color: var(--ink); background: var(--raise);
+    border: 1px solid var(--line); border-radius: 3px; padding: 4px 7px;
+  }
+  .actl .check input { accent-color: var(--go); }
+  .aprog { flex: 1 1 120px; height: 6px; background: var(--raise); border-radius: 3px; overflow: hidden; min-width: 80px; }
+  .aprog i { display: block; height: 100%; width: 0; background: var(--go); transition: width .3s; }
+  .aprog-t { font-family: var(--mono); font-size: 12px; color: var(--mid); }
+  .states { display: flex; gap: 4px; flex-wrap: wrap; }
+  .states button {
+    font: inherit; font-size: 12px; color: var(--mid); background: var(--raise);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; cursor: pointer;
+  }
+  .states button[aria-selected="true"] { color: var(--ink); border-color: var(--go); }
+  .states button b { font-family: var(--mono); font-weight: 500; margin-left: 4px; }
+  .afilter input[type="search"] {
+    font: inherit; flex: 1 1 160px; min-width: 120px; color: var(--ink); background: var(--raise);
+    border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px;
+  }
+  .adisk { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+  .alist { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+  .arow {
+    display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+    padding: 6px 12px; border-bottom: 1px solid rgba(32,43,40,.55); cursor: pointer;
+  }
+  .arow:hover { background: rgba(79,195,161,.06); }
+  .arow[aria-selected="true"] { background: rgba(79,195,161,.14); }
+  .arow .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .arow .sub { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .arow .num { text-align: right; font-family: var(--mono); font-size: 12px; color: var(--mid); white-space: nowrap; }
+  .arow .num small { color: var(--dim); }
+  .badge { font-size: 11px; text-align: center; padding: 2px 0; border-radius: 3px; border: 1px solid var(--line); color: var(--mid); }
+  .s-got { color: var(--go); border-color: var(--go); }
+  .s-picked { color: var(--lyric); border-color: var(--lyric); }
+  .s-suspect { color: var(--seed); border-color: var(--seed); }
+  .s-miss { color: var(--dim); }
+  .s-fail, .s-wrong { color: var(--stop); border-color: var(--stop); }
+  .adetail { border-left: 1px solid var(--line); overflow-y: auto; min-height: 0; padding: 14px 16px 40px; display: flex; flex-direction: column; gap: 14px; }
+  .adetail h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  .adetail h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--dim); font-weight: 600; }
+  .adetail .meta { color: var(--mid); font-size: 12.5px; margin: 3px 0 0; }
+  .video { display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 12px; align-items: start; }
+  .video img { width: 168px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 3px; background: var(--raise); display: block; }
+  .video a { color: var(--lyric); text-decoration: none; }
+  .video a:hover { text-decoration: underline; }
+  .video .vt { font-weight: 500; overflow-wrap: anywhere; }
+  .video .vm { color: var(--mid); font-size: 12.5px; margin-top: 4px; }
+  .adetail audio { width: 100%; }
+  .say { display: flex; flex-direction: column; }
+  .say button {
+    display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 10px; text-align: left;
+    font: inherit; color: var(--ink); background: none; border: 0; padding: 3px 4px; cursor: pointer; border-radius: 3px;
+  }
+  .say button:hover { background: rgba(79,195,161,.08); }
+  .say button em { font-style: normal; font-family: var(--mono); font-size: 11.5px; color: var(--dim); padding-top: 1px; }
+  .cands { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .cands td { padding: 5px 6px; border-bottom: 1px solid rgba(32,43,40,.6); vertical-align: top; }
+  .cands td.n { font-family: var(--mono); color: var(--mid); white-space: nowrap; text-align: right; }
+  .cands tr.on td { background: rgba(79,195,161,.1); }
+  .cands .why { color: var(--dim); font-size: 11.5px; }
+  .cands a { color: var(--lyric); text-decoration: none; }
+  .deeds { display: flex; gap: 6px; flex-wrap: wrap; }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--go); outline-offset: 1px; }
 
   main { flex: 1 1 auto; min-height: 0; display: flex; }
@@ -126,6 +214,7 @@
   <nav class="tabs" role="tablist" aria-label="보기">
     <button id="tab-log" role="tab" aria-selected="true" type="button">로그</button>
     <button id="tab-files" role="tab" aria-selected="false" type="button">자료</button>
+    <button id="tab-audio" role="tab" aria-selected="false" type="button">음원</button>
   </nav>
   <div class="stats">
     <span><i>곡</i><b id="n-song">0</b></span>
@@ -173,6 +262,30 @@
         <h2>지금 씨앗 <span id="seed-n" style="color:var(--dim);text-transform:none;letter-spacing:0"></span></h2>
       </section>
       <div class="chips" id="chips"></div>
+    </div>
+  </div>
+
+  <div class="audio" id="view-audio" hidden>
+    <div class="apanel">
+      <div class="actl">
+        <label>곡 <input id="a-limit" type="number" min="1" max="100000" value="100"></label>
+        <label>동시 <input id="a-hands" type="number" min="1" max="8" value="3"></label>
+        <label class="check"><input id="a-dry" type="checkbox" checked> 고르기만</label>
+        <button class="push main" id="a-start" type="button">고르기 시작</button>
+        <button class="push" id="a-stop" type="button">멈춤</button>
+        <div class="aprog" title="이번 판 진행"><i id="a-bar"></i></div>
+        <span class="aprog-t" id="a-prog">쉬는 중</span>
+      </div>
+      <div class="afilter">
+        <div class="states" id="a-states" role="tablist" aria-label="상태로 거르기"></div>
+        <input id="a-find" type="search" placeholder="가수 · 제목 찾기" autocomplete="off">
+        <span class="adisk" id="a-disk"></span>
+      </div>
+      <div class="alist" id="a-list" tabindex="0" role="listbox" aria-label="곡 · ↑↓ 로 옮기고 스페이스로 듣는다"></div>
+    </div>
+    <div class="adetail" id="a-detail">
+      <p class="empty">왼쪽에서 곡을 고르면 어느 영상을 왜 골랐는지, 다른 후보는 뭐였는지가 여기 나온다.
+        목록에서 ↑↓ 로 옮기고 스페이스로 듣는다.</p>
     </div>
   </div>
 
@@ -435,21 +548,668 @@
   })();
 
   /**
-   * Switch between the log and the browser.
+   * The audio dashboard: which YouTube upload each song was matched to, why, and how it sounds.
    *
-   * @param {string} which - "log" or "files".
+   * @returns {object} `load` to fill it on first sight, `hear` for stream steps, and `poll` for
+   *   records written by a terminal run the server cannot see.
+   */
+  var tuner = (function () {
+    var NAMES = { got: '받음', picked: '고름', suspect: '의심', miss: '못 찾음', fail: '실패', wrong: '틀림' }; /** How each record state reads on the page. */
+    var ORDER = ['got', 'picked', 'suspect', 'miss', 'fail', 'wrong']; /** The order the state filters appear in. */
+    var PAGE = 300; /** How many rows one list request brings. */
+    var list = el('a-list');
+    var detail = el('a-detail');
+    var only = '';
+    var open = null;
+    var shown = 0;
+    var counts = {};
+    var asked = 0;
+    var typing = null;
+    var summing = null;
+    var loaded = false;
+    var pending = {};
+
+    /**
+     * Read a response body as JSON.
+     *
+     * @param {Response} answer - What `fetch` resolved with.
+     * @returns {Promise<object>} The parsed body.
+     */
+    function json(answer) { return answer.json(); }
+
+    /**
+     * Send a JSON body and read the JSON answer.
+     *
+     * @param {string} path - Where to post.
+     * @param {object} [body={}] - What to send.
+     * @returns {Promise<object>} The parsed answer.
+     */
+    function post(path, body) {
+      return fetch(path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {})
+      }).then(json);
+    }
+
+    /**
+     * Turn seconds into `분:초`.
+     *
+     * @param {number} seconds - A length in seconds.
+     * @returns {string} The same length as `3:25`, or a dash when unknown.
+     */
+    function mmss(seconds) {
+      if (!seconds) { return '—'; }
+      var whole = Math.round(seconds);
+      var sec = whole % 60;
+      return Math.floor(whole / 60) + ':' + (sec < 10 ? '0' : '') + sec;
+    }
+
+    /**
+     * Turn a lyric line's start into `분:초.십분의일`, the way the lyric browser shows it.
+     *
+     * @param {number} ms - A time in milliseconds.
+     * @returns {string} The same time as `1:04.2`.
+     */
+    function stamp(ms) {
+      var tenths = Math.floor(Math.max(0, ms) / 100);
+      var min = Math.floor(tenths / 600);
+      var sec = (tenths - min * 600) / 10;
+      return min + ':' + (sec < 10 ? '0' : '') + sec.toFixed(1);
+    }
+
+    /**
+     * Say how far one length is from the length Vibe gives.
+     *
+     * @param {number} got - The upload's or the file's length in seconds.
+     * @param {number} want - Vibe's length in seconds.
+     * @returns {string} A signed gap such as `+1.2초`, or an empty string when either is missing.
+     */
+    function off(got, want) {
+      if (!got || !want) { return ''; }
+      var gap = got - want;
+      return (gap >= 0 ? '+' : '−') + Math.abs(gap).toFixed(1) + '초';
+    }
+
+    /**
+     * Turn a byte count into the unit a person reads.
+     *
+     * @param {number} bytes - A size in bytes.
+     * @returns {string} The same size as `1.4 GB`.
+     */
+    function size(bytes) {
+      var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      var at = 0;
+      while (bytes >= 1024 && at < units.length - 1) { bytes /= 1024; at += 1; }
+      return (at ? bytes.toFixed(1) : bytes) + ' ' + units[at];
+    }
+
+    /**
+     * Pull a YouTube video id out of whatever a person pasted.
+     *
+     * @param {string} text - A watch URL, a youtu.be link, a shorts link, or a bare id.
+     * @returns {string} The 11-character id, or an empty string when none is found.
+     */
+    function videoOf(text) {
+      var found = /(?:v=|youtu\.be\/|shorts\/|embed\/)([A-Za-z0-9_-]{11})/.exec(text) ||
+        /^\s*([A-Za-z0-9_-]{11})\s*$/.exec(text);
+      return found ? found[1] : '';
+    }
+
+    /**
+     * Draw the batch in flight: the bar, the count per state, and the start button.
+     *
+     * @param {object} run - `{도는 중, total, done, dry, tally}` from the server.
+     * @returns {void}
+     */
+    function drawRun(run) {
+      if (!run) { return; }
+      var going = !!run['도는 중'];
+      var total = run.total || 0;
+      var done = run.done || 0;
+      var tally = run.tally || {};
+      el('a-bar').style.width = total ? Math.min(100, done / total * 100) + '%' : '0';
+      el('a-start').disabled = going;
+      var word = going ? (run.dry ? '고르는 중 ' : '받는 중 ')
+        : (!total ? '쉬는 중' : (done < total ? '멈춤 ' : '끝남 '));
+      var parts = ORDER.filter(function (key) { return tally[key]; })
+        .map(function (key) { return NAMES[key] + ' ' + tally[key]; });
+      el('a-prog').textContent = word + (total ? done + '/' + total : '') +
+        (parts.length ? ' · ' + parts.join(' · ') : '');
+    }
+
+    /**
+     * Draw the state filters with how many songs sit in each.
+     *
+     * @returns {void}
+     */
+    function drawStates() {
+      var box = el('a-states');
+      var all = ORDER.reduce(function (sum, key) { return sum + (counts[key] || 0); }, 0);
+      box.innerHTML = '';
+      [''].concat(ORDER).forEach(function (key) {
+        var pill = document.createElement('button');
+        pill.type = 'button';
+        pill.setAttribute('role', 'tab');
+        pill.setAttribute('aria-selected', key === only ? 'true' : 'false');
+        pill.innerHTML = '<span></span><b></b>';
+        pill.firstChild.textContent = key ? NAMES[key] : '전체';
+        pill.lastChild.textContent = Number(key ? counts[key] || 0 : all).toLocaleString('ko-KR');
+        if (key) { pill.lastChild.className = 's-' + key; }
+        pill.addEventListener('click', function () {
+          only = key;
+          drawStates();
+          loadList(false);
+        });
+        box.appendChild(pill);
+      });
+    }
+
+    /**
+     * Load the counts, the disk use and the batch state.
+     *
+     * @returns {void}
+     */
+    function loadSummary() {
+      fetch('/api/audio/summary').then(json).then(function (said) {
+        counts = said['상태별'] || {};
+        drawStates();
+        el('a-disk').textContent = '음원 ' + size(said['디스크'] || 0);
+        drawRun(said['판']);
+      });
+    }
+
+    /**
+     * Load the counts again soon, at most once every second and a half.
+     *
+     * @returns {void}
+     */
+    function soonSummary() {
+      if (summing) { return; }
+      summing = window.setTimeout(function () { summing = null; loadSummary(); }, 1500);
+    }
+
+    /**
+     * Turn one list row into its element.
+     *
+     * @param {object} row - A row from `/api/audio/list`, or one made from a stream step.
+     * @returns {HTMLElement} The row, wired to open the song on click.
+     */
+    function rowOf(row) {
+      var item = document.createElement('div');
+      item.className = 'arow';
+      item.setAttribute('role', 'option');
+      item.dataset.id = row['번호'];
+      item.setAttribute('aria-selected', String(row['번호']) === String(open) ? 'true' : 'false');
+      item.innerHTML = '<span class="badge"></span><div><div class="name"></div><div class="sub"></div></div>' +
+        '<div class="num"></div>';
+      item.children[0].className = 'badge s-' + row['상태'];
+      item.children[0].textContent = NAMES[row['상태']] || row['상태'];
+      item.querySelector('.name').textContent = row['제목'] + ' — ' + row['가수'];
+      item.querySelector('.sub').textContent = row['영상']
+        ? (row['사람이 고름'] ? '손으로 고름 · ' : '') + (row['영상 제목'] || row['영상']) + ' · ' + row['채널']
+        : (row['까닭'] || '길이가 맞는 영상이 없다');
+      var num = item.querySelector('.num');
+      num.textContent = off(row['파일 길이'] || row['영상 길이'], row['바이브 길이']) || '—';
+      if (row['점수'] !== null && row['점수'] !== undefined) {
+        var mark = document.createElement('small');
+        mark.textContent = ' ' + Math.round(row['점수']) + '점';
+        num.appendChild(mark);
+      }
+      item.title = row['제목'] + ' — ' + row['가수'] + '\n' + (row['영상 제목'] || '') +
+        (row['까닭'] ? '\n' + row['까닭'] : '');
+      item.addEventListener('click', function () {
+        select(item);
+        list.focus({ preventScroll: true });
+      });
+      return item;
+    }
+
+    /**
+     * Mark one row as chosen and open its song.
+     *
+     * @param {HTMLElement} item - The row.
+     * @returns {void}
+     */
+    function select(item) {
+      Array.prototype.forEach.call(list.querySelectorAll('.arow'), function (other) {
+        other.setAttribute('aria-selected', other === item ? 'true' : 'false');
+      });
+      open = item.dataset.id;
+      item.scrollIntoView({ block: 'nearest' });
+      loadOne(open);
+    }
+
+    /**
+     * Load the list for the current filter and search, or the next page of it.
+     *
+     * @param {boolean} more - Append the next page instead of starting over.
+     * @returns {void}
+     */
+    function loadList(more) {
+      var ticket = ++asked;
+      var word = el('a-find').value.trim();
+      fetch('/api/audio/list?limit=' + PAGE + '&offset=' + (more ? shown : 0) + '&state=' + only +
+            '&q=' + encodeURIComponent(word))
+        .then(json).then(function (rows) {
+          if (ticket !== asked) { return; }
+          loaded = true;
+          if (!more) { list.innerHTML = ''; shown = 0; }
+          var tail = list.querySelector('.more');
+          if (tail) { list.removeChild(tail); }
+          if (!rows.length && !shown) {
+            list.innerHTML = '<p class="empty">' + (only || word ? '맞는 곡 없음'
+              : '아직 기록이 없다. 시작을 누르면 고른 곡이 여기에 쌓인다.') + '</p>';
+            return;
+          }
+          rows.forEach(function (row) { list.appendChild(rowOf(row)); });
+          shown += rows.length;
+          if (rows.length === PAGE) {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'push more';
+            button.textContent = '더 보기';
+            button.addEventListener('click', function () { loadList(true); });
+            list.appendChild(button);
+          }
+        });
+    }
+
+    /**
+     * Load one song in full and draw it on the right.
+     *
+     * @param {string|number} id - The track id.
+     * @returns {void}
+     */
+    function loadOne(id) {
+      fetch('/api/audio/one/' + id).then(json).then(function (song) {
+        if (String(id) === String(open)) { drawOne(song); }
+      });
+    }
+
+    /**
+     * Ask the server to fetch a given upload for a song, and hold the pane until it lands.
+     *
+     * @param {number} id - The track id.
+     * @param {string} video - The upload to fetch.
+     * @returns {void}
+     */
+    function fetchVideo(id, video) {
+      pending[id] = video;
+      post('/api/audio/choose', { '번호': id, '영상': video });
+      loadOne(id);
+    }
+
+    /**
+     * Change a song's record: `wrong` keeps it but marks the pick as wrong, `again` forgets it so
+     * the next batch searches it afresh.
+     *
+     * @param {number} id - The track id.
+     * @param {string} state - "wrong" or "again".
+     * @returns {void}
+     */
+    function mark(id, state) {
+      post('/api/audio/mark', { '번호': id, '상태': state }).then(function () {
+        var item = list.querySelector('.arow[data-id="' + id + '"]');
+        if (state === 'again') {
+          if (item) { list.removeChild(item); }
+          detail.innerHTML = '<p class="empty">기록을 지웠다. 다음 판에서 이 곡을 처음부터 다시 찾는다.</p>';
+        } else {
+          if (item) { item.children[0].className = 'badge s-wrong'; item.children[0].textContent = NAMES.wrong; }
+          loadOne(id);
+        }
+        loadSummary();
+      });
+    }
+
+    /**
+     * Make a small labelled section for the detail pane.
+     *
+     * @param {string} label - The section heading.
+     * @returns {HTMLElement} The section, with its heading already in place.
+     */
+    function part(label) {
+      var box = document.createElement('section');
+      var head = document.createElement('h3');
+      head.textContent = label;
+      box.appendChild(head);
+      detail.appendChild(box);
+      return box;
+    }
+
+    /**
+     * Draw one song: the chosen upload, a player for the file, the first lyric lines to check by
+     * ear, and every candidate with a button to take it instead.
+     *
+     * @param {object} song - The answer from `/api/audio/one`.
+     * @returns {void}
+     */
+    function drawOne(song) {
+      detail.innerHTML = '';
+      if (song['없음']) {
+        detail.innerHTML = '<p class="empty">기록이 없다 — 다시 찾기로 지운 곡일 수 있다.</p>';
+        return;
+      }
+      var id = song['번호'];
+      var video = song['영상'];
+      var want = song['바이브 길이'];
+      var waiting = pending[id];
+
+      var head = document.createElement('div');
+      head.innerHTML = '<h2></h2><p class="meta"></p>';
+      head.firstChild.textContent = song['제목'];
+      head.lastChild.textContent = [song['가수'], song['앨범'], '바이브 ' + mmss(want), '#' + id]
+        .filter(Boolean).join(' · ');
+      detail.appendChild(head);
+
+      var verdict = document.createElement('div');
+      verdict.className = 'verdict';
+      verdict.innerHTML = '<span class="badge"></span><span></span>';
+      verdict.firstChild.className = 'badge s-' + song['상태'];
+      verdict.firstChild.textContent = NAMES[song['상태']] || song['상태'];
+      verdict.lastChild.textContent = (song['점수'] !== null && song['점수'] !== undefined
+        ? Math.round(song['점수']) + '점 · ' : '') + (song['까닭'] || (video ? '' : '길이가 맞는 영상이 없다'));
+      detail.appendChild(verdict);
+
+      if (waiting) {
+        var busy = document.createElement('p');
+        busy.className = 'busy';
+        busy.textContent = '받는 중 · youtu.be/' + waiting + ' — 끝나면 이 칸이 바뀐다';
+        detail.appendChild(busy);
+      }
+
+      var player = null;
+      if (video) {
+        var link = 'https://www.youtube.com/watch?v=' + encodeURIComponent(video);
+        var box = document.createElement('div');
+        box.className = 'video';
+        box.innerHTML = '<a target="_blank" rel="noopener"><img alt="" loading="lazy"></a>' +
+          '<div><a class="vt" target="_blank" rel="noopener"></a><div class="vm"></div><div class="vm"></div></div>';
+        Array.prototype.forEach.call(box.querySelectorAll('a'), function (anchor) { anchor.href = link; });
+        box.querySelector('img').src = 'https://i.ytimg.com/vi/' + encodeURIComponent(video) + '/mqdefault.jpg';
+        box.querySelector('.vt').textContent = song['영상 제목'] || video;
+        var metas = box.querySelectorAll('.vm');
+        metas[0].textContent = (song['채널'] || '') + ' · youtu.be/' + video;
+        metas[1].textContent = '영상 ' + mmss(song['영상 길이']) + ' ' + off(song['영상 길이'], want) +
+          (song['파일'] ? ' · 받은 파일 ' + mmss(song['파일 길이']) + ' ' + off(song['파일 길이'], want) : '');
+        detail.appendChild(box);
+      }
+
+      if (song['파일']) {
+        player = document.createElement('audio');
+        player.controls = true;
+        player.preload = 'metadata';
+        player.src = '/media/' + id + '?at=' + encodeURIComponent(song['때'] || '');
+        detail.appendChild(player);
+      }
+
+      var deeds = document.createElement('div');
+      deeds.className = 'deeds';
+      if (video && !song['파일']) {
+        var take = document.createElement('button');
+        take.type = 'button';
+        take.className = 'push main';
+        take.textContent = '이 영상 받기';
+        take.disabled = !!waiting;
+        take.addEventListener('click', function () { fetchVideo(id, video); });
+        deeds.appendChild(take);
+      }
+      if (video && song['상태'] !== 'wrong') {
+        var wrong = document.createElement('button');
+        wrong.type = 'button';
+        wrong.className = 'push';
+        wrong.textContent = '틀림';
+        wrong.title = '고른 영상이 이 곡이 아니다. 기록은 남기고 학습에서 뺀다.';
+        wrong.addEventListener('click', function () { mark(id, 'wrong'); });
+        deeds.appendChild(wrong);
+      }
+      var again = document.createElement('button');
+      again.type = 'button';
+      again.className = 'push';
+      again.textContent = '다시 찾기';
+      again.title = '이 곡의 기록을 지워서 다음 판에서 처음부터 다시 찾게 한다.';
+      again.addEventListener('click', function () { mark(id, 'again'); });
+      deeds.appendChild(again);
+      detail.appendChild(deeds);
+
+      var lines = song['첫 줄'] || [];
+      if (lines.length) {
+        var words = part(player ? '첫 줄 · 누르면 그 자리부터 듣는다' : '첫 줄 · 누르면 유튜브 그 자리가 열린다');
+        var say = document.createElement('div');
+        say.className = 'say';
+        lines.forEach(function (one) {
+          var line = document.createElement('button');
+          line.type = 'button';
+          line.innerHTML = '<em></em><span></span>';
+          line.firstChild.textContent = stamp(one.at);
+          line.lastChild.textContent = one.text;
+          line.disabled = !player && !video;
+          line.addEventListener('click', function () {
+            if (player) {
+              player.currentTime = Math.max(0, one.at / 1000 - 0.5);
+              player.play();
+            } else if (video) {
+              window.open('https://www.youtube.com/watch?v=' + encodeURIComponent(video) +
+                          '&t=' + Math.max(0, Math.floor(one.at / 1000) - 1) + 's', '_blank', 'noopener');
+            }
+          });
+          say.appendChild(line);
+        });
+        words.appendChild(say);
+      }
+
+      var cands = song['후보'] || [];
+      var others = part(cands.length ? '후보 ' + cands.length + '개 · 점수 순' : '후보 없음');
+      if (cands.length) {
+        var wrap = document.createElement('div');
+        wrap.className = 'cwrap';
+        var table = document.createElement('table');
+        table.className = 'cands';
+        cands.forEach(function (one) {
+          var row = document.createElement('tr');
+          var chosen = one.id === video;
+          if (chosen) { row.className = 'on'; }
+          row.innerHTML = '<td><a target="_blank" rel="noopener"></a><div class="why"></div></td>' +
+            '<td class="n"></td><td class="n"></td><td></td>';
+          var anchor = row.querySelector('a');
+          anchor.href = 'https://www.youtube.com/watch?v=' + encodeURIComponent(one.id);
+          anchor.textContent = one.title || one.id;
+          row.querySelector('.why').textContent = [one.channel, one['까닭']].filter(Boolean).join(' · ');
+          row.children[1].textContent = mmss(one.duration) + '\n' + (off(one.duration, want) || '');
+          row.children[2].textContent = one['점수'] !== null && one['점수'] !== undefined
+            ? Math.round(one['점수']) + '점' : '';
+          if (chosen && song['파일']) {
+            row.children[3].innerHTML = '<span class="why">지금 것</span>';
+          } else {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'push tiny';
+            button.textContent = chosen ? '받기' : '이것으로 받기';
+            button.disabled = !!waiting;
+            button.addEventListener('click', function () { fetchVideo(id, one.id); });
+            row.children[3].appendChild(button);
+          }
+          table.appendChild(row);
+        });
+        wrap.appendChild(table);
+        others.appendChild(wrap);
+      }
+
+      var put = document.createElement('div');
+      put.className = 'put';
+      put.innerHTML = '<input id="a-other" type="text" autocomplete="off" placeholder="다른 유튜브 주소나 영상 번호">' +
+        '<button class="push" type="button">이 영상으로 받기</button>';
+      var field = put.firstChild;
+      var send = put.lastChild;
+      send.disabled = !!waiting;
+      send.addEventListener('click', function () {
+        var picked = videoOf(field.value);
+        if (!picked) {
+          field.value = '';
+          field.placeholder = '영상 번호를 못 찾았다 — youtube.com/watch?v=… 꼴로 넣어 줘';
+          return;
+        }
+        fetchVideo(id, picked);
+      });
+      field.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') { send.click(); }
+      });
+      others.appendChild(put);
+    }
+
+    /**
+     * Turn a stream step into the same shape a list row has.
+     *
+     * @param {object} step - An `audio-song` step.
+     * @returns {object} The row.
+     */
+    function rowFromStep(step) {
+      var video = step.video || {};
+      return {
+        '번호': step.track_id, '상태': step.state, '영상': video.id || null, '영상 제목': video.title || '',
+        '채널': video.channel || '', '영상 길이': video.duration || 0, '바이브 길이': step.want || 0,
+        '점수': step.score, '까닭': step.why || '', '파일': !!step.file, '파일 길이': step.real || 0,
+        '가수': step.artist || '', '제목': step.title || '', '사람이 고름': !!step.manual
+      };
+    }
+
+    /**
+     * Whether a row belongs in the list as it is filtered right now.
+     *
+     * @param {object} row - A list row.
+     * @returns {boolean} True when it passes the state filter and the search box.
+     */
+    function fits(row) {
+      var word = el('a-find').value.trim().toLowerCase();
+      if (only && row['상태'] !== only) { return false; }
+      if (!word) { return true; }
+      return [row['가수'], row['제목'], row['영상 제목']].some(function (text) {
+        return (text || '').toLowerCase().indexOf(word) >= 0;
+      });
+    }
+
+    /**
+     * Take one audio step off the stream: move the bar, and put the finished song at the top.
+     *
+     * @param {object} step - An `audio-start`, `audio-song` or `audio-end` step.
+     * @returns {void}
+     */
+    function hear(step) {
+      drawRun(step.run);
+      soonSummary();
+      if (step.kind !== 'audio-song' || !step.track_id) { return; }
+      delete pending[step.track_id];
+      if (!loaded) { return; }
+      var row = rowFromStep(step);
+      var old = list.querySelector('.arow[data-id="' + row['번호'] + '"]');
+      if (!fits(row)) {
+        if (old) { list.removeChild(old); }
+      } else if (old) {
+        list.replaceChild(rowOf(row), old);
+      } else {
+        var empty = list.querySelector('.empty');
+        if (empty) { list.removeChild(empty); }
+        list.insertBefore(rowOf(row), list.firstChild);
+        shown += 1;
+      }
+      if (String(row['번호']) === String(open)) { loadOne(open); }
+    }
+
+    /**
+     * Name the start button after what the batch will do, so it is not mistaken for the harvest's.
+     *
+     * @returns {void}
+     */
+    function nameStart() {
+      el('a-start').textContent = el('a-dry').checked ? '고르기 시작' : '받기 시작';
+    }
+
+    /**
+     * Keep the start form as the reader left it last time.
+     *
+     * @returns {void}
+     */
+    function keepForm() {
+      nameStart();
+      try {
+        localStorage.setItem('mora-audio-form', JSON.stringify({
+          limit: el('a-limit').value, hands: el('a-hands').value, dry: el('a-dry').checked
+        }));
+      } catch (ignored) { /* storage may be blocked */ }
+    }
+
+    try {
+      var kept = JSON.parse(localStorage.getItem('mora-audio-form') || 'null');
+      if (kept) {
+        el('a-limit').value = kept.limit || 100;
+        el('a-hands').value = kept.hands || 3;
+        el('a-dry').checked = !!kept.dry;
+      }
+    } catch (ignored) { /* storage may be blocked */ }
+    nameStart();
+    ['a-limit', 'a-hands', 'a-dry'].forEach(function (id) { el(id).addEventListener('change', keepForm); });
+
+    el('a-start').addEventListener('click', function () {
+      el('a-start').disabled = true;
+      post('/api/audio/start', {
+        '곡': Math.max(1, Number(el('a-limit').value) || 100),
+        '동시': Math.min(8, Math.max(1, Number(el('a-hands').value) || 3)),
+        '고르기만': el('a-dry').checked
+      }).then(function (said) {
+        if (!said['시작']) { el('a-prog').textContent = '이미 도는 판이 있다'; }
+      });
+    });
+    el('a-stop').addEventListener('click', function () {
+      post('/api/audio/stop').then(function () {
+        el('a-prog').textContent = '멈추는 중 · 받던 곡까지는 마친다';
+      });
+    });
+    el('a-find').addEventListener('input', function () {
+      window.clearTimeout(typing);
+      typing = window.setTimeout(function () { loadList(false); }, 220);
+    });
+    list.addEventListener('keydown', function (event) {
+      var current = list.querySelector('.arow[aria-selected="true"]');
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        var next = !current ? list.querySelector('.arow')
+          : (event.key === 'ArrowDown' ? current.nextElementSibling : current.previousElementSibling);
+        if (next && next.classList.contains('arow')) { select(next); }
+      } else if (event.key === ' ') {
+        var player = detail.querySelector('audio');
+        if (player) {
+          event.preventDefault();
+          if (player.paused) { player.play(); } else { player.pause(); }
+        }
+      }
+    });
+
+    return {
+      load: function () { loadSummary(); if (!loaded) { loadList(false); } },
+      hear: hear,
+      poll: loadSummary
+    };
+  })();
+
+  /**
+   * Switch between the log, the lyric browser and the audio dashboard, and remember it in the address.
+   *
+   * @param {string} which - "log", "files" or "audio".
    * @returns {void}
    */
   function show(which) {
-    var onFiles = which === 'files';
-    el('view-files').hidden = !onFiles;
-    el('view-log').hidden = onFiles;
-    el('tab-files').setAttribute('aria-selected', onFiles ? 'true' : 'false');
-    el('tab-log').setAttribute('aria-selected', onFiles ? 'false' : 'true');
-    if (onFiles && !el('artists').childNodes.length) { finder.load(); }
+    if (['log', 'files', 'audio'].indexOf(which) < 0) { which = 'log'; }
+    ['log', 'files', 'audio'].forEach(function (name) {
+      el('view-' + name).hidden = name !== which;
+      el('tab-' + name).setAttribute('aria-selected', name === which ? 'true' : 'false');
+    });
+    if (which === 'files' && !el('artists').childNodes.length) { finder.load(); }
+    if (which === 'audio') { tuner.load(); }
+    if (window.location.hash !== '#' + which) { window.history.replaceState(null, '', '#' + which); }
   }
   el('tab-log').addEventListener('click', function () { show('log'); });
   el('tab-files').addEventListener('click', function () { show('files'); });
+  el('tab-audio').addEventListener('click', function () { show('audio'); });
+  show(window.location.hash.slice(1));
+  window.setInterval(function () { if (!el('view-audio').hidden) { tuner.poll(); } }, 10000);
 
   /**
    * Show whether a login session is saved, and where it goes when it is not.
@@ -533,6 +1293,7 @@
   var wire = new EventSource('/stream');
   wire.onmessage = function (event) {
     var said = JSON.parse(event.data);
+    if (String(said.kind).indexOf('audio-') === 0) { tuner.hear(said); return; }
     if (said.line) { say(said.kind, said.line); }
     if (said.kind === 'count' || said.kind === 'state') { tally(said); }
     if (said.kind === 'count' && said['막힌 곡'] !== undefined) {

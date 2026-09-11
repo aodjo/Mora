@@ -303,8 +303,9 @@ class Board:
 def open_book(where: str) -> sqlite3.Connection:
     """Open the record of what was searched and fetched, kept apart from the lyric store.
 
-    The lyric store belongs to the harvest on the other machine; this side only reads it, so
-    the two never write to the same file.
+    The lyric store belongs to the harvest; this side only reads it, so the two never write to
+    the same file. Artist and title are copied in so the dashboard can list the record without
+    reaching across into the other store.
 
     @param {str} where - Path to the audio record.
     @returns {sqlite3.Connection} The connection.
@@ -316,22 +317,42 @@ def open_book(where: str) -> sqlite3.Connection:
         track_id INTEGER PRIMARY KEY, state TEXT, video_id TEXT, video_title TEXT,
         channel TEXT, video_duration REAL, want_duration REAL, score REAL, why TEXT,
         file TEXT, file_duration REAL, tried_at TEXT, candidates TEXT)""")
+    had = {one[1] for one in conn.execute("PRAGMA table_info(audio)")}
+    for column, kind in (("artist", "TEXT"), ("title", "TEXT"), ("album", "TEXT"),
+                         ("manual", "INTEGER DEFAULT 0")):
+        if column not in had:
+            conn.execute(f"ALTER TABLE audio ADD COLUMN {column} {kind}")
+    conn.execute("CREATE INDEX IF NOT EXISTS audio_state ON audio(state)")
     conn.commit()
     return conn
 
 
-def worklist(vibe: str, book: sqlite3.Connection, limit: int) -> list[dict]:
-    """Choose which songs to fetch next, spread across artists.
+def worklist(vibe: str, book: sqlite3.Connection, limit: int, dry: bool = False) -> list[dict]:
+    """Choose which songs to handle next.
 
-    One song per artist first — each artist's song with the most lines — then everyone's second
-    song, and so on. A first batch of five hundred then covers five hundred artists instead of a
-    few prolific ones.
+    When fetching for real, songs already chosen but not yet downloaded come first — a dry run
+    picks, a person looks the picks over on the dashboard, and the real run then downloads what
+    stands without searching again. After them come songs never tried, spread across artists:
+    each artist's song with the most lines first, then everyone's second song, and so on, so a
+    batch of five hundred covers five hundred artists instead of a few prolific ones.
 
     @param {str} vibe - Path to the lyric store (read only).
-    @param {sqlite3.Connection} book - The audio record, to skip what was already tried.
+    @param {sqlite3.Connection} book - The audio record.
     @param {int} limit - How many to return.
-    @returns {list[dict]} Tracks to fetch.
+    @param {bool} [dry=False] - A choosing-only run; then already-chosen songs are not revisited.
+    @returns {list[dict]} Songs to handle, some carrying a `chosen` upload already.
     """
+    out: list[dict] = []
+    if not dry:
+        for one in book.execute(
+                "SELECT track_id, title, artist, album, want_duration, video_id, video_title,"
+                " channel, video_duration, score, why, candidates FROM audio WHERE state='picked'"
+                " LIMIT ?", (limit,)):
+            out.append({"track_id": one[0], "title": one[1] or "", "artist": one[2] or "",
+                        "album": one[3] or "", "duration": one[4] or 0,
+                        "chosen": {"id": one[5], "title": one[6], "channel": one[7],
+                                   "duration": one[8], "점수": one[9], "까닭": one[10],
+                                   "후보": json.loads(one[11] or "[]")}})
     done = {one[0] for one in book.execute("SELECT track_id FROM audio")}
     conn = sqlite3.connect(f"file:{vibe}?mode=ro", uri=True)
     rows = conn.execute("""
@@ -341,19 +362,185 @@ def worklist(vibe: str, book: sqlite3.Connection, limit: int) -> list[dict]:
           FROM tracks WHERE state='synced' AND duration > 0
         ) ORDER BY nth, (track_id * 2654435761) % 4294967296""").fetchall()
     conn.close()
-    out = []
     for one in rows:
+        if len(out) >= limit:
+            break
         if one[0] in done:
             continue
         out.append({"track_id": one[0], "title": one[1], "artist": one[2], "album": one[3],
                     "duration": one[4]})
-        if len(out) >= limit:
-            break
     return out
 
 
+def settle(binary: str, want: dict, out_dir: str, dry: bool) -> dict:
+    """Handle one song: choose an upload (unless one is already chosen) and, unless dry, fetch it.
+
+    @param {str} binary - Path to `yt-dlp`.
+    @param {dict} want - The Vibe track, possibly carrying a `chosen` upload.
+    @param {str} out_dir - Where downloads go.
+    @param {bool} dry - Choose only.
+    @returns {dict} What happened, in the shape the dashboard and the terminal both read.
+    """
+    chosen = want.get("chosen") or pick(binary, want)
+    result = {"track_id": want["track_id"], "artist": want["artist"], "title": want["title"],
+              "album": want.get("album") or "", "want": want["duration"],
+              "candidates": [{key: one.get(key) for key in ("id", "title", "channel", "duration", "점수", "까닭")}
+                             for one in chosen.get("후보", [])],
+              "file": None, "real": 0.0, "manual": bool(want.get("manual"))}
+    if chosen.get("없음"):
+        return {**result, "state": "miss", "video": None, "score": None, "why": ""}
+    result.update({"video": {key: chosen.get(key) for key in ("id", "title", "channel", "duration")},
+                   "score": chosen.get("점수"), "why": chosen.get("까닭") or ""})
+    if dry:
+        return {**result, "state": "picked"}
+    path = fetch(binary, chosen["id"], out_dir, str(want["track_id"]))
+    real = length_of(path) if path else 0.0
+    if not path:
+        state = "fail"
+    elif real and abs(real - float(want["duration"] or 0)) > FILE_GATE:
+        state = "suspect"
+    else:
+        state = "got"
+    time.sleep(REST)
+    return {**result, "state": state, "file": path, "real": real}
+
+
+def record(book: sqlite3.Connection, lock: threading.Lock, result: dict) -> None:
+    """Write one song's outcome into the audio record.
+
+    @param {sqlite3.Connection} book - The audio record.
+    @param {threading.Lock} lock - Guards writes.
+    @param {dict} result - What `settle` returned.
+    @returns {None}
+    """
+    video = result.get("video") or {}
+    with lock:
+        book.execute(
+            "INSERT OR REPLACE INTO audio (track_id, state, video_id, video_title, channel,"
+            " video_duration, want_duration, score, why, file, file_duration, tried_at,"
+            " candidates, artist, title, album, manual)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?,?,?,?,?)",
+            (result["track_id"], result["state"], video.get("id"), video.get("title"),
+             video.get("channel"), video.get("duration"), result["want"], result.get("score"),
+             result.get("why"), result.get("file"), result.get("real"),
+             json.dumps(result.get("candidates") or [], ensure_ascii=False),
+             result["artist"], result["title"], result.get("album"), 1 if result.get("manual") else 0))
+        book.commit()
+
+
+def yt_binary() -> str:
+    """Find `yt-dlp`: on PATH, or beside the running Python.
+
+    @returns {str} Path to the executable.
+    """
+    return shutil.which("yt-dlp") or os.path.join(os.path.dirname(sys.executable), "yt-dlp")
+
+
+def run(vibe: str, book_path: str, out_dir: str, limit: int, hands: int, dry: bool,
+        watch=None, halt: threading.Event | None = None) -> dict:
+    """Handle the next batch of songs, reporting each as it finishes.
+
+    Shared by the terminal and the dashboard: each finished song goes to `watch`, and `halt`
+    stops the batch after the songs already in flight.
+
+    @param {str} vibe - Path to the lyric store (read only).
+    @param {str} book_path - Path to the audio record.
+    @param {str} out_dir - Where downloads go.
+    @param {int} limit - How many songs.
+    @param {int} hands - How many at once.
+    @param {bool} dry - Choose only, fetch nothing.
+    @param {callable | None} [watch=None] - Called with each song's result, and once with the total at the start.
+    @param {threading.Event | None} [halt=None] - Set to stop early.
+    @returns {dict} How many songs ended in each state.
+    """
+    binary = yt_binary()
+    os.makedirs(out_dir, exist_ok=True)
+    book = open_book(book_path)
+    lock = threading.Lock()
+    todo = worklist(vibe, book, limit, dry)
+    tally: dict[str, int] = {}
+    if watch:
+        watch({"kind": "start", "total": len(todo), "dry": dry})
+
+    def one(want: dict) -> None:
+        if halt is not None and halt.is_set():
+            return
+        try:
+            result = settle(binary, want, out_dir, dry)
+        except Exception as trouble:  # noqa: BLE001
+            result = {"track_id": want["track_id"], "artist": want["artist"], "title": want["title"],
+                      "album": want.get("album") or "", "want": want["duration"], "state": "fail",
+                      "video": None, "score": None, "why": f"{type(trouble).__name__}",
+                      "candidates": [], "file": None, "real": 0.0}
+        record(book, lock, result)
+        with lock:
+            tally[result["state"]] = tally.get(result["state"], 0) + 1
+        if watch:
+            watch({"kind": "song", **result})
+
+    with ThreadPoolExecutor(max_workers=max(1, hands)) as pool:
+        list(pool.map(one, todo))
+    book.close()
+    return tally
+
+
+def choose(vibe_book: str, out_dir: str, track_id: int, video_id: str) -> dict:
+    """Fetch a different upload for one song, chosen by a person on the dashboard.
+
+    @param {str} vibe_book - Path to the audio record.
+    @param {str} out_dir - Where downloads go.
+    @param {int} track_id - Which song.
+    @param {str} video_id - The upload to fetch instead.
+    @returns {dict} The new outcome.
+    """
+    book = open_book(vibe_book)
+    row = book.execute("SELECT title, artist, album, want_duration, candidates FROM audio WHERE track_id=?",
+                       (track_id,)).fetchone()
+    if not row:
+        book.close()
+        return {"없음": True}
+    candidates = json.loads(row[4] or "[]")
+    picked = next((one for one in candidates if one.get("id") == video_id),
+                  {"id": video_id, "title": "", "channel": "", "duration": row[3], "점수": None, "까닭": "사람이 고름"})
+    want = {"track_id": track_id, "title": row[0], "artist": row[1], "album": row[2],
+            "duration": row[3], "manual": True,
+            "chosen": {**picked, "까닭": (picked.get("까닭") or "") + " · 사람이 고름", "후보": candidates}}
+    for tail in (".m4a", ".webm", ".opus"):
+        old = os.path.join(out_dir, f"{track_id}{tail}")
+        if os.path.exists(old):
+            os.remove(old)
+    result = settle(yt_binary(), want, out_dir, dry=False)
+    record(book, threading.Lock(), result)
+    book.close()
+    return result
+
+
+def lines_for(result: dict) -> tuple[list[str], str]:
+    """The terminal's two lines for one song, and which tally it counts under.
+
+    @param {dict} result - What `settle` returned.
+    @returns {tuple[list[str], str]} The lines and the tally label.
+    """
+    song = fit(f"{first_artist(result['artist'])} — {result['title']}", 44)
+    if result["state"] == "miss":
+        top = (result.get("candidates") or [{}])[0]
+        second = (f"             가장 가까운 것: {top.get('duration') or 0:.0f}s "
+                  f"{fit(top.get('title') or '', 40)} [{top.get('까닭') or ''}]" if top else
+                  "             검색 결과 없음")
+        return [f"  ✗ 못 찾음  {song} {result['want']:>4.0f}s", second], "못 찾음"
+    marks = {"picked": ("✓ 고름  ", "고름"), "got": ("✓ 받음  ", "받음"),
+             "suspect": ("⚠ 의심  ", "의심"), "fail": ("✗ 실패  ", "실패")}
+    mark, kind = marks.get(result["state"], ("·", result["state"]))
+    video = result.get("video") or {}
+    got_len = f"{video.get('duration') or 0:.0f}s" + (f" (파일 {result['real']:.0f}s)" if result.get("real") else "")
+    return [f"  {mark}  {song} {result['want']:>4.0f}s → {got_len}  "
+            f"{result.get('score') or 0:>3.0f}점  {result.get('why') or ''}",
+            f"             https://youtu.be/{video.get('id')}  "
+            f"{fit(video.get('channel') or '', 22)} {fit(video.get('title') or '', 48).rstrip()}"], kind
+
+
 def main() -> int:
-    """Search, choose, and (unless `--dry`) fetch audio for the next batch of songs.
+    """Search, choose, and (unless `--dry`) fetch audio for the next batch of songs, in the terminal.
 
     @returns {int} 0 always.
     """
@@ -363,67 +550,23 @@ def main() -> int:
     ask.add_argument("--out", default="vibe_audio", help="음원을 둘 곳")
     ask.add_argument("--limit", type=int, default=50, help="이번에 다룰 곡 수")
     ask.add_argument("--hands", type=int, default=3, help="동시에 받는 수")
-    ask.add_argument("--dry", action="store_true", help="받지 않고 고르기만")
+    ask.add_argument("--dry", action="store_true", help="받지 않고 고르기만 (고른 것은 기록되고, 다음 받기가 그대로 받는다)")
     args = ask.parse_args()
+    board: dict = {}
 
-    binary = shutil.which("yt-dlp") or os.path.join(os.path.dirname(sys.executable), "yt-dlp")
-    os.makedirs(args.out, exist_ok=True)
-    book = open_book(args.book)
-    lock = threading.Lock()
-    todo = worklist(args.vibe, book, args.limit)
-    print(f"\n  곡 {len(todo)} · {'고르기만 (받지 않음)' if args.dry else '찾아서 받기'}"
-          f" · 동시에 {args.hands}\n", flush=True)
-    board = Board(len(todo))
-
-    def one(want: dict) -> None:
-        chosen = pick(binary, want)
-        song = fit(f"{first_artist(want['artist'])} — {want['title']}", 44)
-        if chosen.get("없음"):
-            state, path, real = "miss", None, 0.0
-            top = chosen["후보"][0] if chosen["후보"] else {}
-            lines = [f"  ✗ 못 찾음  {song} {want['duration']:>4.0f}s",
-                     f"             가장 가까운 것: {top.get('duration') or 0:.0f}s "
-                     f"{fit(top.get('title', ''), 40)} [{top.get('까닭', '')}]" if top else
-                     "             검색 결과 없음"]
-            board.say(lines, "못 찾음")
-        else:
-            path, real, state = None, 0.0, "picked"
-            mark, kind = "✓ 고름  ", "고름"
-            if not args.dry:
-                path = fetch(binary, chosen["id"], args.out, str(want["track_id"]))
-                real = length_of(path) if path else 0.0
-                if not path:
-                    state, mark, kind = "fail", "✗ 실패  ", "실패"
-                elif real and abs(real - want["duration"]) > FILE_GATE:
-                    state, mark, kind = "suspect", "⚠ 의심  ", "의심"
-                else:
-                    state, mark, kind = "got", "✓ 받음  ", "받음"
-                time.sleep(REST)
-            got_len = f"{chosen['duration']:.0f}s" + (f" (파일 {real:.0f}s)" if real else "")
-            lines = [f"  {mark}  {song} {want['duration']:>4.0f}s → {got_len}  "
-                     f"{chosen['점수']:>3.0f}점  {chosen['까닭']}",
-                     f"             https://youtu.be/{chosen['id']}  "
-                     f"{fit(chosen['channel'], 22)} {fit(chosen['title'], 48).rstrip()}"]
-            board.say(lines, kind)
-        if args.dry:
+    def watch(event: dict) -> None:
+        if event["kind"] == "start":
+            print(f"\n  곡 {event['total']} · {'고르기만 (받지 않음)' if args.dry else '찾아서 받기'}"
+                  f" · 동시에 {args.hands}\n", flush=True)
+            board["it"] = Board(event["total"])
             return
-        with lock:
-            book.execute(
-                "INSERT OR REPLACE INTO audio (track_id, state, video_id, video_title, channel,"
-                " video_duration, want_duration, score, why, file, file_duration, tried_at,"
-                " candidates) VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?)",
-                (want["track_id"], state, chosen.get("id"), chosen.get("title"),
-                 chosen.get("channel"), chosen.get("duration"), want["duration"],
-                 chosen.get("점수"), chosen.get("까닭"), path, real,
-                 json.dumps([{k: c.get(k) for k in ("id", "title", "channel", "duration", "점수", "까닭")}
-                             for c in chosen.get("후보", [])], ensure_ascii=False)))
-            book.commit()
+        lines, kind = lines_for(event)
+        board["it"].say(lines, kind)
 
-    with ThreadPoolExecutor(max_workers=max(1, args.hands)) as pool:
-        list(pool.map(one, todo))
-    board.end()
-    if not args.dry:
-        print(f"  기록: {args.book} · 음원: {args.out}/", flush=True)
+    run(args.vibe, args.book, args.out, args.limit, args.hands, args.dry, watch=watch)
+    if "it" in board:
+        board["it"].end()
+    print(f"  기록: {args.book} · 음원: {args.out}/", flush=True)
     return 0
 
 
