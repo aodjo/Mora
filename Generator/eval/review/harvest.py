@@ -115,6 +115,11 @@ def open_db(where: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""CREATE TABLE IF NOT EXISTS artists (
         id INTEGER PRIMARY KEY, name TEXT, done INTEGER DEFAULT 0, found_at TEXT)""")
+    #: 누가 누구를 데려왔는지. 번지기의 길 자체라, 나중에 그림을 다시 그리려면 이것이 있어야 한다.
+    had = {one[1] for one in conn.execute("PRAGMA table_info(artists)")}
+    for column, kind in (("from_id", "INTEGER"), ("by_track", "TEXT"), ("seed", "TEXT")):
+        if column not in had:
+            conn.execute(f"ALTER TABLE artists ADD COLUMN {column} {kind}")
     conn.execute("""CREATE TABLE IF NOT EXISTS tracks (
         track_id INTEGER PRIMARY KEY, title TEXT, artist TEXT, artist_ids TEXT,
         album TEXT, album_id INTEGER, duration REAL, has_sync INTEGER,
@@ -124,44 +129,80 @@ def open_db(where: str) -> sqlite3.Connection:
     return conn
 
 
-def seed_artists(conn: sqlite3.Connection, lock: threading.Lock) -> int:
+def seed_words(more: list[str] | None = None) -> list[str]:
+    """The words to search for seed artists: the file's if there is one, else the built-in list.
+
+    `seeds.txt` sits next to this file, one word per line, `#` starting a comment. Adding a word
+    and running again is the whole way to steer where the crawl goes next — the store remembers
+    what it already walked, so only the new corner is new work.
+
+    @param {list[str] | None} [more=None] - Extra words from the command line or the watcher.
+    @returns {list[str]} Seed words, in file order, without repeats.
+    """
+    out: list[str] = []
+    where = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seeds.txt")
+    if os.path.exists(where):
+        with open(where, encoding="utf-8") as file:
+            out = [one.split("#")[0].strip() for one in file]
+    out = [one for one in out if one] or list(SEEDS)
+    for one in more or []:
+        if one and one not in out:
+            out.append(one)
+    return out
+
+
+def seed_artists(conn: sqlite3.Connection, lock: threading.Lock, words: list[str] | None = None,
+                 watch=None) -> int:
     """Search the seed words and put every artist they turn up into the queue.
 
     @param {sqlite3.Connection} conn - The harvest store.
     @param {threading.Lock} lock - Guards writes to the store.
+    @param {list[str] | None} [words=None] - Which words to search; the seed list by default.
+    @param {callable | None} [watch=None] - Called with each step, for a watcher to draw.
     @returns {int} How many artists were added.
     """
     added = 0
+    asked = words if words is not None else seed_words()
 
-    def one(word: str) -> list[tuple[int, str]]:
+    def one(word: str) -> tuple[str, list[tuple[int, str]]]:
         got = vibe_get(f"/v3/search/track?query={urllib.parse.quote(word)}&start=1&display=30&sort=RELEVANCE")
         rows = result_of(got).get("tracks") or []
-        return [(int(a["artistId"]), a.get("artistName") or "")
-                for row in rows if isinstance(row, dict)
-                for a in (row.get("artists") or []) if isinstance(a, dict) and a.get("artistId")]
+        return word, [(int(a["artistId"]), a.get("artistName") or "")
+                      for row in rows if isinstance(row, dict)
+                      for a in (row.get("artists") or []) if isinstance(a, dict) and a.get("artistId")]
 
     with ThreadPoolExecutor(max_workers=HANDS) as pool:
-        for found in pool.map(one, SEEDS):
+        for word, found in pool.map(one, asked):
+            fresh = []
             with lock:
                 for artist_id, name in found:
-                    added += conn.execute(
-                        "INSERT OR IGNORE INTO artists (id, name, found_at) VALUES (?, ?, datetime('now'))",
-                        (artist_id, name)).rowcount
-            conn.commit()
+                    new = conn.execute(
+                        "INSERT OR IGNORE INTO artists (id, name, found_at, seed)"
+                        " VALUES (?, ?, datetime('now'), ?)", (artist_id, name, word)).rowcount
+                    added += new
+                    if new:
+                        fresh.append({"id": artist_id, "name": name})
+                conn.commit()
+            if watch:
+                watch({"kind": "seed", "word": word, "artists": fresh})
     return added
 
 
-def take_artist(conn: sqlite3.Connection, lock: threading.Lock, artist_id: int, name: str) -> tuple[int, int]:
+def take_artist(conn: sqlite3.Connection, lock: threading.Lock, artist_id: int, name: str,
+                watch=None) -> tuple[int, int]:
     """Read every track of one artist into the store, queueing the artists they bring with them.
 
     @param {sqlite3.Connection} conn - The harvest store.
     @param {threading.Lock} lock - Guards writes to the store.
     @param {int} artist_id - Whose tracks to read.
     @param {str} name - That artist's name, for the log.
+    @param {callable | None} [watch=None] - Called with each step, for a watcher to draw.
     @returns {tuple[int, int]} New tracks, and new artists found along the way.
     """
     tracks, artists = [], {}
     start = 1
+    if watch:
+        watch({"kind": "walk", "id": artist_id, "name": name})
     while start <= ARTIST_MOST:
         got = result_of(vibe_get(f"/v2/artist/{artist_id}/tracks?start={start}&display=100"))
         rows = [one for one in (got.get("tracks") or []) if isinstance(one, dict)]
@@ -183,17 +224,31 @@ def take_artist(conn: sqlite3.Connection, lock: threading.Lock, artist_id: int, 
             break
         start += 100
 
+    #: 어느 곡이 다리가 됐는지. 번지기의 실제 길이 그것이라, 장부에도 그림에도 함께 남긴다.
+    bridges: dict[int, str] = {}
+    for one in tracks:
+        for singer in json.loads(one[3]):
+            if singer and int(singer) != artist_id:
+                bridges.setdefault(int(singer), one[1])
+
+    fresh = []
     with lock:
         new_tracks = sum(conn.execute(
             "INSERT OR IGNORE INTO tracks (track_id, title, artist, artist_ids, album, album_id,"
             " duration, has_sync) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", one).rowcount
             for one in tracks if one[0])
-        new_artists = sum(conn.execute(
-            "INSERT OR IGNORE INTO artists (id, name, found_at) VALUES (?, ?, datetime('now'))",
-            (one, two)).rowcount for one, two in artists.items())
+        for one, two in artists.items():
+            if one != artist_id and conn.execute(
+                    "INSERT OR IGNORE INTO artists (id, name, found_at, from_id, by_track)"
+                    " VALUES (?, ?, datetime('now'), ?, ?)",
+                    (one, two, artist_id, bridges.get(one, ""))).rowcount:
+                fresh.append({"id": one, "name": two, "by": bridges.get(one, "")})
         conn.execute("UPDATE artists SET done=1 WHERE id=?", (artist_id,))
         conn.commit()
-    return new_tracks, new_artists
+    if watch:
+        watch({"kind": "artist", "id": artist_id, "name": name, "tracks": new_tracks,
+               "sync": sum(1 for one in tracks if one[7]), "found": fresh})
+    return new_tracks, len(fresh)
 
 
 def lines_of(track_id: int) -> list[dict] | None:
@@ -219,23 +274,24 @@ def lines_of(track_id: int) -> list[dict] | None:
     return out or None
 
 
-def take_lyrics(conn: sqlite3.Connection, lock: threading.Lock, rows: list[tuple]) -> int:
+def take_lyrics(conn: sqlite3.Connection, lock: threading.Lock, rows: list[tuple], watch=None) -> int:
     """Fetch the lyrics of a batch of tracks and write what came back.
 
     @param {sqlite3.Connection} conn - The harvest store.
     @param {threading.Lock} lock - Guards writes to the store.
-    @param {list[tuple]} rows - `(track_id,)` rows to fetch.
+    @param {list[tuple]} rows - `(track_id, title, artist)` rows to fetch.
+    @param {callable | None} [watch=None] - Called with each track, for a watcher to draw.
     @returns {int} How many came back with a usable sync.
     """
-    def one(row: tuple) -> tuple[int, list[dict] | None]:
+    def one(row: tuple) -> tuple[tuple, list[dict] | None]:
         try:
-            return row[0], lines_of(row[0])
+            return row, lines_of(row[0])
         except Exception:  # noqa: BLE001
-            return row[0], None
+            return row, None
 
     kept = 0
     with ThreadPoolExecutor(max_workers=HANDS) as pool:
-        for track_id, lines in pool.map(one, rows):
+        for row, lines in pool.map(one, rows):
             good = bool(lines) and len(lines) >= LEAST_LINES
             with lock:
                 conn.execute(
@@ -243,8 +299,12 @@ def take_lyrics(conn: sqlite3.Connection, lock: threading.Lock, rows: list[tuple
                     " WHERE track_id=?",
                     ("synced" if good else "nosync",
                      json.dumps(lines, ensure_ascii=False) if good else None,
-                     len(lines) if lines else 0, track_id))
+                     len(lines) if lines else 0, row[0]))
             kept += good
+            if watch:
+                watch({"kind": "lyric", "id": row[0], "title": row[1] if len(row) > 1 else "",
+                       "artist": row[2] if len(row) > 2 else "", "lines": len(lines or []),
+                       "ok": bool(good), "first": (lines or [{}])[0].get("text", "") if good else ""})
     with lock:
         conn.commit()
     return kept
@@ -278,7 +338,7 @@ def main() -> int:
         #: 가사는 비싸서, 둘을 번갈아야 한쪽만 잔뜩 쌓이지 않는다.
         if waiting:
             rows = conn.execute(
-                "SELECT track_id FROM tracks WHERE state='new' AND has_sync=1"
+                "SELECT track_id, title, artist FROM tracks WHERE state='new' AND has_sync=1"
                 " AND duration BETWEEN ? AND ? LIMIT 200", (LEAST_SECONDS, MOST_SECONDS)).fetchall()
             take_lyrics(conn, lock, rows)
             continue
