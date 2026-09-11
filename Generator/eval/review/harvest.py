@@ -128,6 +128,12 @@ def open_db(where: str) -> sqlite3.Connection:
         album TEXT, album_id INTEGER, duration REAL, has_sync INTEGER,
         state TEXT DEFAULT 'new', lines TEXT, line_count INTEGER, got_at TEXT)""")
     conn.execute("CREATE INDEX IF NOT EXISTS tracks_state ON tracks(state, has_sync)")
+    #: 같은 녹음을 앨범마다 따로 세지 않으려면 「누가 부른 무엇」으로 찾을 수 있어야 한다.
+    conn.execute("CREATE INDEX IF NOT EXISTS tracks_same ON tracks"
+                 " (lower(trim(artist)), lower(trim(title)))")
+    #: 이미 찾아 본 씨앗. 없으면 켤 때마다 예순 낱말을 다시 검색하고 로그가 「아티스트 0」으로 찬다.
+    conn.execute("""CREATE TABLE IF NOT EXISTS seeds (
+        word TEXT PRIMARY KEY, found INTEGER DEFAULT 0, done_at TEXT)""")
     conn.commit()
     return conn
 
@@ -185,10 +191,24 @@ def seed_artists(conn: sqlite3.Connection, lock: threading.Lock, words: list[str
                     added += new
                     if new:
                         fresh.append({"id": artist_id, "name": name})
+                conn.execute(
+                    "INSERT OR REPLACE INTO seeds (word, found, done_at) VALUES (?, ?, datetime('now'))",
+                    (word, len(fresh)))
                 conn.commit()
             if watch:
                 watch({"kind": "seed", "word": word, "artists": fresh})
     return added
+
+
+def seeds_left(conn: sqlite3.Connection, words: list[str]) -> list[str]:
+    """Which seed words have never been searched against this store.
+
+    @param {sqlite3.Connection} conn - The harvest store.
+    @param {list[str]} words - Every seed word.
+    @returns {list[str]} The ones still to search.
+    """
+    had = {one[0] for one in conn.execute("SELECT word FROM seeds")}
+    return [one for one in words if one not in had]
 
 
 def take_artist(conn: sqlite3.Connection, lock: threading.Lock, artist_id: int, name: str,
@@ -252,6 +272,34 @@ def take_artist(conn: sqlite3.Connection, lock: threading.Lock, artist_id: int, 
         watch({"kind": "artist", "id": artist_id, "name": name, "tracks": new_tracks,
                "sync": sum(1 for one in tracks if one[7]), "found": fresh})
     return new_tracks, len(fresh)
+
+
+def fold_same(conn: sqlite3.Connection, lock: threading.Lock) -> tuple[int, int]:
+    """Mark every extra copy of a recording as `dup`, keeping one.
+
+    Vibe lists the same recording once per album it appears on — 김현식의 「사랑했어요」 comes back
+    49 times with 49 track ids. Counting them as 49 songs inflates the harvest, training on them
+    would weight that one song 49 times, and fetching the lyric 49 times spends 49 requests on one
+    answer. One copy is kept per 「누가 부른 무엇」: a synced one first, then the one with the most
+    lines, then the longest.
+
+    @param {sqlite3.Connection} conn - The harvest store.
+    @param {threading.Lock} lock - Guards writes to the store.
+    @returns {tuple[int, int]} Extra copies marked now, and how many are marked in all.
+    """
+    with lock:
+        done = conn.execute("""
+            UPDATE tracks SET state='dup' WHERE track_id IN (
+              SELECT track_id FROM (
+                SELECT track_id, ROW_NUMBER() OVER (
+                  PARTITION BY lower(trim(artist)), lower(trim(title))
+                  ORDER BY (state='synced') DESC, COALESCE(line_count, 0) DESC, duration DESC
+                ) AS pick
+                FROM tracks WHERE state IN ('new', 'synced')
+              ) WHERE pick > 1)""").rowcount
+        conn.commit()
+        every = conn.execute("SELECT COUNT(*) FROM tracks WHERE state='dup'").fetchone()[0]
+    return done, every
 
 
 def lines_of(track_id: int) -> list[dict] | None:
@@ -325,9 +373,12 @@ def line_of(step: dict) -> str:
     when = time.strftime("%H:%M:%S")
     kind = step.get("kind")
     if kind == "seed":
-        names = ", ".join(one["name"] for one in (step.get("artists") or [])[:4])
-        return (f"{when} 씨앗  {step['word']} → 아티스트 {len(step.get('artists') or [])}"
-                + (f" · {names}" if names else ""))
+        #: 아무도 못 데려온 씨앗은 줄을 차지할 값이 없다 — 이미 아는 아티스트라는 뜻이다.
+        found = step.get("artists") or []
+        if not found:
+            return ""
+        return f"{when} 씨앗  {step['word']} → 아티스트 {len(found)} · " + ", ".join(
+            one["name"] for one in found[:4])
     if kind == "artist":
         found = step.get("found") or []
         bridge = next((one for one in found if one.get("by")), None)
@@ -365,6 +416,9 @@ def main() -> int:
 
     began = time.time()
     while True:
+        folded, _ = fold_same(conn, lock)
+        if folded:
+            print(f"{time.strftime('%H:%M:%S')} 접음  같은 곡 {folded:,}벌", flush=True)
         synced = conn.execute("SELECT COUNT(*) FROM tracks WHERE state='synced'").fetchone()[0]
         waiting = conn.execute(
             "SELECT COUNT(*) FROM tracks WHERE state='new' AND has_sync=1"

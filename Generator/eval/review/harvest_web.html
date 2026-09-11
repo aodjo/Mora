@@ -129,6 +129,7 @@
     <span><i>아티스트</i><b id="n-artist">0</b></span>
     <span><i>안 훑음</i><b id="n-left">0</b></span>
     <span><i>받을 곡</i><b id="n-wait">0</b></span>
+    <span><i>접은 중복</i><b id="n-dup">0</b></span>
   </div>
   <span class="grow"></span>
   <span class="doing"><i class="dot" id="dot"></i><span id="doing">멈춰 있음</span></span>
@@ -208,7 +209,7 @@
    */
   function tally(said) {
     [['곡', 'n-song'], ['줄', 'n-line'], ['아티스트', 'n-artist'],
-     ['남은 아티스트', 'n-left'], ['받을 곡', 'n-wait']].forEach(function (pair) {
+     ['남은 아티스트', 'n-left'], ['받을 곡', 'n-wait'], ['같은 곡', 'n-dup']].forEach(function (pair) {
       if (said[pair[0]] !== undefined) {
         el(pair[1]).textContent = Number(said[pair[0]]).toLocaleString('ko-KR');
       }

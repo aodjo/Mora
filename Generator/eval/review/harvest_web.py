@@ -21,6 +21,7 @@ import queue
 import sqlite3
 import sys
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -32,7 +33,7 @@ STEPS: "queue.Queue[dict]" = queue.Queue(maxsize=2000)
 RECENT: "collections.deque[dict]" = collections.deque(maxlen=300)
 #: 크롤의 지금 상태.
 STATE: dict = {"도는 중": False, "지금": "멈춰 있음", "곡": 0, "줄": 0, "아티스트": 0,
-               "남은 아티스트": 0, "받을 곡": 0}
+               "남은 아티스트": 0, "받을 곡": 0, "같은 곡": 0}
 HERE = Path(__file__).parent
 DB = os.environ.get("MORA_VIBE_DB", "vibe.db")
 LOG = "harvest.log"
@@ -49,7 +50,8 @@ def push(step: dict) -> None:
     @param {dict} step - What just happened, as the crawl reports it.
     @returns {None}
     """
-    said = harvest.line_of(step) if step.get("kind") in ("seed", "artist", "lyric") else ""
+    said = (step.get("line") or "") if step.get("kind") == "note" else (
+        harvest.line_of(step) if step.get("kind") in ("seed", "artist", "lyric") else "")
     if said:
         with open(LOG, "a", encoding="utf-8") as file:
             file.write(said + "\n")
@@ -76,6 +78,7 @@ def counts(conn: sqlite3.Connection) -> dict:
         "SELECT COUNT(*), COALESCE(SUM(line_count), 0) FROM tracks WHERE state='synced'").fetchone()
     return {
         "곡": got[0], "줄": got[1],
+        "같은 곡": conn.execute("SELECT COUNT(*) FROM tracks WHERE state='dup'").fetchone()[0],
         "아티스트": conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0],
         "남은 아티스트": conn.execute("SELECT COUNT(*) FROM artists WHERE done=0").fetchone()[0],
         "받을 곡": conn.execute(
@@ -100,14 +103,21 @@ def crawl(words: list[str], want: int) -> None:
     STATE["도는 중"] = True
     push({"kind": "state", **STATE})
 
-    fresh = [one for one in words
-             if not conn.execute("SELECT 1 FROM artists WHERE seed=?", (one,)).fetchone()]
+    fresh = harvest.seeds_left(conn, words)
     if fresh:
-        STATE["지금"] = f"씨앗 {len(fresh)} 낱말 검색 중"
+        STATE["지금"] = f"씨앗 {len(fresh)}낱말 검색 중"
         push({"kind": "state", **STATE})
-        harvest.seed_artists(conn, lock, fresh, watch=push)
+        got = harvest.seed_artists(conn, lock, fresh, watch=push)
+        push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 씨앗  {len(fresh)}낱말 검색"
+                                      f" · 새 아티스트 {got}"})
 
     while not _stop.is_set():
+        #: 같은 녹음의 다른 벌은 셈에서도 빼고 가사도 받지 않는다. 목록을 새로 받을 때마다 새 벌이
+        #: 딸려 오므로 고리마다 접는다.
+        folded, _ = harvest.fold_same(conn, lock)
+        if folded:
+            push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 접음  같은 곡 {folded:,}벌"})
+
         while WAITING:
             word = WAITING.pop(0)
             STATE["지금"] = f"씨앗 «{word}» 검색 중"
@@ -117,7 +127,9 @@ def crawl(words: list[str], want: int) -> None:
         now = counts(conn)
         STATE.update(now)
         push({"kind": "count", **now})
-        if now["곡"] >= want or (not now["받을 곡"] and not now["남은 아티스트"]):
+        #: 목표는 0 이면 없는 것으로 본다. 바이브가 닫히는 마당에 「2 만 곡에서 스스로 멈춤」은
+        #: 도움이 안 된다 — 아티스트가 마를 때까지 간다.
+        if (want and now["곡"] >= want) or (not now["받을 곡"] and not now["남은 아티스트"]):
             break
 
         if now["받을 곡"]:
@@ -130,8 +142,14 @@ def crawl(words: list[str], want: int) -> None:
             harvest.take_lyrics(conn, lock, rows, watch=push)
             continue
 
+        #: **방금 심은 씨앗을 먼저 훑는다.** 씨앗에서 나온 아티스트도 그냥 줄 맨 뒤에 서면, 앞에
+        #: 천육백 명이 있는 한 영영 차례가 안 온다 — 씨앗을 심는 뜻이 사라진다. 씨앗에서 나온
+        #: 아티스트를 앞으로 당기고, 그 안에서는 늦게 심은 것부터. 나머지는 찾은 차례 그대로다.
         for artist_id, name in conn.execute(
-                "SELECT id, name FROM artists WHERE done=0 LIMIT 4").fetchall():
+                "SELECT id, name FROM artists WHERE done=0"
+                " ORDER BY (seed IS NOT NULL) DESC,"
+                " (CASE WHEN seed IS NOT NULL THEN found_at ELSE '' END) DESC, rowid"
+                " LIMIT 4").fetchall():
             if _stop.is_set():
                 break
             STATE["지금"] = f"{name} 의 곡 목록"
@@ -180,6 +198,8 @@ def add_seeds(words: list[str]) -> dict:
         if STATE["도는 중"]:
             #: 도는 중에는 크롤에게 넘긴다. 장부에 쓰는 쪽은 하나여야 한다.
             WAITING.extend(fresh)
+            push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 씨앗  "
+                                          f"{', '.join(fresh)} · 검색하고 먼저 훑는다"})
         else:
             conn = harvest.open_db(DB)
             harvest.seed_artists(conn, threading.Lock(), fresh, watch=push)
@@ -228,7 +248,7 @@ def make_app():
         @returns {dict} Whether this call started it.
         """
         asked = await request.json() if await request.body() else {}
-        return {"시작": start(int(asked.get("목표") or 20000))}
+        return {"시작": start(int(asked.get("목표") or 0))}
 
     @app.post("/api/stop")
     def halt():
