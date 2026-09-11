@@ -47,16 +47,23 @@ def find_cuda() -> None:
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
-#: 애플에서는 mlx, 그 밖에서는 CUDA 를 쓰는 faster-whisper. 같은 무게를 다른 두름이 돌릴 뿐이라
-#: 나가는 값은 어느 쪽이나 같다 — 부르는 쪽은 어느 것이 돌았는지 몰라도 된다.
+#: 애플에서는 mlx, 그 밖에서는 CUDA 를 쓰는 faster-whisper, 그것도 없으면 transformers. 같은 무게를
+#: 다른 두름이 돌릴 뿐이라 부르는 쪽은 어느 것이 돌았는지 몰라도 된다. 세 번째는 spark(DGX Spark,
+#: aarch64) 때문에 있다 — PyPI 의 aarch64 CTranslate2 는 CUDA 없이 지어져(장치 0) faster-whisper 가
+#: CPU 두 코어로 돌고, torch 는 그 GPU 를 잘 쓴다.
+WhisperModel = None
 try:
     import mlx_whisper
     WHICH = "mlx-community/whisper-large-v3-mlx"
 except ImportError:
     mlx_whisper = None
-    find_cuda()
-    from faster_whisper import WhisperModel
-    WHICH = "large-v3"
+    import importlib.util
+    if importlib.util.find_spec("faster_whisper"):
+        find_cuda()
+        from faster_whisper import WhisperModel
+        WHICH = "large-v3"
+    else:
+        WHICH = "openai/whisper-large-v3"
 
 #: 한 번 세운 모델을 붙들어 둔다. faster-whisper 는 세우는 데만 몇 초 걸린다.
 _it: dict = {}
@@ -124,6 +131,37 @@ def by_cuda(path: str, which: str, language: str | None, vad: bool = False,
             for chunk in chunks for one in (chunk.words or []) if one.word.strip()]
 
 
+def by_torch(path: str, which: str, language: str | None, vad: bool = False,
+             hint: str = "") -> list:
+    """Transcribe with transformers on any CUDA card torch can drive.
+
+    The song is cut into 30-second windows and each is decoded on its own, which is what
+    `condition_on_previous_text=False` means on the other two sides. Word times come from the
+    cross-attention alignment, the same method the other two use. There is no voice-activity gate
+    and no hotwords here, so `vad` and `hint` are taken and ignored.
+
+    @param {str} path - The audio to read.
+    @param {str} which - Which weights to use.
+    @param {str | None} language - The language to force, or None to let it choose.
+    @param {bool} [vad=False] - Ignored here.
+    @param {str} [hint=""] - Ignored here.
+    @returns {list} Each word heard, paired with the ms at which it starts.
+    """
+    import torch
+    from transformers import pipeline
+    if "torch" not in _it:
+        _it["torch"] = pipeline("automatic-speech-recognition", model=which, dtype=torch.float16,
+                                device="cuda:0")
+    ask = {"task": "transcribe", "temperature": STEADY}
+    if language:
+        ask["language"] = language
+    said = _it["torch"](path, return_timestamps="word", chunk_length_s=30, batch_size=8,
+                        generate_kwargs=ask)
+    return [(one["text"].strip(), int(one["timestamp"][0] * 1000))
+            for one in said.get("chunks", [])
+            if one.get("text", "").strip() and one.get("timestamp") and one["timestamp"][0] is not None]
+
+
 def main() -> int:
     """Read a path on stdin, write the words heard and their times on stdout.
 
@@ -133,7 +171,7 @@ def main() -> int:
     try:
         #: 말을 안 박으면 whisper 가 스스로 고른다. 한국어로 박았더니 영어가 주인 곡
         #: (Small girl)이 자모 17% 밖에 안 닮았다 — 한글로 받아 적으려 애쓴 탓이다.
-        speak = by_mlx if mlx_whisper else by_cuda
+        speak = by_mlx if mlx_whisper else (by_cuda if WhisperModel else by_torch)
         out = speak(asked["path"], asked.get("which", WHICH), asked.get("language"),
                     bool(asked.get("vad")), asked.get("hint", ""))
     except Exception as trouble:  # noqa: BLE001
