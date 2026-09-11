@@ -56,6 +56,8 @@
   }
   button.push.main { background: var(--go); border-color: var(--go); color: #06100d; font-weight: 600; }
   button.push:disabled { opacity: .4; cursor: default; }
+  button.push.tiny { padding: 2px 8px; font-size: 11.5px; flex: 0 0 auto; }
+  .row .wait { color: var(--seed); }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--go); outline-offset: 1px; }
 
   main { flex: 1 1 auto; min-height: 0; display: flex; }
@@ -164,7 +166,11 @@
       <div class="body" id="artists"></div>
     </div>
     <div class="col">
-      <header><b id="head-artist">아티스트</b><span class="tail" id="tail-artist"></span></header>
+      <header>
+        <b id="head-artist">아티스트</b><span class="tail" id="tail-artist"></span>
+        <span class="grow"></span>
+        <button class="push tiny" id="walk" type="button" hidden>먼저 훑기</button>
+      </header>
       <div class="body" id="songs"></div>
     </div>
     <div class="col">
@@ -310,7 +316,8 @@
           fill(artists, rows, function (row) {
             return {
               name: row['이름'],
-              mark: row['시각 있는 곡'] + '/' + row['곡'],
+              full: row['이름'] + (row['훑음'] ? '' : '\n아직 안 훑은 아티스트 — 곡 목록을 받지 않았다'),
+              mark: row['훑음'] ? row['시각 있는 곡'] + '/' + row['곡'] : '안 훑음',
               faint: !row['시각 있는 곡']
             };
           }, loadSongs);
@@ -326,10 +333,23 @@
     function loadSongs(artist) {
       el('head-artist').textContent = artist['이름'];
       el('tail-artist').textContent = '';
+      var walk = el('walk');
+      walk.hidden = false;
+      walk.disabled = false;
+      walk.textContent = artist['훑음'] ? '다시 훑기' : '먼저 훑기';
+      walk.onclick = function () {
+        walk.disabled = true;
+        walk.textContent = '차례 올림';
+        fetch('/api/walk', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ '번호': artist['번호'] })
+        });
+      };
       fetch('/api/tracks?limit=500&artist_id=' + artist['번호'])
         .then(function (answer) { return answer.json(); })
         .then(function (rows) {
-          el('tail-artist').textContent = rows.length + '곡';
+          el('tail-artist').textContent = rows.length + '곡' +
+            (artist['훑음'] ? '' : ' · 아직 안 훑음');
           fill(songs, rows, function (row) {
             var copies = (row['벌'] || 1) > 1 ? ' ×' + row['벌'] : '';
             return {

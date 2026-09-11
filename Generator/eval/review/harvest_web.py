@@ -40,6 +40,9 @@ LOG = "harvest.log"
 #: 도는 중에 들어온 씨앗. 장부에 쓰는 쪽은 크롤 하나로 두고, 여기서는 줄만 세운다 — 둘이 같이 쓰면
 #: SQLite 가 잠기고, 기다리게 해도 크롤이 느려진다.
 WAITING: list[str] = []
+#: 사람이 목록에서 「먼저 훑기」를 누른 아티스트. 안 훑은 줄이 천팔백 명이라, 보고 있는 그 사람을
+#: 지금 훑을 방법이 없으면 목록은 영영 비어 보인다.
+HOT: list[int] = []
 _hand: threading.Thread | None = None
 _stop = threading.Event()
 
@@ -123,6 +126,16 @@ def crawl(words: list[str], want: int) -> None:
             STATE["지금"] = f"씨앗 «{word}» 검색 중"
             push({"kind": "state", **STATE})
             harvest.seed_artists(conn, lock, [word], watch=push)
+
+        while HOT:
+            artist_id = HOT.pop(0)
+            row = conn.execute("SELECT name, done FROM artists WHERE id=?", (artist_id,)).fetchone()
+            if not row:
+                continue
+            STATE["지금"] = f"{row[0]} 먼저 훑는 중"
+            push({"kind": "state", **STATE})
+            #: 이미 훑은 사람도 다시 훑는다 — 사람이 일부러 누른 것이고, 그 사이 새 곡이 났을 수 있다.
+            harvest.take_artist(conn, lock, artist_id, row[0], watch=push)
 
         now = counts(conn)
         STATE.update(now)
@@ -272,6 +285,28 @@ def make_app():
                  if one.strip()]
         return add_seeds(words)
 
+    @app.post("/api/walk")
+    async def walk(request: Request):
+        """Put one artist at the head of the walking queue.
+
+        @param {Request} request - Carries `{"번호": 123}`.
+        @returns {dict} Where it stands, and whether the crawl is running to take it.
+        """
+        asked = await request.json()
+        artist_id = int(asked.get("번호") or 0)
+        if not artist_id:
+            return {"넣음": False}
+        if artist_id not in HOT:
+            HOT.append(artist_id)
+        if not STATE["도는 중"]:
+            start(0)
+        conn = sqlite3.connect(DB)
+        row = conn.execute("SELECT name FROM artists WHERE id=?", (artist_id,)).fetchone()
+        conn.close()
+        push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 먼저  "
+                                      f"{row[0] if row else artist_id} · 다음 차례로 올림"})
+        return {"넣음": True, "기다림": len(HOT)}
+
     @app.get("/api/artists")
     def artists(q: str = "", limit: int = 400):
         """List the artists in the store, most synced songs first, for the left column.
@@ -292,12 +327,20 @@ def make_app():
             args = [f"%{q}%"]
         rows = conn.execute(
             "SELECT a.id, a.name, COUNT(*),"
-            " SUM(CASE WHEN t.state='synced' THEN 1 ELSE 0 END), COALESCE(SUM(t.line_count), 0)"
+            " SUM(CASE WHEN t.state='synced' THEN 1 ELSE 0 END), COALESCE(SUM(t.line_count), 0),"
+            " a.done"
             " FROM tracks t, json_each(t.artist_ids) j JOIN artists a ON a.id = j.value" + where +
             " GROUP BY a.id ORDER BY 4 DESC, 3 DESC LIMIT ?", args + [limit]).fetchall()
+        #: 곡이 하나도 없는 아티스트도 보여야 한다 — 「먼저 훑기」를 눌러야 할 사람이 바로 그들이다.
+        if q:
+            seen = {one[0] for one in rows}
+            more = conn.execute(
+                "SELECT id, name, 0, 0, 0, done FROM artists WHERE name LIKE ? LIMIT ?",
+                (f"%{q}%", limit)).fetchall()
+            rows = list(rows) + [one for one in more if one[0] not in seen]
         conn.close()
         return [{"번호": one[0], "이름": one[1] or "(이름 없음)", "곡": one[2],
-                 "시각 있는 곡": one[3], "줄": one[4]} for one in rows]
+                 "시각 있는 곡": one[3], "줄": one[4], "훑음": one[5]} for one in rows]
 
     @app.get("/api/tracks")
     def tracks(artist_id: int = 0, q: str = "", limit: int = 500, every: int = 0):
