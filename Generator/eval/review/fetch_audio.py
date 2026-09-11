@@ -99,8 +99,8 @@ def score(want: dict, one: dict) -> tuple[float, str]:
     got = float(one.get("duration") or 0)
     miss = abs(got - float(want["duration"] or 0))
     if not got or miss > LENGTH_GATE:
-        return -1.0, f"길이 {got:.0f}s (바이브 {want['duration']:.0f}s)"
-    why = [f"길이 차 {miss:.0f}s"]
+        return -1.0, f"길이 {got:.0f}s"
+    why = [f"±{miss:.0f}s"]
     total = {0: 40, 1: 40, 2: 30, 3: 15}.get(int(round(miss)), 5)
 
     title = unicodedata.normalize("NFKC", one.get("title") or "").lower()
@@ -108,14 +108,14 @@ def score(want: dict, one: dict) -> tuple[float, str]:
     mine = core_title(want["title"])
     if flat == mine or flat == plain(want["title"]):
         total += 25
-        why.append("제목만 있음")
+        why.append("제목만")
     elif mine and mine in flat:
         total += 15
-        why.append("제목 들어 있음")
+        why.append("제목")
     else:
         common = sum(1 for letter in set(mine) if letter in flat) / max(1, len(set(mine)))
         total += 15 * common
-        why.append(f"제목 닮음 {common:.0%}")
+        why.append(f"제목 {common:.0%}")
 
     channel = one.get("channel") or one.get("uploader") or ""
     if channel.endswith(" - Topic"):
@@ -130,15 +130,15 @@ def score(want: dict, one: dict) -> tuple[float, str]:
     who = plain(first_artist(want["artist"]))
     if who and (who in flat or who in plain(channel)):
         total += 10
-        why.append("아티스트")
+        why.append("가수")
 
     allowed = (want["title"] + " " + (want.get("album") or "")).lower()
     for word in WRONG:
         if word in title and word.strip() not in allowed:
             total -= 40
-            why.append(f"금지어 {word.strip()}")
+            why.append(f"✗{word.strip()}")
             break
-    return total, " · ".join(why)
+    return total, " ".join(why)
 
 
 def search(binary: str, query: str) -> list[dict]:
@@ -228,6 +228,97 @@ def length_of(path: str) -> float:
         return 0.0
 
 
+def width(text: str) -> int:
+    """How many terminal columns a string takes — Hangul and other wide letters take two.
+
+    @param {str} text - Any text.
+    @returns {int} Its display width.
+    """
+    return sum(2 if unicodedata.east_asian_width(one) in ("W", "F") else 1 for one in text)
+
+
+def fit(text: str, room: int) -> str:
+    """Cut or pad a string to exactly `room` columns, so columns line up in the terminal.
+
+    @param {str} text - Any text.
+    @param {int} room - Columns to fill.
+    @returns {str} The text, cut with `…` or padded with spaces.
+    """
+    text = (text or "").replace("\n", " ")
+    if width(text) > room:
+        out, used = "", 0
+        for one in text:
+            step = width(one)
+            if used + step > room - 1:
+                break
+            out += one
+            used += step
+        text = out + "…"
+    return text + " " * max(0, room - width(text))
+
+
+class Board:
+    """The terminal display: one tidy line per song above a progress bar that stays at the bottom.
+
+    Several songs are worked on at once, so lines arrive out of order; each is printed whole
+    under one lock, the bar is wiped before and redrawn after, and when output is not a terminal
+    (piped into a file) the bar is left out altogether.
+    """
+
+    def __init__(self, total: int):
+        """Start a board for `total` songs.
+
+        @param {int} total - How many songs this run will handle.
+        """
+        self.total = total
+        self.done = 0
+        self.count: dict[str, int] = {}
+        self.began = time.time()
+        self.lock = threading.Lock()
+        self.live = sys.stdout.isatty()
+
+    def bar(self) -> str:
+        """The progress bar line.
+
+        @returns {str} Bar, count, tallies and time left.
+        """
+        share = self.done / max(1, self.total)
+        full = int(share * 24)
+        spent = time.time() - self.began
+        left = spent / self.done * (self.total - self.done) if self.done else 0
+        tail = f"약 {int(left // 60)}분 {int(left % 60)}초 남음" if self.done else "…"
+        counts = " · ".join(f"{key} {value}" for key, value in self.count.items())
+        return f"  [{'█' * full}{'░' * (24 - full)}] {self.done}/{self.total} {share:4.0%}  {counts}  {tail}"
+
+    def say(self, lines: list[str], kind: str) -> None:
+        """Print one song's lines and move the bar on.
+
+        @param {list[str]} lines - What to print for this song.
+        @param {str} kind - Which tally this song counts under.
+        @returns {None}
+        """
+        with self.lock:
+            self.done += 1
+            self.count[kind] = self.count.get(kind, 0) + 1
+            if self.live:
+                sys.stdout.write("\r\033[K")
+            sys.stdout.write("\n".join(lines) + "\n")
+            if self.live:
+                sys.stdout.write(self.bar())
+            sys.stdout.flush()
+
+    def end(self) -> None:
+        """Leave the finished bar in place and move past it.
+
+        @returns {None}
+        """
+        with self.lock:
+            if self.live:
+                sys.stdout.write("\r\033[K")
+            sys.stdout.write(self.bar() + "\n")
+            sys.stdout.flush()
+
+
 def open_book(where: str) -> sqlite3.Connection:
     """Open the record of what was searched and fetched, kept apart from the lyric store.
 
@@ -299,37 +390,40 @@ def main() -> int:
     book = open_book(args.book)
     lock = threading.Lock()
     todo = worklist(args.vibe, book, args.limit)
-    print(f"  곡 {len(todo)} · {'고르기만' if args.dry else '받기'} · 동시에 {args.hands}", flush=True)
-    tally = {"받음": 0, "의심": 0, "못 찾음": 0, "실패": 0, "고름": 0}
+    print(f"\n  곡 {len(todo)} · {'고르기만 (받지 않음)' if args.dry else '찾아서 받기'}"
+          f" · 동시에 {args.hands}\n", flush=True)
+    board = Board(len(todo))
 
     def one(want: dict) -> None:
         chosen = pick(binary, want)
-        label = f"{want['artist'][:16]} — {want['title'][:28]} ({want['duration']:.0f}s)"
+        song = fit(f"{first_artist(want['artist'])} — {want['title']}", 44)
         if chosen.get("없음"):
-            state = "miss"
-            tally["못 찾음"] += 1
+            state, path, real = "miss", None, 0.0
             top = chosen["후보"][0] if chosen["후보"] else {}
-            print(f"  못 찾음  {label}  · 가장 나은 것 {top.get('duration', 0)}s "
-                  f"{top.get('title', '')[:30]} [{top.get('까닭', '')}]", flush=True)
-            path, real = None, 0.0
+            lines = [f"  ✗ 못 찾음  {song} {want['duration']:>4.0f}s",
+                     f"             가장 가까운 것: {top.get('duration') or 0:.0f}s "
+                     f"{fit(top.get('title', ''), 40)} [{top.get('까닭', '')}]" if top else
+                     "             검색 결과 없음"]
+            board.say(lines, "못 찾음")
         else:
-            print(f"  고름    {label}  → {chosen['duration']}s {chosen['channel'][:18]} · "
-                  f"{chosen['title'][:34]}  [{chosen['점수']:.0f} · {chosen['까닭']}]", flush=True)
             path, real, state = None, 0.0, "picked"
-            tally["고름"] += 1
+            mark, kind = "✓ 고름  ", "고름"
             if not args.dry:
                 path = fetch(binary, chosen["id"], args.out, str(want["track_id"]))
                 real = length_of(path) if path else 0.0
                 if not path:
-                    state = "fail"
-                    tally["실패"] += 1
+                    state, mark, kind = "fail", "✗ 실패  ", "실패"
                 elif real and abs(real - want["duration"]) > FILE_GATE:
-                    state = "suspect"
-                    tally["의심"] += 1
+                    state, mark, kind = "suspect", "⚠ 의심  ", "의심"
                 else:
-                    state = "got"
-                    tally["받음"] += 1
+                    state, mark, kind = "got", "✓ 받음  ", "받음"
                 time.sleep(REST)
+            got_len = f"{chosen['duration']:.0f}s" + (f" (파일 {real:.0f}s)" if real else "")
+            lines = [f"  {mark}  {song} {want['duration']:>4.0f}s → {got_len}  "
+                     f"{chosen['점수']:>3.0f}점  {chosen['까닭']}",
+                     f"             https://youtu.be/{chosen['id']}  "
+                     f"{fit(chosen['channel'], 22)} {fit(chosen['title'], 48).rstrip()}"]
+            board.say(lines, kind)
         if args.dry:
             return
         with lock:
@@ -346,7 +440,9 @@ def main() -> int:
 
     with ThreadPoolExecutor(max_workers=max(1, args.hands)) as pool:
         list(pool.map(one, todo))
-    print("\n  " + " · ".join(f"{key} {value}" for key, value in tally.items() if value), flush=True)
+    board.end()
+    if not args.dry:
+        print(f"  기록: {args.book} · 음원: {args.out}/", flush=True)
     return 0
 
 
