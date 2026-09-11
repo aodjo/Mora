@@ -39,10 +39,19 @@ BROWSER = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 HANDS = 8
 WALKERS = 4
 REST = 0.3
-#: 막히면 쉼을 몇 배로 늘리는지와 지금까지 몇 번 막혔는지. 429·403·503 이 오면 두 배씩(열여섯
-#: 배까지) 늘리고, 잘 받는 동안 조금씩 되돌린다. 남의 서버에서 쫓겨나면 다 잡는 것도 끝이다.
-PACE = {"배": 1.0, "막힘": 0}
+#: 막히면 쉼을 몇 배로 늘리는지와 지금까지 몇 번 막혔는지, 그리고 곡 하나만 막힌(403) 횟수.
+#: 429·503 이 오면 두 배씩(열여섯 배까지) 늘리고, 잘 받는 동안 조금씩 되돌린다.
+PACE = {"배": 1.0, "막힘": 0, "금지": 0}
 _pace_lock = threading.Lock()
+#: 403 은 대개 **그 곡만** 막힌 것이다 — 성인 인증이 있어야 가사를 주는 곡(라임어택 「NBA」 앨범,
+#: Ugly Duck …). 403 이 난 곡 바로 뒤의 다른 곡은 200 이었다. 이것을 전체 차단으로 읽고 쉼을 열여섯
+#: 배로 늘렸더니 수확 전체가 기어갔다. 전체가 막혔다고 보는 것은 403 이 성공 없이 이만큼 잇달을 때뿐.
+BLOCK_RUN = 12
+_run_403 = [0]
+
+
+class Forbidden(Exception):
+    """Vibe refused this one resource (403) — usually an adult-rated song that needs a login."""
 
 
 def slow_down(code: int) -> None:
@@ -99,6 +108,7 @@ def vibe_get(path: str, tries: int = 3) -> dict:
         try:
             with urllib.request.urlopen(request, timeout=15) as answer:
                 got = json.loads(answer.read().decode("utf-8"))
+            _run_403[0] = 0
             ease_up()
             time.sleep(REST * PACE["배"])
             return got
@@ -107,7 +117,17 @@ def vibe_get(path: str, tries: int = 3) -> dict:
             if trouble.code == 404:
                 time.sleep(REST * PACE["배"])
                 return {}
-            if trouble.code in (403, 429, 503):
+            #: 403 도 되풀이해도 403 이다. 그 곡만 막힌 것으로 보고 한 번에 넘긴다.
+            if trouble.code == 403:
+                with _pace_lock:
+                    _run_403[0] += 1
+                    PACE["금지"] += 1
+                    run = _run_403[0]
+                if run >= BLOCK_RUN:
+                    slow_down(403)
+                time.sleep(REST * PACE["배"])
+                return {"_막힘": 403}
+            if trouble.code in (429, 503):
                 slow_down(trouble.code)
             if attempt == tries - 1:
                 print(f"  못 받음 {path}: HTTP {trouble.code}", file=sys.stderr, flush=True)
@@ -355,8 +375,12 @@ def lines_of(track_id: int) -> list[dict] | None:
 
     @param {int} track_id - Which track.
     @returns {list[dict] | None} Lines with `at` in ms and `text`, or None when there is no sync.
+    @throws {Forbidden} When Vibe refuses this track's lyric (403), usually an adult-rated song.
     """
-    lyric = result_of(vibe_get(f"/v3/lyric/{track_id}")).get("lyric") or {}
+    got = vibe_get(f"/v3/lyric/{track_id}")
+    if got.get("_막힘") == 403:
+        raise Forbidden(track_id)
+    lyric = result_of(got).get("lyric") or {}
     sync = lyric.get("syncLyric") or {}
     times = sync.get("startTimeIndex")
     parts = [one for one in (sync.get("contents") or []) if isinstance(one, dict)]
@@ -378,21 +402,26 @@ def take_lyrics(conn: sqlite3.Connection, lock: threading.Lock, rows: list[tuple
     @param {callable | None} [watch=None] - Called with each track, for a watcher to draw.
     @returns {int} How many came back with a usable sync.
     """
-    def one(row: tuple) -> tuple[tuple, list[dict] | None]:
+    def one(row: tuple) -> tuple[tuple, list[dict] | None, bool]:
         try:
-            return row, lines_of(row[0])
+            return row, lines_of(row[0]), False
+        except Forbidden:
+            return row, None, True
         except Exception:  # noqa: BLE001
-            return row, None
+            return row, None, False
 
     kept = 0
     with ThreadPoolExecutor(max_workers=HANDS) as pool:
-        for row, lines in pool.map(one, rows):
+        for row, lines, barred in pool.map(one, rows):
             good = bool(lines) and len(lines) >= LEAST_LINES
+            #: 막힌 곡은 「시각 없음」과 따로 적는다 — 없는 것이 아니라 못 받은 것이라, 로그인할 수
+            #: 있게 되면 이 칸만 다시 받으면 된다.
+            state = "forbidden" if barred else ("synced" if good else "nosync")
             with lock:
                 conn.execute(
                     "UPDATE tracks SET state=?, lines=?, line_count=?, got_at=datetime('now')"
                     " WHERE track_id=?",
-                    ("synced" if good else "nosync",
+                    (state,
                      json.dumps(lines, ensure_ascii=False) if good else None,
                      len(lines) if lines else 0, row[0]))
                 #: 곡마다 곧바로 확정한다. 묶음 끝에 한 번 확정하면 그동안 쓰기 거래가 열린 채라,

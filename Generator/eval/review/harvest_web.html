@@ -134,7 +134,8 @@
     <span><i>안 훑음</i><b id="n-left">0</b></span>
     <span><i>받을 곡</i><b id="n-wait">0</b></span>
     <span><i>접은 중복</i><b id="n-dup">0</b></span>
-    <span title="바이브가 요청을 막은 횟수. 막히면 쉼을 저절로 늘린다."><i>막힘</i><b id="n-block">0</b></span>
+    <span title="성인 인증 등으로 가사를 안 주는 곡(403). 곡 하나만 막힌 것이라 속도는 안 늦춘다."><i>막힌 곡</i><b id="n-barred">0</b></span>
+    <span title="바이브가 전체를 막은 횟수(429·503, 또는 403 이 성공 없이 12번 잇달음). 그때만 쉼을 늘린다."><i>차단</i><b id="n-block">0</b></span>
   </div>
   <span class="grow"></span>
   <span class="doing"><i class="dot" id="dot"></i><span id="doing">멈춰 있음</span></span>
@@ -221,7 +222,7 @@
   function tally(said) {
     [['곡', 'n-song'], ['줄', 'n-line'], ['아티스트', 'n-artist'],
      ['남은 아티스트', 'n-left'], ['받을 곡', 'n-wait'], ['같은 곡', 'n-dup'],
-     ['막힘', 'n-block']].forEach(function (pair) {
+     ['막힌 곡', 'n-barred'], ['막힘', 'n-block']].forEach(function (pair) {
       if (said[pair[0]] !== undefined) {
         el(pair[1]).textContent = Number(said[pair[0]]).toLocaleString('ko-KR');
       }

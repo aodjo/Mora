@@ -112,6 +112,7 @@ def counts(conn: sqlite3.Connection) -> dict:
     return {
         "곡": got[0], "줄": got[1],
         "같은 곡": conn.execute("SELECT COUNT(*) FROM tracks WHERE state='dup'").fetchone()[0],
+        "막힌 곡": conn.execute("SELECT COUNT(*) FROM tracks WHERE state='forbidden'").fetchone()[0],
         "아티스트": conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0],
         "남은 아티스트": conn.execute("SELECT COUNT(*) FROM artists WHERE done=0").fetchone()[0],
         "받을 곡": conn.execute(
