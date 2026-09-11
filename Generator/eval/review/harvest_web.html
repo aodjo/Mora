@@ -103,6 +103,7 @@
     border: 1px solid var(--line); border-radius: 3px; padding: 4px 8px;
   }
   .adisk { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+  .adisk.low { color: var(--seed); }
   .alist { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
   .arow {
     display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 10px; align-items: center;
@@ -295,8 +296,8 @@
       <div class="actl">
         <label>곡 <input id="a-limit" type="number" min="1" max="100000" value="100"></label>
         <label>동시 <input id="a-hands" type="number" min="1" max="8" value="3"></label>
-        <label class="check"><input id="a-dry" type="checkbox" checked> 고르기만</label>
-        <button class="push main" id="a-start" type="button">고르기 시작</button>
+        <label class="check"><input id="a-dry" type="checkbox"> 고르기만</label>
+        <button class="push main" id="a-start" type="button">받기 시작</button>
         <button class="push" id="a-stop" type="button">멈춤</button>
         <div class="aprog" title="이번 판 진행"><i id="a-bar"></i></div>
         <span class="aprog-t" id="a-prog">쉬는 중</span>
@@ -593,6 +594,7 @@
     var summing = null;
     var loaded = false;
     var pending = {};
+    var note = '';
 
     /**
      * Read a response body as JSON.
@@ -698,7 +700,7 @@
       var parts = ORDER.filter(function (key) { return tally[key]; })
         .map(function (key) { return NAMES[key] + ' ' + tally[key]; });
       el('a-prog').textContent = word + (total ? done + '/' + total : '') +
-        (parts.length ? ' · ' + parts.join(' · ') : '');
+        (parts.length ? ' · ' + parts.join(' · ') : '') + (note ? ' · ' + note : '');
     }
 
     /**
@@ -737,7 +739,11 @@
       fetch('/api/audio/summary').then(json).then(function (said) {
         counts = said['상태별'] || {};
         drawStates();
-        el('a-disk').textContent = '음원 ' + size(said['디스크'] || 0);
+        var free = said['남은 곳'];
+        el('a-disk').textContent = '음원 ' + size(said['디스크'] || 0) +
+          (free !== undefined ? ' · 남은 디스크 ' + Math.round(free) + ' GB' : '');
+        el('a-disk').title = '남은 디스크가 ' + (said['바닥선'] || 40) + ' GB 밑으로 내려가면 받기를 스스로 멈춘다';
+        el('a-disk').classList.toggle('low', free !== undefined && free < (said['바닥선'] || 40) + 20);
         drawRun(said['판']);
       });
     }
@@ -1199,6 +1205,10 @@
      * @returns {void}
      */
     function hear(step) {
+      if (step.kind === 'audio-start') { note = ''; }
+      if (step.kind === 'audio-full') {
+        note = '남은 디스크 ' + step.free + ' GB — 바닥선 ' + step.floor + ' GB 밑이라 멈춤';
+      }
       drawRun(step.run);
       soonSummary();
       if (step.kind !== 'audio-song' || !step.track_id) { return; }

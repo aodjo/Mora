@@ -49,6 +49,10 @@ LEAST_SCORE = 45
 SEARCH_MANY = 12
 #: 검색·받기 사이의 쉼(초). 유튜브에 막히면 다 끝이다.
 REST = 1.5
+#: 남은 디스크가 이만큼(GB) 밑이면 판을 멈춘다. 128kbps 로 전부 받으면 5,680 시간에 330GB 쯤이다.
+LEAST_FREE_GB = float(os.environ.get("MORA_AUDIO_FLOOR_GB", "40"))
+#: 받은 파일이 가질 수 있는 끝. 다시 인코딩하지 않으니 유튜브가 준 그릇 그대로다.
+TAILS = (".m4a", ".webm", ".opus", ".ogg", ".mp3")
 
 #: 곡 제목이나 앨범에 없는데 영상 제목에 있으면 다른 녹음이라는 표시. 소문자로 비교한다.
 WRONG = [
@@ -192,8 +196,27 @@ def pick(binary: str, want: dict) -> dict:
     return {"없음": True, "후보": ranked[:5]}
 
 
+def file_of(out_dir: str, name: str) -> str | None:
+    """Find a song's downloaded file, whatever container YouTube gave it in.
+
+    @param {str} out_dir - Where downloads go.
+    @param {str} name - File name without extension (the Vibe track id).
+    @returns {str | None} The path, or None when there is none.
+    """
+    for tail in TAILS:
+        path = os.path.join(out_dir, f"{name}{tail}")
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def fetch(binary: str, video_id: str, out_dir: str, name: str) -> str | None:
-    """Download one upload's best audio as m4a.
+    """Download one upload's audio stream as YouTube serves it, without re-encoding.
+
+    Asking yt-dlp for m4a at the best quality re-encoded every stream to AAC at about 400 kbps —
+    three times the size of the 128 kbps AAC YouTube already serves, and a second lossy pass on
+    top. The native AAC stream is taken as is; when an upload has none, its Opus stream is kept in
+    its own container.
 
     @param {str} binary - Path to `yt-dlp`.
     @param {str} video_id - Which upload.
@@ -202,13 +225,20 @@ def fetch(binary: str, video_id: str, out_dir: str, name: str) -> str | None:
     @returns {str | None} The file path, or None when nothing arrived.
     """
     subprocess.run(
-        [binary, "--no-playlist", "--retries", "5", "-f", "bestaudio/best", "-x",
-         "--audio-format", "m4a", "--audio-quality", "0", "--no-warnings",
-         "-o", os.path.join(out_dir, f"{name}.%(ext)s"),
+        [binary, "--no-playlist", "--retries", "5", "-f", "bestaudio[ext=m4a]/bestaudio",
+         "--no-warnings", "-o", os.path.join(out_dir, f"{name}.%(ext)s"),
          f"https://www.youtube.com/watch?v={video_id}"],
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
-    path = os.path.join(out_dir, f"{name}.m4a")
-    return path if os.path.exists(path) else None
+    return file_of(out_dir, name)
+
+
+def disk_left(out_dir: str) -> float:
+    """How much room is left where downloads go.
+
+    @param {str} out_dir - Where downloads go.
+    @returns {float} Free space in GB.
+    """
+    return shutil.disk_usage(out_dir).free / 1e9
 
 
 def length_of(path: str) -> float:
@@ -441,7 +471,8 @@ def run(vibe: str, book_path: str, out_dir: str, limit: int, hands: int, dry: bo
     """Handle the next batch of songs, reporting each as it finishes.
 
     Shared by the terminal and the dashboard: each finished song goes to `watch`, and `halt`
-    stops the batch after the songs already in flight.
+    stops the batch after the songs already in flight. A fetching batch also stops itself when
+    the disk falls below `LEAST_FREE_GB`, telling `watch` once with a `full` event.
 
     @param {str} vibe - Path to the lyric store (read only).
     @param {str} book_path - Path to the audio record.
@@ -457,13 +488,21 @@ def run(vibe: str, book_path: str, out_dir: str, limit: int, hands: int, dry: bo
     os.makedirs(out_dir, exist_ok=True)
     book = open_book(book_path)
     lock = threading.Lock()
+    stop = halt if halt is not None else threading.Event()
     todo = worklist(vibe, book, limit, dry)
     tally: dict[str, int] = {}
     if watch:
         watch({"kind": "start", "total": len(todo), "dry": dry})
 
     def one(want: dict) -> None:
-        if halt is not None and halt.is_set():
+        if stop.is_set():
+            return
+        if not dry and disk_left(out_dir) < LEAST_FREE_GB:
+            with lock:
+                first = not stop.is_set()
+                stop.set()
+            if first and watch:
+                watch({"kind": "full", "free": round(disk_left(out_dir), 1), "floor": LEAST_FREE_GB})
             return
         try:
             result = settle(binary, want, out_dir, dry)
@@ -505,10 +544,10 @@ def choose(vibe_book: str, out_dir: str, track_id: int, video_id: str) -> dict:
     want = {"track_id": track_id, "title": row[0], "artist": row[1], "album": row[2],
             "duration": row[3], "manual": True,
             "chosen": {**picked, "까닭": (picked.get("까닭") or "") + " · 사람이 고름", "후보": candidates}}
-    for tail in (".m4a", ".webm", ".opus"):
-        old = os.path.join(out_dir, f"{track_id}{tail}")
-        if os.path.exists(old):
-            os.remove(old)
+    old = file_of(out_dir, str(track_id))
+    while old:
+        os.remove(old)
+        old = file_of(out_dir, str(track_id))
     result = settle(yt_binary(), want, out_dir, dry=False)
     record(book, threading.Lock(), result)
     book.close()
@@ -559,6 +598,10 @@ def main() -> int:
             print(f"\n  곡 {event['total']} · {'고르기만 (받지 않음)' if args.dry else '찾아서 받기'}"
                   f" · 동시에 {args.hands}\n", flush=True)
             board["it"] = Board(event["total"])
+            return
+        if event["kind"] == "full":
+            board["it"].write(f"  ■ 남은 디스크 {event['free']}GB — 바닥선 {event['floor']:.0f}GB 밑이라 멈춘다"
+                              f" (MORA_AUDIO_FLOOR_GB 로 바꾼다)")
             return
         lines, kind = lines_for(event)
         board["it"].say(lines, kind)

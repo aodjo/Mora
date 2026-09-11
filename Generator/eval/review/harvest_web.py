@@ -357,7 +357,7 @@ def audio_watch(event: dict) -> None:
     """
     if event["kind"] == "start":
         AUDIO_RUN.update({"total": event["total"], "done": 0, "tally": {}, "dry": event["dry"]})
-    else:
+    elif event["kind"] == "song":
         AUDIO_RUN["done"] += 1
         AUDIO_RUN["tally"][event["state"]] = AUDIO_RUN["tally"].get(event["state"], 0) + 1
     push({"kind": "audio-" + event["kind"], **event, "run": dict(AUDIO_RUN)})
@@ -663,7 +663,9 @@ def make_app():
         size = 0
         if os.path.isdir(AUDIO_OUT):
             size = sum(entry.stat().st_size for entry in os.scandir(AUDIO_OUT) if entry.is_file())
-        return {"상태별": counts, "디스크": size, "판": dict(AUDIO_RUN)}
+        free = fetch_audio.disk_left(AUDIO_OUT if os.path.isdir(AUDIO_OUT) else ".")
+        return {"상태별": counts, "디스크": size, "남은 곳": round(free, 1),
+                "바닥선": fetch_audio.LEAST_FREE_GB, "판": dict(AUDIO_RUN)}
 
     @app.get("/api/audio/list")
     def audio_list(state: str = "", q: str = "", limit: int = 300, offset: int = 0):
@@ -780,10 +782,12 @@ def make_app():
         @returns {FileResponse} The audio file.
         """
         from fastapi import HTTPException
-        path = os.path.join(AUDIO_OUT, f"{track_id}.m4a")
-        if not os.path.exists(path):
+        path = fetch_audio.file_of(AUDIO_OUT, str(track_id))
+        if not path:
             raise HTTPException(404, "받은 음원이 없다")
-        return FileResponse(path, media_type="audio/mp4")
+        kinds = {".m4a": "audio/mp4", ".webm": "audio/webm", ".opus": "audio/ogg", ".ogg": "audio/ogg",
+                 ".mp3": "audio/mpeg"}
+        return FileResponse(path, media_type=kinds.get(os.path.splitext(path)[1], "application/octet-stream"))
 
     @app.get("/stream")
     def stream():
