@@ -25,6 +25,7 @@ import sqlite3
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -33,10 +34,37 @@ from concurrent.futures import ThreadPoolExecutor
 VIBE = "https://apis.naver.com/vibeWeb/musicapiweb"
 BROWSER = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
            "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-#: 한 번에 부르는 수와 부름 사이의 쉼(초). 남의 서버다 — 셋이서 0.3 초씩 쉬면 초당 열 안쪽이고,
-#: 그 속도로도 곡 이백 개를 스무 초에 받는다. 서두를 까닭이 없다.
-HANDS = 3
+#: 가사를 한 번에 받는 수, 아티스트를 한 번에 훑는 수, 부름 사이의 쉼(초). 셋이서 받던 것을
+#: 여덟으로 늘렸다 — 셋일 때 1 분에 368 곡이었다. 바이브가 막기 시작하면 `PACE` 가 쉼을 늘린다.
+HANDS = 8
+WALKERS = 4
 REST = 0.3
+#: 막히면 쉼을 몇 배로 늘리는지와 지금까지 몇 번 막혔는지. 429·403·503 이 오면 두 배씩(열여섯
+#: 배까지) 늘리고, 잘 받는 동안 조금씩 되돌린다. 남의 서버에서 쫓겨나면 다 잡는 것도 끝이다.
+PACE = {"배": 1.0, "막힘": 0}
+_pace_lock = threading.Lock()
+
+
+def slow_down(code: int) -> None:
+    """Double the rest between requests after Vibe pushes back.
+
+    @param {int} code - The HTTP status that came back.
+    @returns {None}
+    """
+    with _pace_lock:
+        PACE["배"] = min(PACE["배"] * 2.0, 16.0)
+        PACE["막힘"] += 1
+    print(f"  바이브가 막음 {code} · 쉼 ×{PACE['배']:.0f}", file=sys.stderr, flush=True)
+
+
+def ease_up() -> None:
+    """Let the rest drift back down while requests keep succeeding.
+
+    @returns {None}
+    """
+    if PACE["배"] > 1.0:
+        with _pace_lock:
+            PACE["배"] = max(1.0, PACE["배"] * 0.99)
 #: 한 아티스트에서 가져올 곡의 최대(곡이 아주 많은 아티스트는 컴필레이션이 대부분이다).
 ARTIST_MOST = 300
 #: 곡으로 칠 길이(초)와 줄 수의 바닥. 처음에는 60~600 초, 여덟 줄 이상만 받아 인트로·나레이션을
@@ -71,13 +99,24 @@ def vibe_get(path: str, tries: int = 3) -> dict:
         try:
             with urllib.request.urlopen(request, timeout=15) as answer:
                 got = json.loads(answer.read().decode("utf-8"))
-            time.sleep(REST)
+            ease_up()
+            time.sleep(REST * PACE["배"])
             return got
+        except urllib.error.HTTPError as trouble:
+            #: 404 는 되풀이해도 404 다 — 오래된 곡은 가사가 없다고 그렇게 답한다. 세 번 부르던 것을 한 번으로.
+            if trouble.code == 404:
+                time.sleep(REST * PACE["배"])
+                return {}
+            if trouble.code in (403, 429, 503):
+                slow_down(trouble.code)
+            if attempt == tries - 1:
+                print(f"  못 받음 {path}: HTTP {trouble.code}", file=sys.stderr, flush=True)
+                return {}
         except Exception as trouble:  # noqa: BLE001
             if attempt == tries - 1:
                 print(f"  못 받음 {path}: {type(trouble).__name__}", file=sys.stderr, flush=True)
                 return {}
-            time.sleep(0.6 * (attempt + 1) + random.random() * 0.3)
+        time.sleep((0.6 * (attempt + 1) + random.random() * 0.3) * PACE["배"])
     return {}
 
 
@@ -354,6 +393,9 @@ def take_lyrics(conn: sqlite3.Connection, lock: threading.Lock, rows: list[tuple
                     ("synced" if good else "nosync",
                      json.dumps(lines, ensure_ascii=False) if good else None,
                      len(lines) if lines else 0, row[0]))
+                #: 곡마다 곧바로 확정한다. 묶음 끝에 한 번 확정하면 그동안 쓰기 거래가 열린 채라,
+                #: 옆에서 동시에 도는 아티스트 훑기가 장부에 못 쓰고 기다리다 「잠겼다」로 죽는다.
+                conn.commit()
             kept += good
             if watch:
                 watch({"kind": "lyric", "id": row[0], "title": row[1] if len(row) > 1 else "",

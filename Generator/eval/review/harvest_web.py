@@ -22,6 +22,7 @@ import sqlite3
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -33,7 +34,7 @@ STEPS: "queue.Queue[dict]" = queue.Queue(maxsize=2000)
 RECENT: "collections.deque[dict]" = collections.deque(maxlen=300)
 #: 크롤의 지금 상태.
 STATE: dict = {"도는 중": False, "지금": "멈춰 있음", "곡": 0, "줄": 0, "아티스트": 0,
-               "남은 아티스트": 0, "받을 곡": 0, "같은 곡": 0}
+               "남은 아티스트": 0, "받을 곡": 0, "같은 곡": 0, "막힘": 0, "쉼 배": 1.0}
 HERE = Path(__file__).parent
 DB = os.environ.get("MORA_VIBE_DB", "vibe.db")
 LOG = "harvest.log"
@@ -94,8 +95,9 @@ def counts(conn: sqlite3.Connection) -> dict:
 def crawl(words: list[str], want: int) -> None:
     """Walk the crawl, reporting every step, until the target is met or someone stops it.
 
-    Lyrics come first whenever any are waiting: the artist listing is cheap and the lyric fetch is
-    what actually produces the thing being harvested.
+    Seeds are searched first; then two workers run side by side — one fetching lyrics, one
+    walking artists — while this thread folds duplicates, takes in new seeds and keeps the
+    totals on the page current.
 
     @param {list[str]} words - Seed words to search before walking.
     @param {int} want - Stop once this many songs carry a sync.
@@ -114,65 +116,132 @@ def crawl(words: list[str], want: int) -> None:
         push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 씨앗  {len(fresh)}낱말 검색"
                                       f" · 새 아티스트 {got}"})
 
-    while not _stop.is_set():
-        #: 같은 녹음의 다른 벌은 셈에서도 빼고 가사도 받지 않는다. 목록을 새로 받을 때마다 새 벌이
-        #: 딸려 오므로 고리마다 접는다.
-        folded, _ = harvest.fold_same(conn, lock)
-        if folded:
-            push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 접음  같은 곡 {folded:,}벌"})
+    #: **가사 받기와 아티스트 훑기를 따로 돌린다.** 하나의 고리에서 번갈아 할 때는 받을 곡이 쌓이면
+    #: 훑기가 멈췄고(1 분에 0 명), 훑기가 멈추면 곧 받을 곡이 마른다. 둘은 서로 다른 장부 칸을 쓰므로
+    #: 각자의 실에서 각자의 연결로 돈다 — 쓰기만 `lock` 하나로 줄 세운다.
+    over = threading.Event()
+    hands = [threading.Thread(target=lyric_loop, args=(lock, over), daemon=True),
+             threading.Thread(target=walk_loop, args=(lock, over), daemon=True)]
+    for one in hands:
+        one.start()
 
+    tick = 0
+    while not _stop.is_set():
         while WAITING:
             word = WAITING.pop(0)
-            STATE["지금"] = f"씨앗 «{word}» 검색 중"
-            push({"kind": "state", **STATE})
+            push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 씨앗  «{word}» 검색"})
             harvest.seed_artists(conn, lock, [word], watch=push)
 
-        while HOT:
-            artist_id = HOT.pop(0)
-            row = conn.execute("SELECT name, done FROM artists WHERE id=?", (artist_id,)).fetchone()
-            if not row:
-                continue
-            STATE["지금"] = f"{row[0]} 먼저 훑는 중"
-            push({"kind": "state", **STATE})
-            #: 이미 훑은 사람도 다시 훑는다 — 사람이 일부러 누른 것이고, 그 사이 새 곡이 났을 수 있다.
-            harvest.take_artist(conn, lock, artist_id, row[0], watch=push)
+        #: 같은 녹음의 다른 벌은 셈에서도 빼고 가사도 받지 않는다. 표 전체를 훑는 일이라 30 초에 한 번.
+        if tick % 10 == 0:
+            folded, _ = harvest.fold_same(conn, lock)
+            if folded:
+                push({"kind": "note", "line": f"{time.strftime('%H:%M:%S')} 접음  같은 곡 {folded:,}벌"})
+        tick += 1
 
         now = counts(conn)
         STATE.update(now)
-        push({"kind": "count", **now})
-        #: 목표는 0 이면 없는 것으로 본다. 바이브가 닫히는 마당에 「2 만 곡에서 스스로 멈춤」은
-        #: 도움이 안 된다 — 아티스트가 마를 때까지 간다.
-        if (want and now["곡"] >= want) or (not now["받을 곡"] and not now["남은 아티스트"]):
+        STATE["막힘"] = harvest.PACE["막힘"]
+        STATE["쉼 배"] = round(harvest.PACE["배"], 1)
+        STATE["지금"] = " · ".join(one for one in (DOING["가사"], DOING["훑기"]) if one) or "쉬는 중"
+        push({"kind": "count", **now, "막힘": STATE["막힘"], "쉼 배": STATE["쉼 배"]})
+        push({"kind": "state", **STATE})
+        #: 목표는 0 이면 없는 것으로 본다. 둘 다 할 일이 없을 때만 끝낸다.
+        if (want and now["곡"] >= want) or (not now["받을 곡"] and not now["남은 아티스트"] and not HOT):
             break
+        time.sleep(3)
 
-        if now["받을 곡"]:
-            rows = conn.execute(
-                "SELECT track_id, title, artist FROM tracks WHERE state='new' AND has_sync=1"
-                " AND duration BETWEEN ? AND ? LIMIT 40",
-                (harvest.LEAST_SECONDS, harvest.MOST_SECONDS)).fetchall()
-            STATE["지금"] = f"가사 {len(rows)} 곡 받는 중"
-            push({"kind": "state", **STATE})
-            harvest.take_lyrics(conn, lock, rows, watch=push)
-            continue
-
-        #: **방금 심은 씨앗을 먼저 훑는다.** 씨앗에서 나온 아티스트도 그냥 줄 맨 뒤에 서면, 앞에
-        #: 천육백 명이 있는 한 영영 차례가 안 온다 — 씨앗을 심는 뜻이 사라진다. 씨앗에서 나온
-        #: 아티스트를 앞으로 당기고, 그 안에서는 늦게 심은 것부터. 나머지는 찾은 차례 그대로다.
-        for artist_id, name in conn.execute(
-                "SELECT id, name FROM artists WHERE done=0"
-                " ORDER BY (seed IS NOT NULL) DESC,"
-                " (CASE WHEN seed IS NOT NULL THEN found_at ELSE '' END) DESC, rowid"
-                " LIMIT 4").fetchall():
-            if _stop.is_set():
-                break
-            STATE["지금"] = f"{name} 의 곡 목록"
-            push({"kind": "state", **STATE})
-            harvest.take_artist(conn, lock, artist_id, name, watch=push)
-
+    over.set()
+    for one in hands:
+        one.join(timeout=60)
     STATE.update(counts(conn))
     STATE["도는 중"] = False
     STATE["지금"] = "멈춤"
+    DOING["가사"] = DOING["훑기"] = ""
     push({"kind": "state", **STATE})
+    conn.close()
+
+
+#: 두 일꾼이 지금 하는 일. 머리띠의 「지금」은 이 둘을 이어 붙인 것이다.
+DOING: dict = {"가사": "", "훑기": ""}
+
+
+def lyric_loop(lock: threading.Lock, over: threading.Event) -> None:
+    """Keep fetching lyrics for waiting songs, `HANDS` at a time, until told to stop.
+
+    @param {threading.Lock} lock - Guards writes to the store.
+    @param {threading.Event} over - Set when the crawl ends on its own.
+    @returns {None}
+    """
+    conn = harvest.open_db(DB)
+    while not (_stop.is_set() or over.is_set()):
+        rows = conn.execute(
+            "SELECT track_id, title, artist FROM tracks WHERE state='new' AND has_sync=1"
+            " AND duration BETWEEN ? AND ? LIMIT ?",
+            (harvest.LEAST_SECONDS, harvest.MOST_SECONDS, harvest.HANDS * 8)).fetchall()
+        if not rows:
+            DOING["가사"] = ""
+            time.sleep(2)
+            continue
+        DOING["가사"] = f"가사 {len(rows)}곡"
+        harvest.take_lyrics(conn, lock, rows, watch=push)
+    DOING["가사"] = ""
+    conn.close()
+
+
+_here = threading.local()
+
+
+def conn_here() -> sqlite3.Connection:
+    """The calling thread's own connection to the store, opened on first use.
+
+    A connection shared across threads interleaves cursors and fails; each walker keeps its own
+    and WAL lets them read side by side while `lock` lines up the writes.
+
+    @returns {sqlite3.Connection} This thread's connection.
+    """
+    if not hasattr(_here, "conn"):
+        _here.conn = harvest.open_db(DB)
+    return _here.conn
+
+
+def walk_loop(lock: threading.Lock, over: threading.Event) -> None:
+    """Keep walking artists, `WALKERS` at a time, until told to stop.
+
+    Artists someone pressed 「먼저 훑기」 on go first, then artists that came from a seed —
+    newest seed first — and after them everyone else in the order they were found. An artist
+    standing behind eighteen hundred others never gets a turn otherwise, and planting a seed
+    would mean nothing.
+
+    @param {threading.Lock} lock - Guards writes to the store.
+    @param {threading.Event} over - Set when the crawl ends on its own.
+    @returns {None}
+    """
+    conn = harvest.open_db(DB)
+    with ThreadPoolExecutor(max_workers=harvest.WALKERS) as pool:
+        while not (_stop.is_set() or over.is_set()):
+            picks: list[tuple[int, str]] = []
+            while HOT and len(picks) < harvest.WALKERS:
+                artist_id = HOT.pop(0)
+                row = conn.execute("SELECT name FROM artists WHERE id=?", (artist_id,)).fetchone()
+                if row:
+                    picks.append((artist_id, row[0]))
+            if len(picks) < harvest.WALKERS:
+                taken = {one for one, _ in picks}
+                picks += [one for one in conn.execute(
+                    "SELECT id, name FROM artists WHERE done=0"
+                    " ORDER BY (seed IS NOT NULL) DESC,"
+                    " (CASE WHEN seed IS NOT NULL THEN found_at ELSE '' END) DESC, rowid"
+                    " LIMIT ?", (harvest.WALKERS,)).fetchall() if one[0] not in taken]
+                picks = picks[:harvest.WALKERS]
+            if not picks:
+                DOING["훑기"] = ""
+                time.sleep(2)
+                continue
+            DOING["훑기"] = "훑기 " + ", ".join(name for _, name in picks)[:40]
+            list(pool.map(
+                lambda one: harvest.take_artist(conn_here(), lock, one[0], one[1], watch=push), picks))
+    DOING["훑기"] = ""
     conn.close()
 
 

@@ -132,6 +132,7 @@
     <span><i>안 훑음</i><b id="n-left">0</b></span>
     <span><i>받을 곡</i><b id="n-wait">0</b></span>
     <span><i>접은 중복</i><b id="n-dup">0</b></span>
+    <span title="바이브가 요청을 막은 횟수. 막히면 쉼을 저절로 늘린다."><i>막힘</i><b id="n-block">0</b></span>
   </div>
   <span class="grow"></span>
   <span class="doing"><i class="dot" id="dot"></i><span id="doing">멈춰 있음</span></span>
@@ -215,7 +216,8 @@
    */
   function tally(said) {
     [['곡', 'n-song'], ['줄', 'n-line'], ['아티스트', 'n-artist'],
-     ['남은 아티스트', 'n-left'], ['받을 곡', 'n-wait'], ['같은 곡', 'n-dup']].forEach(function (pair) {
+     ['남은 아티스트', 'n-left'], ['받을 곡', 'n-wait'], ['같은 곡', 'n-dup'],
+     ['막힘', 'n-block']].forEach(function (pair) {
       if (said[pair[0]] !== undefined) {
         el(pair[1]).textContent = Number(said[pair[0]]).toLocaleString('ko-KR');
       }
