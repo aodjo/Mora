@@ -53,6 +53,20 @@ REST = 1.5
 LEAST_FREE_GB = float(os.environ.get("MORA_AUDIO_FLOOR_GB", "40"))
 #: 받은 파일이 가질 수 있는 끝. 다시 인코딩하지 않으니 유튜브가 준 그릇 그대로다.
 TAILS = (".m4a", ".webm", ".opus", ".ogg", ".mp3")
+#: yt-dlp 오류에 이 말이 있으면 곡 탓이 아니라 유튜브가 막았거나 망이 끊긴 것이다. 소문자로 비교한다.
+BLOCK_SIGNS = ("sign in to confirm", "not a bot", "http error 429", "too many requests", "getaddrinfo",
+               "name resolution", "network is unreachable", "timed out", "connection reset",
+               "connection refused", "remote end closed")
+#: 막히면 이만큼(초) 쉬고 그 곡을 한 번 더 해 본다. 또 막히면 판을 멈춘다.
+BLOCK_WAIT = 90
+
+
+class Blocked(Exception):
+    """YouTube refused, or the network dropped — nothing is known about the song itself.
+
+    Kept apart from an empty search so that a block halfway through a long batch stops it
+    instead of writing thousands of songs down as not found, which no later batch would revisit.
+    """
 
 #: 곡 제목이나 앨범에 없는데 영상 제목에 있으면 다른 녹음이라는 표시. 소문자로 비교한다.
 WRONG = [
@@ -145,17 +159,33 @@ def score(want: dict, one: dict) -> tuple[float, str]:
     return total, " ".join(why)
 
 
+def last_error(said: str) -> str:
+    """The last `ERROR:` line yt-dlp wrote, which is the one that says why it stopped.
+
+    @param {str} said - yt-dlp's stderr.
+    @returns {str} That line without its prefix, or an empty string.
+    """
+    lines = [line for line in (said or "").splitlines() if line.startswith("ERROR:")]
+    return lines[-1][len("ERROR:"):].strip() if lines else ""
+
+
 def search(binary: str, query: str) -> list[dict]:
     """Ask YouTube for candidates without downloading anything.
 
     @param {str} binary - Path to `yt-dlp`.
     @param {str} query - The search words.
     @returns {list[dict]} Results with id, title, channel, duration and verification.
+    @throws {Blocked} When yt-dlp fails without returning anything — an empty search exits cleanly.
     """
-    got = subprocess.run(
-        [binary, "--flat-playlist", "--skip-download", "--dump-json", "--no-warnings",
-         f"ytsearch{SEARCH_MANY}:{query}"],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+    try:
+        got = subprocess.run(
+            [binary, "--flat-playlist", "--skip-download", "--dump-json", "--no-warnings",
+             f"ytsearch{SEARCH_MANY}:{query}"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired as late:
+        raise Blocked("검색 시간 초과") from late
+    if got.returncode != 0 and not got.stdout.strip():
+        raise Blocked(last_error(got.stderr) or f"yt-dlp 끝남 {got.returncode}")
     out = []
     for line in got.stdout.splitlines():
         try:
@@ -222,14 +252,21 @@ def fetch(binary: str, video_id: str, out_dir: str, name: str) -> str | None:
     @param {str} video_id - Which upload.
     @param {str} out_dir - Where to put it.
     @param {str} name - File name without extension (the Vibe track id).
-    @returns {str | None} The file path, or None when nothing arrived.
+    @returns {str | None} The file path, or None when the upload itself would not come (removed, private).
+    @throws {Blocked} When the failure is YouTube refusing or the network, not the upload.
     """
-    subprocess.run(
-        [binary, "--no-playlist", "--retries", "5", "-f", "bestaudio[ext=m4a]/bestaudio",
-         "--no-warnings", "-o", os.path.join(out_dir, f"{name}.%(ext)s"),
-         f"https://www.youtube.com/watch?v={video_id}"],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
-    return file_of(out_dir, name)
+    try:
+        got = subprocess.run(
+            [binary, "--no-playlist", "--retries", "5", "-f", "bestaudio[ext=m4a]/bestaudio",
+             "--no-warnings", "-o", os.path.join(out_dir, f"{name}.%(ext)s"),
+             f"https://www.youtube.com/watch?v={video_id}"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired as late:
+        raise Blocked("받기 시간 초과") from late
+    path = file_of(out_dir, name)
+    if not path and any(sign in (got.stderr or "").lower() for sign in BLOCK_SIGNS):
+        raise Blocked(last_error(got.stderr) or "받기 막힘")
+    return path
 
 
 def disk_left(out_dir: str) -> float:
@@ -472,7 +509,9 @@ def run(vibe: str, book_path: str, out_dir: str, limit: int, hands: int, dry: bo
 
     Shared by the terminal and the dashboard: each finished song goes to `watch`, and `halt`
     stops the batch after the songs already in flight. A fetching batch also stops itself when
-    the disk falls below `LEAST_FREE_GB`, telling `watch` once with a `full` event.
+    the disk falls below `LEAST_FREE_GB`, telling `watch` once with a `full` event, and when
+    YouTube blocks twice in a row on the same song, telling it once with a `blocked` event. A
+    blocked song is not written down, so the next batch takes it again.
 
     @param {str} vibe - Path to the lyric store (read only).
     @param {str} book_path - Path to the audio record.
@@ -504,13 +543,27 @@ def run(vibe: str, book_path: str, out_dir: str, limit: int, hands: int, dry: bo
             if first and watch:
                 watch({"kind": "full", "free": round(disk_left(out_dir), 1), "floor": LEAST_FREE_GB})
             return
-        try:
-            result = settle(binary, want, out_dir, dry)
-        except Exception as trouble:  # noqa: BLE001
-            result = {"track_id": want["track_id"], "artist": want["artist"], "title": want["title"],
-                      "album": want.get("album") or "", "want": want["duration"], "state": "fail",
-                      "video": None, "score": None, "why": f"{type(trouble).__name__}",
-                      "candidates": [], "file": None, "real": 0.0}
+        for attempt in (1, 2):
+            try:
+                result = settle(binary, want, out_dir, dry)
+                break
+            except Blocked as trouble:
+                if attempt == 1:
+                    if stop.wait(BLOCK_WAIT):
+                        return
+                    continue
+                with lock:
+                    first = not stop.is_set()
+                    stop.set()
+                if first and watch:
+                    watch({"kind": "blocked", "why": str(trouble)})
+                return
+            except Exception as trouble:  # noqa: BLE001
+                result = {"track_id": want["track_id"], "artist": want["artist"], "title": want["title"],
+                          "album": want.get("album") or "", "want": want["duration"], "state": "fail",
+                          "video": None, "score": None, "why": f"{type(trouble).__name__}",
+                          "candidates": [], "file": None, "real": 0.0}
+                break
         record(book, lock, result)
         with lock:
             tally[result["state"]] = tally.get(result["state"], 0) + 1
@@ -545,10 +598,18 @@ def choose(vibe_book: str, out_dir: str, track_id: int, video_id: str) -> dict:
             "duration": row[3], "manual": True,
             "chosen": {**picked, "까닭": (picked.get("까닭") or "") + " · 사람이 고름", "후보": candidates}}
     old = file_of(out_dir, str(track_id))
-    while old:
-        os.remove(old)
-        old = file_of(out_dir, str(track_id))
-    result = settle(yt_binary(), want, out_dir, dry=False)
+    aside = old + ".old" if old else None
+    if old:
+        os.replace(old, aside)
+    try:
+        result = settle(yt_binary(), want, out_dir, dry=False)
+    except Blocked:
+        if aside:
+            os.replace(aside, old)
+        book.close()
+        raise
+    if aside and os.path.exists(aside):
+        os.remove(aside)
     record(book, threading.Lock(), result)
     book.close()
     return result
@@ -602,6 +663,10 @@ def main() -> int:
         if event["kind"] == "full":
             board["it"].write(f"  ■ 남은 디스크 {event['free']}GB — 바닥선 {event['floor']:.0f}GB 밑이라 멈춘다"
                               f" (MORA_AUDIO_FLOOR_GB 로 바꾼다)")
+            return
+        if event["kind"] == "blocked":
+            board["it"].write(f"  ■ 유튜브가 막았거나 망이 끊겼다 — 멈춘다. 막힌 곡은 안 적었으니 다음 판이 다시 한다."
+                              f"  ({fit(event['why'], 80).rstrip()})")
             return
         lines, kind = lines_for(event)
         board["it"].say(lines, kind)

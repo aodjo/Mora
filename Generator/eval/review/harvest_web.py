@@ -749,7 +749,12 @@ def make_app():
         track_id, video_id = int(asked["번호"]), str(asked["영상"])
 
         def go() -> None:
-            result = fetch_audio.choose(AUDIO_BOOK, AUDIO_OUT, track_id, video_id)
+            try:
+                result = fetch_audio.choose(AUDIO_BOOK, AUDIO_OUT, track_id, video_id)
+            except fetch_audio.Blocked as trouble:
+                push({"kind": "audio-blocked", "why": str(trouble), "track_id": track_id,
+                      "run": dict(AUDIO_RUN)})
+                return
             push({"kind": "audio-song", **result, "run": dict(AUDIO_RUN)})
 
         threading.Thread(target=go, daemon=True).start()

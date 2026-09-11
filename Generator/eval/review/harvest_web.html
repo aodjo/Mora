@@ -1209,6 +1209,14 @@
       if (step.kind === 'audio-full') {
         note = '남은 디스크 ' + step.free + ' GB — 바닥선 ' + step.floor + ' GB 밑이라 멈춤';
       }
+      if (step.kind === 'audio-blocked') {
+        note = '유튜브가 막았거나 망이 끊겨 멈춤 · 막힌 곡은 안 적어서 다음 판이 다시 한다';
+        el('a-prog').title = step.why || '';
+        if (step.track_id) {
+          delete pending[step.track_id];
+          if (String(step.track_id) === String(open)) { loadOne(open); }
+        }
+      }
       drawRun(step.run);
       soonSummary();
       if (step.kind !== 'audio-song' || !step.track_id) { return; }
