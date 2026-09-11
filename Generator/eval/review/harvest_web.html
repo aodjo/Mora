@@ -75,9 +75,6 @@
   .verdict { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; color: var(--mid); font-size: 12.5px; }
   .verdict .badge { padding: 2px 8px; }
   .busy { margin: 0; color: var(--seed); font-size: 12.5px; }
-  .cwrap { overflow-x: auto; }
-  .cands td:first-child { overflow-wrap: anywhere; }
-  .cands td.n { white-space: pre; }
   .say button:disabled { cursor: default; opacity: .6; }
   .adetail .put input { font: inherit; }
   .apanel { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
@@ -127,12 +124,29 @@
   .adetail h2 { margin: 0; font-size: 16px; font-weight: 600; }
   .adetail h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--dim); font-weight: 600; }
   .adetail .meta { color: var(--mid); font-size: 12.5px; margin: 3px 0 0; }
+  /* 관리자 화면처럼: 썸네일로 있다가 누르면 플레이어가 된다. 작은 채로는 스크러버가 몇 픽셀이라 커진다. */
+  .yt-thumb {
+    position: relative; display: block; width: 100%; aspect-ratio: 16 / 9; padding: 0; overflow: hidden;
+    border: 1px solid var(--line); border-radius: 3px; background: var(--raise); cursor: pointer;
+  }
+  .yt-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .yt-thumb span {
+    position: absolute; inset: 0; display: grid; place-items: center; color: #fff;
+    background: rgb(0 0 0 / .3); transition: background .15s;
+  }
+  .yt-thumb:hover span { background: rgb(0 0 0 / .12); }
+  .yt-frame {
+    display: block; width: 100%; max-width: 640px; aspect-ratio: 16 / 9;
+    border: 1px solid var(--line); border-radius: 3px; background: #000;
+  }
   .video { display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 12px; align-items: start; }
-  .video img { width: 168px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 3px; background: var(--raise); display: block; }
+  .video.playing { grid-template-columns: minmax(0, 1fr); }
+  .video .vi { min-width: 0; }
   .video a { color: var(--lyric); text-decoration: none; }
   .video a:hover { text-decoration: underline; }
   .video .vt { font-weight: 500; overflow-wrap: anywhere; }
   .video .vm { color: var(--mid); font-size: 12.5px; margin-top: 4px; }
+  .adetail > * { flex-shrink: 0; }
   .adetail audio { width: 100%; }
   .say { display: flex; flex-direction: column; }
   .say button {
@@ -141,12 +155,23 @@
   }
   .say button:hover { background: rgba(79,195,161,.08); }
   .say button em { font-style: normal; font-family: var(--mono); font-size: 11.5px; color: var(--dim); padding-top: 1px; }
-  .cands { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  .cands td { padding: 5px 6px; border-bottom: 1px solid rgba(32,43,40,.6); vertical-align: top; }
-  .cands td.n { font-family: var(--mono); color: var(--mid); white-space: nowrap; text-align: right; }
-  .cands tr.on td { background: rgba(79,195,161,.1); }
-  .cands .why { color: var(--dim); font-size: 11.5px; }
-  .cands a { color: var(--lyric); text-decoration: none; }
+  .cands { display: flex; flex-direction: column; font-size: 12.5px; }
+  .cand {
+    display: grid; grid-template-columns: 104px minmax(0, 1fr) auto auto auto; gap: 8px 10px;
+    align-items: start; padding: 7px 6px; border-bottom: 1px solid rgba(32,43,40,.6);
+  }
+  .cand.on { background: rgba(79,195,161,.1); }
+  .cand.playing > .yt { grid-column: 1 / -1; }
+  .cand.playing > .ci { grid-column: 1 / span 2; }
+  .cand .ci { min-width: 0; overflow-wrap: anywhere; }
+  .cand .n { font-family: var(--mono); color: var(--mid); white-space: pre; text-align: right; }
+  .cand .why { color: var(--dim); font-size: 11.5px; }
+  .cand a { color: var(--lyric); text-decoration: none; }
+  .cand a:hover { text-decoration: underline; }
+  @media (max-width: 520px) {
+    .cand { grid-template-columns: 88px minmax(0, 1fr) auto; }
+    .cand .cd { grid-column: 2 / -1; }
+  }
   .deeds { display: flex; gap: 6px; flex-wrap: wrap; }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--go); outline-offset: 1px; }
 
@@ -876,6 +901,86 @@
     }
 
     /**
+     * Make a YouTube thumbnail that turns into a player when pressed, the way the admin shows
+     * uploads.
+     *
+     * At thumbnail size YouTube's own controls are unusable, so the one that plays grows to the
+     * width of its row. Only one plays at a time — see `hush`.
+     *
+     * @param {string} video - The upload's id.
+     * @param {string} title - What to call it for screen readers.
+     * @returns {HTMLElement} The holder, carrying its thumbnail for folding back.
+     */
+    function tube(video, title) {
+      var holder = document.createElement('div');
+      holder.className = 'yt';
+      holder.dataset.video = video;
+      holder.dataset.title = title;
+      var thumb = document.createElement('button');
+      thumb.type = 'button';
+      thumb.className = 'yt-thumb';
+      thumb.setAttribute('aria-label', title + ' 재생');
+      thumb.innerHTML = '<img alt="" loading="lazy"><span><svg viewBox="0 0 16 16" width="18" height="18" ' +
+        'aria-hidden="true"><path d="M4.5 2.5v11l9-5.5z" fill="currentColor"/></svg></span>';
+      thumb.firstChild.src = 'https://i.ytimg.com/vi/' + encodeURIComponent(video) + '/mqdefault.jpg';
+      thumb.addEventListener('click', function () { playTube(holder, 0); });
+      holder.appendChild(thumb);
+      holder.thumb = thumb;
+      return holder;
+    }
+
+    /**
+     * Start one YouTube player, from a given second, folding every other source away first.
+     *
+     * @param {HTMLElement} holder - A holder from `tube`.
+     * @param {number} start - Where to start, in seconds.
+     * @returns {void}
+     */
+    function playTube(holder, start) {
+      hush(holder);
+      var frame = document.createElement('iframe');
+      frame.className = 'yt-frame';
+      frame.title = holder.dataset.title;
+      frame.allow = 'autoplay; encrypted-media; picture-in-picture';
+      frame.allowFullscreen = true;
+      frame.src = 'https://www.youtube-nocookie.com/embed/' + encodeURIComponent(holder.dataset.video) +
+        '?autoplay=1&rel=0' + (start > 0 ? '&start=' + Math.floor(start) : '');
+      holder.innerHTML = '';
+      holder.appendChild(frame);
+      holder.classList.add('on');
+      if (holder.parentNode) { holder.parentNode.classList.add('playing'); }
+    }
+
+    /**
+     * Put a playing YouTube player back to its thumbnail, which also stops it.
+     *
+     * @param {HTMLElement} holder - A holder from `tube`.
+     * @returns {void}
+     */
+    function fold(holder) {
+      if (!holder.classList.contains('on')) { return; }
+      holder.innerHTML = '';
+      holder.appendChild(holder.thumb);
+      holder.classList.remove('on');
+      if (holder.parentNode) { holder.parentNode.classList.remove('playing'); }
+    }
+
+    /**
+     * Keep to one sound at a time: fold every YouTube player but `keep`, and when a player is
+     * starting, pause the downloaded file too.
+     *
+     * @param {HTMLElement|null} keep - The holder about to play, or null when the file is.
+     * @returns {void}
+     */
+    function hush(keep) {
+      Array.prototype.forEach.call(detail.querySelectorAll('.yt.on'), function (holder) {
+        if (holder !== keep) { fold(holder); }
+      });
+      var file = detail.querySelector('audio');
+      if (keep && file && !file.paused) { file.pause(); }
+    }
+
+    /**
      * Draw one song: the chosen upload, a player for the file, the first lyric lines to check by
      * ear, and every candidate with a button to take it instead.
      *
@@ -917,14 +1022,15 @@
       }
 
       var player = null;
+      var stage = null;
       if (video) {
-        var link = 'https://www.youtube.com/watch?v=' + encodeURIComponent(video);
         var box = document.createElement('div');
         box.className = 'video';
-        box.innerHTML = '<a target="_blank" rel="noopener"><img alt="" loading="lazy"></a>' +
-          '<div><a class="vt" target="_blank" rel="noopener"></a><div class="vm"></div><div class="vm"></div></div>';
-        Array.prototype.forEach.call(box.querySelectorAll('a'), function (anchor) { anchor.href = link; });
-        box.querySelector('img').src = 'https://i.ytimg.com/vi/' + encodeURIComponent(video) + '/mqdefault.jpg';
+        stage = tube(video, song['영상 제목'] || video);
+        box.appendChild(stage);
+        box.insertAdjacentHTML('beforeend', '<div class="vi"><a class="vt" target="_blank" rel="noopener"></a>' +
+          '<div class="vm"></div><div class="vm"></div></div>');
+        box.querySelector('.vt').href = 'https://www.youtube.com/watch?v=' + encodeURIComponent(video);
         box.querySelector('.vt').textContent = song['영상 제목'] || video;
         var metas = box.querySelectorAll('.vm');
         metas[0].textContent = (song['채널'] || '') + ' · youtu.be/' + video;
@@ -938,6 +1044,7 @@
         player.controls = true;
         player.preload = 'metadata';
         player.src = '/media/' + id + '?at=' + encodeURIComponent(song['때'] || '');
+        player.addEventListener('play', function () { hush(null); });
         detail.appendChild(player);
       }
 
@@ -972,7 +1079,8 @@
 
       var lines = song['첫 줄'] || [];
       if (lines.length) {
-        var words = part(player ? '첫 줄 · 누르면 그 자리부터 듣는다' : '첫 줄 · 누르면 유튜브 그 자리가 열린다');
+        var words = part(player ? '첫 줄 · 누르면 받은 파일을 그 자리부터 듣는다'
+          : '첫 줄 · 누르면 위 영상을 그 자리부터 튼다');
         var say = document.createElement('div');
         say.className = 'say';
         lines.forEach(function (one) {
@@ -986,9 +1094,8 @@
             if (player) {
               player.currentTime = Math.max(0, one.at / 1000 - 0.5);
               player.play();
-            } else if (video) {
-              window.open('https://www.youtube.com/watch?v=' + encodeURIComponent(video) +
-                          '&t=' + Math.max(0, Math.floor(one.at / 1000) - 1) + 's', '_blank', 'noopener');
+            } else if (stage) {
+              playTube(stage, one.at / 1000 - 1);
             }
           });
           say.appendChild(line);
@@ -999,25 +1106,25 @@
       var cands = song['후보'] || [];
       var others = part(cands.length ? '후보 ' + cands.length + '개 · 점수 순' : '후보 없음');
       if (cands.length) {
-        var wrap = document.createElement('div');
-        wrap.className = 'cwrap';
-        var table = document.createElement('table');
-        table.className = 'cands';
+        var pile = document.createElement('div');
+        pile.className = 'cands';
         cands.forEach(function (one) {
-          var row = document.createElement('tr');
+          var row = document.createElement('div');
           var chosen = one.id === video;
-          if (chosen) { row.className = 'on'; }
-          row.innerHTML = '<td><a target="_blank" rel="noopener"></a><div class="why"></div></td>' +
-            '<td class="n"></td><td class="n"></td><td></td>';
+          row.className = 'cand' + (chosen ? ' on' : '');
+          row.appendChild(tube(one.id, one.title || one.id));
+          row.insertAdjacentHTML('beforeend', '<div class="ci"><a target="_blank" rel="noopener"></a>' +
+            '<div class="why"></div></div><div class="n"></div><div class="n"></div><div class="cd"></div>');
           var anchor = row.querySelector('a');
           anchor.href = 'https://www.youtube.com/watch?v=' + encodeURIComponent(one.id);
           anchor.textContent = one.title || one.id;
           row.querySelector('.why').textContent = [one.channel, one['까닭']].filter(Boolean).join(' · ');
-          row.children[1].textContent = mmss(one.duration) + '\n' + (off(one.duration, want) || '');
-          row.children[2].textContent = one['점수'] !== null && one['점수'] !== undefined
-            ? Math.round(one['점수']) + '점' : '';
+          var cells = row.querySelectorAll('.n');
+          cells[0].textContent = mmss(one.duration) + '\n' + (off(one.duration, want) || '');
+          cells[1].textContent = one['점수'] !== null && one['점수'] !== undefined ? Math.round(one['점수']) + '점' : '';
+          var deed = row.querySelector('.cd');
           if (chosen && song['파일']) {
-            row.children[3].innerHTML = '<span class="why">지금 것</span>';
+            deed.innerHTML = '<span class="why">지금 것</span>';
           } else {
             var button = document.createElement('button');
             button.type = 'button';
@@ -1025,12 +1132,11 @@
             button.textContent = chosen ? '받기' : '이것으로 받기';
             button.disabled = !!waiting;
             button.addEventListener('click', function () { fetchVideo(id, one.id); });
-            row.children[3].appendChild(button);
+            deed.appendChild(button);
           }
-          table.appendChild(row);
+          pile.appendChild(row);
         });
-        wrap.appendChild(table);
-        others.appendChild(wrap);
+        others.appendChild(pile);
       }
 
       var put = document.createElement('div');
@@ -1175,9 +1281,13 @@
         if (next && next.classList.contains('arow')) { select(next); }
       } else if (event.key === ' ') {
         var player = detail.querySelector('audio');
+        var stage = detail.querySelector('.video .yt');
         if (player) {
           event.preventDefault();
           if (player.paused) { player.play(); } else { player.pause(); }
+        } else if (stage) {
+          event.preventDefault();
+          if (stage.classList.contains('on')) { fold(stage); } else { playTube(stage, 0); }
         }
       }
     });
