@@ -212,7 +212,9 @@ def make_app():
 
         @returns {dict} Everything a freshly opened console needs.
         """
-        if not STATE["도는 중"] and os.path.exists(DB):
+        #: 셈은 언제나 장부에서 읽는다. 크롤이 도는 동안 화면 숫자를 크롤이 밀어 주기는 하지만,
+        #: 방금 띄운 서버는 첫 셈을 밀기 전이라 0 이 찍힌다 — 장부에 만 곡이 있는데도.
+        if os.path.exists(DB):
             conn = sqlite3.connect(DB)
             STATE.update(counts(conn))
             conn.close()
