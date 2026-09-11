@@ -330,11 +330,13 @@
         .then(function (rows) {
           el('tail-artist').textContent = rows.length + '곡';
           fill(songs, rows, function (row) {
+            var copies = (row['벌'] || 1) > 1 ? ' ×' + row['벌'] : '';
             return {
               name: row['제목'],
-              full: row['제목'] + ' — ' + row['아티스트'],
-              mark: row['상태'] === 'synced' ? row['줄'] + '줄'
-                : (row['상태'] === 'new' ? '아직' : '시각 없음'),
+              full: row['제목'] + ' — ' + row['아티스트'] + '\n' + (row['앨범'] || '') +
+                (copies ? '\n같은 곡 ' + row['벌'] + '벌 (앨범마다 따로 실린 것)' : ''),
+              mark: (row['상태'] === 'synced' ? row['줄'] + '줄'
+                : (row['상태'] === 'new' ? '아직' : '시각 없음')) + copies,
               faint: row['상태'] !== 'synced'
             };
           }, loadLines);

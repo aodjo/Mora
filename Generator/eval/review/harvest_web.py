@@ -280,13 +280,20 @@ def make_app():
                  "시각 있는 곡": one[3], "줄": one[4]} for one in rows]
 
     @app.get("/api/tracks")
-    def tracks(artist_id: int = 0, q: str = "", limit: int = 500):
-        """List one artist's songs, or the songs matching a search.
+    def tracks(artist_id: int = 0, q: str = "", limit: int = 500, every: int = 0):
+        """List one artist's songs, folding the copies of the same recording into one row.
+
+        Vibe lists the same recording once per album it appears on — a single, a best-of and two
+        compilations give 「사랑이라는 이유로」 four times, each with its own track id. For reading
+        and for training data they are one song. Copies are folded by title and the best one is
+        kept: a synced copy over an unsynced one, then the one with the most lines, then the
+        longest. `every=1` unfolds them.
 
         @param {int} [artist_id=0] - Whose songs to list; every song they are credited on.
         @param {str} [q=""] - Filter on song title or credit line.
         @param {int} [limit=500] - How many to return.
-        @returns {list[dict]} Songs with duration, state and line count.
+        @param {int} [every=0] - 1 to list every copy instead of folding them.
+        @returns {list[dict]} Songs with duration, state, line count and how many copies exist.
         """
         conn = sqlite3.connect(DB)
         where, args = [], []
@@ -296,13 +303,28 @@ def make_app():
         if q:
             where.append("(title LIKE ? OR artist LIKE ?)")
             args += [f"%{q}%", f"%{q}%"]
-        rows = conn.execute(
-            "SELECT track_id, title, album, duration, state, COALESCE(line_count, 0), artist"
-            " FROM tracks" + (" WHERE " + " AND ".join(where) if where else "") +
-            " ORDER BY state='synced' DESC, line_count DESC, title LIMIT ?", args + [limit]).fetchall()
+        filter_on = (" WHERE " + " AND ".join(where)) if where else ""
+        if every:
+            rows = conn.execute(
+                "SELECT track_id, title, album, duration, state, COALESCE(line_count, 0), artist, 1"
+                " FROM tracks" + filter_on +
+                " ORDER BY state='synced' DESC, line_count DESC, title LIMIT ?",
+                args + [limit]).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT track_id, title, album, duration, state, lines, artist, copies FROM ("
+                "  SELECT track_id, title, album, duration, state, COALESCE(line_count, 0) AS lines,"
+                "    artist,"
+                "    COUNT(*) OVER (PARTITION BY lower(trim(title))) AS copies,"
+                "    ROW_NUMBER() OVER (PARTITION BY lower(trim(title))"
+                "      ORDER BY (state='synced') DESC, COALESCE(line_count, 0) DESC, duration DESC)"
+                "      AS pick"
+                "  FROM tracks" + filter_on +
+                ") WHERE pick = 1 ORDER BY state='synced' DESC, lines DESC, title LIMIT ?",
+                args + [limit]).fetchall()
         conn.close()
         return [{"번호": one[0], "제목": one[1], "앨범": one[2], "길이": one[3],
-                 "상태": one[4], "줄": one[5], "아티스트": one[6]} for one in rows]
+                 "상태": one[4], "줄": one[5], "아티스트": one[6], "벌": one[7]} for one in rows]
 
     @app.get("/api/track/{track_id}")
     def track(track_id: int):
