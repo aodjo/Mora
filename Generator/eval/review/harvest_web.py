@@ -250,6 +250,72 @@ def make_app():
                  if one.strip()]
         return add_seeds(words)
 
+    @app.get("/api/artists")
+    def artists(q: str = "", limit: int = 400):
+        """List the artists in the store, biggest first, as the browsing pane's left column.
+
+        Grouped by the artist string on the track rather than by artist id: that is the name a
+        person reads on the song, and it sidesteps matching against the id list a track carries.
+
+        @param {str} [q=""] - Filter on artist or song name.
+        @param {int} [limit=400] - How many to return.
+        @returns {list[dict]} Artists with song counts and line totals.
+        """
+        conn = sqlite3.connect(DB)
+        where, args = "", []
+        if q:
+            where = " WHERE artist LIKE ? OR title LIKE ?"
+            args = [f"%{q}%", f"%{q}%"]
+        rows = conn.execute(
+            "SELECT artist, COUNT(*), SUM(CASE WHEN state='synced' THEN 1 ELSE 0 END),"
+            " COALESCE(SUM(line_count), 0) FROM tracks" + where +
+            " GROUP BY artist ORDER BY 3 DESC, 2 DESC LIMIT ?", args + [limit]).fetchall()
+        conn.close()
+        return [{"이름": one[0] or "(이름 없음)", "곡": one[1], "시각 있는 곡": one[2], "줄": one[3]}
+                for one in rows]
+
+    @app.get("/api/tracks")
+    def tracks(artist: str = "", q: str = "", limit: int = 500):
+        """List one artist's songs, or the songs matching a search.
+
+        @param {str} [artist=""] - Whose songs to list.
+        @param {str} [q=""] - Filter on song title.
+        @param {int} [limit=500] - How many to return.
+        @returns {list[dict]} Songs with duration, state and line count.
+        """
+        conn = sqlite3.connect(DB)
+        where, args = [], []
+        if artist:
+            where.append("artist = ?")
+            args.append(artist)
+        if q:
+            where.append("(title LIKE ? OR artist LIKE ?)")
+            args += [f"%{q}%", f"%{q}%"]
+        rows = conn.execute(
+            "SELECT track_id, title, album, duration, state, COALESCE(line_count, 0), artist"
+            " FROM tracks" + (" WHERE " + " AND ".join(where) if where else "") +
+            " ORDER BY state='synced' DESC, line_count DESC, title LIMIT ?", args + [limit]).fetchall()
+        conn.close()
+        return [{"번호": one[0], "제목": one[1], "앨범": one[2], "길이": one[3],
+                 "상태": one[4], "줄": one[5], "아티스트": one[6]} for one in rows]
+
+    @app.get("/api/track/{track_id}")
+    def track(track_id: int):
+        """Hand over one song's timed lines.
+
+        @param {int} track_id - Which song.
+        @returns {dict} The song with its lines, each carrying `at` in ms.
+        """
+        conn = sqlite3.connect(DB)
+        row = conn.execute(
+            "SELECT track_id, title, artist, album, duration, state, lines, line_count"
+            " FROM tracks WHERE track_id=?", (track_id,)).fetchone()
+        conn.close()
+        if not row:
+            return {"없음": True}
+        return {"번호": row[0], "제목": row[1], "아티스트": row[2], "앨범": row[3], "길이": row[4],
+                "상태": row[5], "줄 수": row[7], "줄": json.loads(row[6]) if row[6] else []}
+
     @app.get("/stream")
     def stream():
         """Stream every step of the crawl to the page as server-sent events.

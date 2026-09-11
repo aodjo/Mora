@@ -22,8 +22,9 @@
   html, body { height: 100%; margin: 0; }
   body {
     background: var(--ground); color: var(--ink); font-family: var(--body);
-    display: grid; grid-template-rows: auto 1fr; overflow: hidden;
+    display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden;
   }
+  [hidden] { display: none !important; }
 
   header { border-bottom: 1px solid var(--line); background: var(--panel); }
   .bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 11px 16px; }
@@ -70,12 +71,48 @@
     color: var(--muted); background: #18231f;
   }
   .seeds span.new { color: var(--seed); border-color: var(--seed); }
+
+  button.view { padding: 6px 12px; font-size: 13px; }
+  button.view.on { background: #22302b; border-color: var(--walk); color: var(--ink); }
+
+  #files { min-height: 0; }
+  .finder { display: grid; grid-template-columns: 260px 300px 1fr; height: 100%; min-height: 0; }
+  @media (max-width: 900px) { .finder { grid-template-columns: 1fr 1fr; } .finder .wide { grid-column: 1 / -1; } }
+  .finder .pane { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .finder .pane:last-child { border-right: 0; }
+  .pane-top {
+    padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel);
+    font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .pane-top input { width: 100%; padding: 5px 9px; font-size: 13px; }
+  .pane-top b { color: var(--ink); font-weight: 500; }
+  .list { overflow-y: auto; min-height: 0; padding-bottom: 30px; }
+  .list .item {
+    display: flex; align-items: baseline; gap: 8px; padding: 6px 12px; cursor: pointer;
+    font-size: 13px; border-bottom: 1px solid rgba(36,48,41,.55);
+  }
+  .list .item:hover { background: rgba(92,198,166,.07); }
+  .list .item.on { background: rgba(92,198,166,.14); }
+  .list .item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list .item .side { font-family: var(--mono); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .list .item.none .name { color: var(--muted); }
+  .list .empty { padding: 14px 12px; font-size: 12.5px; color: var(--muted); }
+  .lines .line { display: grid; grid-template-columns: 62px 1fr; gap: 10px; padding: 3px 14px; font-size: 13.5px; }
+  .lines .line em {
+    font-style: normal; font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    font-variant-numeric: tabular-nums; padding-top: 2px;
+  }
+  .lines .line:hover { background: rgba(92,198,166,.06); }
 </style>
 </head>
 <body>
 <header>
   <div class="bar">
     <h1>바이브 수확</h1>
+    <div class="knobs" role="tablist" aria-label="보기">
+      <button id="view-log" type="button" role="tab" aria-selected="true" class="view on">로그</button>
+      <button id="view-files" type="button" role="tab" aria-selected="false" class="view">자료</button>
+    </div>
     <p class="state" id="state">멈춰 있음</p>
     <div class="knobs">
       <button class="go" id="start" type="button">시작</button>
@@ -91,7 +128,26 @@
   </div>
 </header>
 
-<main>
+<section id="files" hidden>
+  <div class="finder">
+    <div class="pane">
+      <div class="pane-top">
+        <input id="find" type="search" placeholder="아티스트 · 곡 찾기" autocomplete="off">
+      </div>
+      <div class="list" id="artists"></div>
+    </div>
+    <div class="pane">
+      <div class="pane-top"><span id="pane-artist">아티스트를 고르세요</span></div>
+      <div class="list" id="songs"></div>
+    </div>
+    <div class="pane wide">
+      <div class="pane-top"><span id="pane-song">곡을 고르면 줄 시각이 여기 나옵니다</span></div>
+      <div class="list lines" id="lines"></div>
+    </div>
+  </div>
+</section>
+
+<main id="console">
   <div class="log" id="log"></div>
   <aside>
     <div class="box">
@@ -225,6 +281,177 @@
     if (said.kind === 'count' || said.kind === 'state') { tally(said); }
   };
   wire.onerror = function () { counters.state.textContent = '서버와 끊김 · 다시 잇는 중'; };
+
+  /**
+   * The browsing view: artists, their songs, and one song's timed lines.
+   *
+   * Three columns that fill left to right, the way a file manager does — the choice in one column
+   * decides what the next one holds, and nothing reloads the page.
+   */
+  var finder = (function () {
+    var artists = document.getElementById('artists');
+    var songs = document.getElementById('songs');
+    var lines = document.getElementById('lines');
+    var topArtist = document.getElementById('pane-artist');
+    var topSong = document.getElementById('pane-song');
+    var find = document.getElementById('find');
+    var chosen = { artist: null, song: null };
+
+    /**
+     * Turn milliseconds into the `분:초.십분의일` a person reads against a player.
+     *
+     * @param {number} ms - A time in milliseconds.
+     * @returns {string} The same time as `1:04.2`.
+     */
+    function clock(ms) {
+      var whole = Math.max(0, ms) / 1000;
+      var min = Math.floor(whole / 60);
+      var sec = (whole - min * 60).toFixed(1);
+      return min + ':' + (sec < 10 ? '0' : '') + sec;
+    }
+
+    /**
+     * Fill a column with rows, each one clickable.
+     *
+     * @param {HTMLElement} where - The column to fill.
+     * @param {Array} rows - What to show.
+     * @param {Function} make - Turns one row into `{name, side, dim}`.
+     * @param {Function} pick - Called with the row when it is clicked.
+     * @returns {void}
+     */
+    function fill(where, rows, make, pick) {
+      where.innerHTML = '';
+      if (!rows.length) {
+        var none = document.createElement('p');
+        none.className = 'empty';
+        none.textContent = '없음';
+        where.appendChild(none);
+        return;
+      }
+      rows.forEach(function (row) {
+        var shown = make(row);
+        var item = document.createElement('div');
+        item.className = 'item' + (shown.dim ? ' none' : '');
+        item.innerHTML = '<span class="name"></span><span class="side"></span>';
+        item.firstChild.textContent = shown.name;
+        item.lastChild.textContent = shown.side;
+        item.addEventListener('click', function () {
+          Array.prototype.forEach.call(where.children, function (other) { other.classList.remove('on'); });
+          item.classList.add('on');
+          pick(row);
+        });
+        where.appendChild(item);
+      });
+    }
+
+    /**
+     * Load the artist column, honouring whatever is typed in the search box.
+     *
+     * @returns {void}
+     */
+    function loadArtists() {
+      var q = find.value.trim();
+      fetch('/api/artists?limit=400&q=' + encodeURIComponent(q))
+        .then(function (answer) { return answer.json(); })
+        .then(function (rows) {
+          fill(artists, rows, function (row) {
+            return {
+              name: row['이름'],
+              side: row['시각 있는 곡'] + '/' + row['곡'],
+              dim: !row['시각 있는 곡']
+            };
+          }, function (row) { loadSongs(row['이름']); });
+          if (q && rows.length) { loadSongs(rows[0]['이름']); }
+        });
+    }
+
+    /**
+     * Load one artist's songs.
+     *
+     * @param {string} name - Whose songs.
+     * @returns {void}
+     */
+    function loadSongs(name) {
+      chosen.artist = name;
+      topArtist.innerHTML = '<b></b>';
+      topArtist.firstChild.textContent = name;
+      fetch('/api/tracks?limit=500&artist=' + encodeURIComponent(name))
+        .then(function (answer) { return answer.json(); })
+        .then(function (rows) {
+          topArtist.innerHTML = '<b></b> · 곡 ' + rows.length;
+          topArtist.firstChild.textContent = name;
+          fill(songs, rows, function (row) {
+            return {
+              name: row['제목'],
+              side: row['상태'] === 'synced' ? row['줄'] + '줄' : (row['상태'] === 'new' ? '아직' : '시각 없음'),
+              dim: row['상태'] !== 'synced'
+            };
+          }, function (row) { loadLines(row); });
+        });
+    }
+
+    /**
+     * Load one song's lines into the right column.
+     *
+     * @param {object} row - The song row from the middle column.
+     * @returns {void}
+     */
+    function loadLines(row) {
+      chosen.song = row['번호'];
+      fetch('/api/track/' + row['번호']).then(function (answer) { return answer.json(); })
+        .then(function (song) {
+          topSong.innerHTML = '<b></b> · ' + (song['줄'] || []).length + '줄 · ' +
+            Math.round(song['길이'] || 0) + '초';
+          topSong.firstChild.textContent = song['제목'] || '';
+          lines.innerHTML = '';
+          if (!(song['줄'] || []).length) {
+            lines.innerHTML = '<p class="empty">' +
+              (song['상태'] === 'new' ? '아직 안 받은 곡' : '줄 시각이 없는 곡') + '</p>';
+            return;
+          }
+          song['줄'].forEach(function (one) {
+            var line = document.createElement('div');
+            line.className = 'line';
+            line.innerHTML = '<em></em><span></span>';
+            line.firstChild.textContent = clock(one.at);
+            line.lastChild.textContent = one.text;
+            lines.appendChild(line);
+          });
+        });
+    }
+
+    var typing = null;
+    find.addEventListener('input', function () {
+      window.clearTimeout(typing);
+      typing = window.setTimeout(loadArtists, 220);
+    });
+
+    return { load: loadArtists };
+  })();
+
+  var views = {
+    log: document.getElementById('view-log'), files: document.getElementById('view-files'),
+    console: document.getElementById('console'), pane: document.getElementById('files')
+  };
+
+  /**
+   * Switch between the running log and the browsing view.
+   *
+   * @param {string} which - "log" or "files".
+   * @returns {void}
+   */
+  function show(which) {
+    var onFiles = which === 'files';
+    views.console.hidden = onFiles;
+    views.pane.hidden = !onFiles;
+    views.files.classList.toggle('on', onFiles);
+    views.log.classList.toggle('on', !onFiles);
+    views.files.setAttribute('aria-selected', onFiles ? 'true' : 'false');
+    views.log.setAttribute('aria-selected', onFiles ? 'false' : 'true');
+    if (onFiles) { finder.load(); }
+  }
+  views.log.addEventListener('click', function () { show('log'); });
+  views.files.addEventListener('click', function () { show('files'); });
 })();
 </script>
 </body>
