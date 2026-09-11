@@ -113,6 +113,9 @@ def open_db(where: str) -> sqlite3.Connection:
     """
     conn = sqlite3.connect(where, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
+    #: 두 쪽이 같은 장부에 쓸 때 곧바로 「잠겼다」고 던지지 말고 기다린다. 지켜보는 창에서 씨앗을
+    #: 넣으면 크롤이 쓰는 중일 수 있다.
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.execute("""CREATE TABLE IF NOT EXISTS artists (
         id INTEGER PRIMARY KEY, name TEXT, done INTEGER DEFAULT 0, found_at TEXT)""")
     #: 누가 누구를 데려왔는지. 번지기의 길 자체라, 나중에 그림을 다시 그리려면 이것이 있어야 한다.
@@ -310,30 +313,42 @@ def take_lyrics(conn: sqlite3.Connection, lock: threading.Lock, rows: list[tuple
     return kept
 
 
-def log_step(step: dict) -> None:
-    """Write one step of the crawl as a line someone can follow with `tail -f`.
+def line_of(step: dict) -> str:
+    """Turn one step of the crawl into the line a person reads.
 
     The counts alone never showed **where** the crawl went. A line per step does: which artist was
     walked, which track carried it to whom, and what the lyric that came back starts with.
 
     @param {dict} step - What just happened, as `take_artist` and friends report it.
-    @returns {None}
+    @returns {str} The line, or empty when this step is not worth a line.
     """
     when = time.strftime("%H:%M:%S")
     kind = step.get("kind")
     if kind == "seed":
         names = ", ".join(one["name"] for one in (step.get("artists") or [])[:4])
-        print(f"{when} 씨앗  {step['word']} → 아티스트 {len(step.get('artists') or [])}"
-              + (f" · {names}" if names else ""), flush=True)
-    elif kind == "artist":
+        return (f"{when} 씨앗  {step['word']} → 아티스트 {len(step.get('artists') or [])}"
+                + (f" · {names}" if names else ""))
+    if kind == "artist":
         found = step.get("found") or []
         bridge = next((one for one in found if one.get("by")), None)
-        print(f"{when} 훑음  {step['name']} · 곡 {step['tracks']} (시각 {step.get('sync', 0)})"
-              f" · 새 아티스트 {len(found)}"
-              + (f" · 다리 「{bridge['by'][:24]}」→ {bridge['name']}" if bridge else ""), flush=True)
-    elif kind == "lyric" and step.get("ok"):
-        print(f"{when} 가사  {step['title'][:30]} — {step['artist'][:20]}"
-              f" · {step['lines']}줄 · “{step.get('first', '')[:24]}”", flush=True)
+        return (f"{when} 훑음  {step['name']} · 곡 {step['tracks']} (시각 {step.get('sync', 0)})"
+                f" · 새 아티스트 {len(found)}"
+                + (f" · 다리 「{bridge['by'][:24]}」→ {bridge['name']}" if bridge else ""))
+    if kind == "lyric" and step.get("ok"):
+        return (f"{when} 가사  {step['title'][:30]} — {step['artist'][:20]}"
+                f" · {step['lines']}줄 · “{step.get('first', '')[:24]}”")
+    return ""
+
+
+def log_step(step: dict) -> None:
+    """Print one step of the crawl, for someone following with `tail -f`.
+
+    @param {dict} step - What just happened.
+    @returns {None}
+    """
+    said = line_of(step)
+    if said:
+        print(said, flush=True)
 
 
 def main() -> int:
