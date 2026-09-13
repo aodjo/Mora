@@ -21,11 +21,34 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 
 
+def piled(out: list[list[dict]], lanes: dict[int, int]) -> int:
+    """Count lines whose last syllable lights after the next line of the same voice has started.
+
+    The screen has already moved to the next line by then, so the previous line's tail flashes up
+    behind it — what a person hears as lyrics piling on each other.
+
+    @param {list[list[dict]]} out - Per-line word dicts with character times.
+    @param {dict[int, int]} lanes - Voice lane per line.
+    @returns {int} How many lines pile onto the next.
+    """
+    timed = [[one for word in words for one in (word.get("chars") or []) if one.get("at") is not None]
+             for words in out]
+    count = 0
+    for index, chars in enumerate(timed):
+        if not chars:
+            continue
+        later = next((one for one in range(index + 1, len(out))
+                      if timed[one] and lanes.get(one, 0) == lanes.get(index, 0)), None)
+        if later is not None and chars[-1]["at"] >= timed[later][0]["at"]:
+            count += 1
+    return count
+
+
 def one_song(job: tuple[dict, bool]) -> dict:
     """Align one song with and without its outside times and score it the way probe_blind does.
 
     @param {tuple[dict, bool]} job - The song row, and whether to skip the with-times pass.
-    @returns {dict} The song's id, title, and per-pass `(hit, lines, mid, spread, near, onset, broke)`.
+    @returns {dict} The song's id, title, and per-pass `(hit, lines, mid, spread, near, onset, broke, tight, pile)`.
     """
     import align
     from probe_blind import starts, words_of
@@ -40,7 +63,7 @@ def one_song(job: tuple[dict, bool]) -> dict:
     passes.append(("쌩 가사", [{**one, "at": None} for one in lines]))
     got_all = {}
     for name, feed in passes:
-        out, _ = align.align_voices(found, feed, words_of, row["title"])
+        out, lanes = align.align_voices(found, feed, words_of, row["title"])
         got = starts(out)
         off = sorted((got[index] - said[index]) / 1000 for index in got if index in said)
         if not off:
@@ -54,7 +77,7 @@ def one_song(job: tuple[dict, bool]) -> dict:
                      for one in (word.get("chars") or []) if one["at"] is not None)
         onset = sum(1 for one in far if one <= NEAR_MS) / len(far) if far else 0
         broke = sum(1 for one in out if one and one[0].get("stuck"))
-        got_all[name] = (hit, len(off), mid, off[-1] - off[0], hit / len(off), onset, broke, tight)
+        got_all[name] = (hit, len(off), mid, off[-1] - off[0], hit / len(off), onset, broke, tight, piled(out, lanes))
     return {"id": row["id"], "title": row["title"], "passes": got_all}
 
 
@@ -81,26 +104,28 @@ def main() -> int:
         jobs.append(({key: row[key] for key in row.keys()}, blind_only))
 
     print(f"  무게 {os.environ.get('MORA_MMS_WEIGHTS') or '원래 MMS'} · 시계 {align.CLOCK_FROM}"
-          f" · 마스크 {'켬' if align.VOICE_MASK else '끔'}\n")
-    print(f"  {'곡':<26} {'':>6} {'차':>7} {'폭':>7} {'0.5초 안':>7} {'소리 50ms':>8} {'무너짐':>5} {'0.25초 안':>8}")
+          f" · 마스크 {'켬' if align.VOICE_MASK else '끔'} · 다듬기 경계 {align.POLISH_FENCE} · 줄 머리 {align.POLISH_HEAD}\n")
+    print(f"  {'곡':<26} {'':>6} {'차':>7} {'폭':>7} {'0.5초 안':>7} {'소리 50ms':>8} {'무너짐':>5} {'0.25초 안':>8} {'겹침':>4}")
     with multiprocessing.get_context("spawn").Pool(int(os.environ.get("MORA_PAR", "8"))) as pool:
         done = pool.map(one_song, jobs)
 
-    tally = {"시각 있음": [0, 0, 0, 0.0, 0], "쌩 가사": [0, 0, 0, 0.0, 0]}
+    tally = {"시각 있음": [0, 0, 0, 0.0, 0, 0], "쌩 가사": [0, 0, 0, 0.0, 0, 0]}
     for song in done:
-        for name, (hit, lines, mid, spread, near, onset, broke, tight) in song["passes"].items():
+        for name, (hit, lines, mid, spread, near, onset, broke, tight, pile) in song["passes"].items():
             head = f"[{song['id']}] {song['title'][:16]}" if name == "시각 있음" or blind_only else ""
             print(f"  {head:<26} {name:>6} {mid:+6.2f}s {spread:6.1f}s {near * 100:>6.0f}% {onset * 100:>7.0f}% {broke:>5}"
-                  f" {tight / lines * 100:>7.0f}%")
+                  f" {tight / lines * 100:>7.0f}% {pile:>4}")
             tally[name][0] += hit
             tally[name][1] += lines
             tally[name][2] += tight
             tally[name][3] += onset
             tally[name][4] += 1
-    for name, (hit, all_of, tight, onset, songs) in tally.items():
+            tally[name][5] += pile
+    for name, (hit, all_of, tight, onset, songs, pile) in tally.items():
         if all_of:
             print(f"\n  {name}: 줄 {all_of} 가운데 제자리 {hit} ({hit / all_of * 100:.0f}%)"
-                  f" · 0.25초 안 {tight} ({tight / all_of * 100:.0f}%) · 소리 50ms 곡 평균 {onset / songs * 100:.1f}%")
+                  f" · 0.25초 안 {tight} ({tight / all_of * 100:.0f}%) · 소리 50ms 곡 평균 {onset / songs * 100:.1f}%"
+                  f" · 겹침 {pile}줄")
     return 0
 
 

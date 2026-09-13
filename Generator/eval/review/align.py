@@ -1834,9 +1834,20 @@ POLISH_EDGE_MS = 300
 #: cut to that end handed the refiner seconds of someone else's sound, and it anchored a syllable
 #: there — 너와 나 line 3 came back with an 8.3 s gap inside a five-word line.
 POLISH_TAIL_MS = 1500
+#: How a line's refiner window is fenced off from the lines of the same voice around it. `mid` stops
+#: both windows at the middle of the gap between a line's last syllable and the next line's first;
+#: `off` does not. Read from the environment so the probes can measure both.
+POLISH_FENCE = os.environ.get("MORA_POLISH_FENCE", "mid")
+#: Whether the refiner may move a line's **first** syllable. `keep` leaves it where the aligner put
+#: it and only re-places the rest; `move` lets the refiner place it too. Over the eleven benchmark
+#: songs the refiner's line heads were worse than the aligner's — 0.25 s hits 496 without the stage
+#: against 463 with it — because its window opens `POLISH_EDGE_MS` early and it pulled heads into that
+#: margin, while inside the line it put more syllables on a loudness onset (45.6% → 50.7%). Keeping the
+#: head gets both: 577 at 0.5 s, 497 at 0.25 s, 48.9% on an onset (it was 572 · 433 · 49.8%).
+POLISH_HEAD = os.environ.get("MORA_POLISH_HEAD", "keep")
 
 
-def polish(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
+def polish(path: Path, lines: list[dict], out: list[list[dict]], lanes: dict[int, int] | None = None) -> int:
     """Re-place the syllables of every line with Qwen3-ForcedAligner, inside the line's own window.
 
     The aligner is good at **where a line is** — the whole-song CTC path, the second pass, the clock
@@ -1852,12 +1863,24 @@ def polish(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
     Only the syllable times move — a line's window is bounded, so a line cannot leave its place —
     and a line whose answer does not match its grains one for one keeps what it had.
 
+    Two lines of the same voice share one fence: the middle of the gap between the first line's last
+    syllable and the next line's first. The first line's window stops there and the next line's starts
+    there. The window used to run `POLISH_TAIL_MS` past the line's last syllable whatever came next,
+    and the refiner put that syllable after the next line had already started — 86 lines over eleven
+    songs (고스트시티 29, NOT SORRY 23), so the screen moved on and then lit the previous line's last
+    syllable. A person heard it as lyrics piling on each other. Stopping only the tail at the next
+    line's first syllable did not help: the next line's own window opens `POLISH_EDGE_MS` early, and
+    the refiner pulled its head back over the tail from the other side. The line's first syllable
+    itself stays where the aligner put it (`POLISH_HEAD`); the refiner re-places the rest.
+
     The refiner runs in its own environment through `refine.py`, the way `diarize.py` does, and the
     conversation is JSON on standard in and out. A missing environment skips the stage.
 
     @param {Path} path - The original audio; the lead stem beside it is what gets read.
     @param {list[dict]} lines - Lyric lines, for their count only.
     @param {list[list[dict]]} out - Per-line word dicts, whose character times are rewritten.
+    @param {dict[int, int] | None} [lanes=None] - Voice lane per line; a line is fenced off from the
+        lines of its own lane, or of any lane when this is not given.
     @returns {int} How many lines were re-placed.
     """
     if not POLISH or not POLISH_PY.exists():
@@ -1869,22 +1892,51 @@ def polish(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
     if not small.exists():
         write_audio(read_audio(lead, SAMPLE_RATE, 1), small, SAMPLE_RATE)
 
+    timed = [[one for word in words for one in (word.get("chars") or []) if one.get("at") is not None]
+             for words in out]
+    following: dict[int, int] = {}
+    for index in range(len(out)):
+        if not timed[index]:
+            continue
+        mine = (lanes or {}).get(index, 0)
+        later = next((one for one in range(index + 1, len(out))
+                      if timed[one] and (lanes is None or lanes.get(one, 0) == mine)), None)
+        if later is not None:
+            following[index] = later
+    fences = {index: (timed[index][-1]["at"] + timed[later][0]["at"]) // 2 for index, later in following.items()}
+    after = {later: index for index, later in following.items()}
     ask = []
-    for index, words in enumerate(out):
-        chars = [one for word in words for one in (word.get("chars") or []) if one.get("at") is not None]
+    for index, chars in enumerate(timed):
         if not chars:
             continue
-        ask.append({"index": index, "since": max(0, chars[0]["at"] - POLISH_EDGE_MS),
-                    "until": chars[-1]["at"] + POLISH_TAIL_MS,
-                    "grains": [one["text"] for one in chars]})
+        since = max(0, chars[0]["at"] - POLISH_EDGE_MS)
+        until = chars[-1]["at"] + POLISH_TAIL_MS
+        if POLISH_FENCE == "mid":
+            if index in fences:
+                until = min(until, fences[index])
+            if index in after:
+                since = max(since, fences[after[index]])
+        if until - since < LEAST_MS:
+            continue
+        ask.append({"index": index, "since": since, "until": until, "grains": [one["text"] for one in chars]})
     if not ask:
         return 0
+    import torch
+    #: 정렬 모델이 쥔 GPU 캐시를 놓는다 — 6 GB GPU(MSI)에서는 다듬기 모델이 올라갈 자리가 없어 CUDA 메모리가
+    #: 모자랐고, 다듬기는 아무 말 없이 건너뛰어졌다.
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     try:
         got = subprocess.run([str(POLISH_PY), str(Path(__file__).parent / "refine.py")],
                              input=json.dumps({"audio": str(small), "lines": ask}),
                              capture_output=True, text=True, timeout=1800)
         said = json.loads(got.stdout or "{}")
-    except Exception:
+    except Exception as trouble:
+        print(f"  다듬기 건너뜀: {type(trouble).__name__}: {str(trouble)[:160]}", file=sys.stderr)
+        return 0
+    if got.returncode != 0:
+        tail = (got.stderr or "").strip().splitlines()
+        print(f"  다듬기 실패: {tail[-1][:200] if tail else got.returncode}", file=sys.stderr)
         return 0
 
     done = 0
@@ -1898,6 +1950,9 @@ def polish(path: Path, lines: list[dict], out: list[list[dict]]) -> int:
             continue
         if any(not (one["since"] <= a <= one["until"]) for a, _ in spans):
             continue
+        if POLISH_HEAD == "keep":
+            head = chars[0]["at"]
+            spans = [[head, max(head + 20, spans[0][1])]] + [list(span) for span in spans[1:]]
         #: A hole wider than `STUCK_HOLE_MS` between two syllables is not a reading of the line, it
         #: is one syllable caught on another sound in the window. Keep what the aligner had.
         if any(b - a > STUCK_HOLE_MS for (a, _), (b, _) in zip(spans, spans[1:])):
@@ -3622,7 +3677,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     unpack_song(out, rests_of(lead))
     #: 줄 자리가 다 잡힌 뒤에, 그 창 안에서 음절만 Qwen3 로 다시 놓는다. 펴기 뒤여야 한다 —
     #: 펴기는 「모델이 못 들은 줄」의 마지막 수단이고, 여기서는 그 줄을 실제로 듣는다.
-    polish(path, lines, out)
+    polish(path, lines, out, lanes)
     #: 받아쓰기가 낱말 단위로 들은 자리에 줄 안의 낱말을 맞춘다 — 크게 어긋난 곳만.
     if SETTLE_HEARD:
         settle_heard(path, lines, out, tokenize, anchor=ours)
