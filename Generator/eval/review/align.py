@@ -3184,6 +3184,10 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
 #: (하치와레girl 3%) — so it is the default exactly when those weights are loaded. Tightening the
 #: pull to it did not help: `MORA_OURS_APART` 400 → 564, 300 → 556; `MORA_OURS_TIGHT` 600 → 562.
 CLOCK_FROM = os.environ.get("MORA_CLOCK", "model" if MMS_WEIGHTS else "heard")
+#: Where the model clock hands lines back to the transcript (`our_clock`); `MORA_CLOCK_GUARD=0` turns it
+#: off for measuring. Two voices must overlap this long (ms) before a stretch counts as sung together.
+CLOCK_GUARD = os.environ.get("MORA_CLOCK_GUARD", "1") != "0"
+TOGETHER_LEAST_MS = int(os.environ.get("MORA_TOGETHER_MS", "4000"))
 
 
 def model_clock(path: Path, lines: list[dict], tokenize) -> list[int | None] | None:
@@ -3245,7 +3249,18 @@ def our_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     """The clock handed to the blind path, from the source `CLOCK_FROM` names.
 
     With `"model"`, lines the whole-song alignment could not place (no letters after brackets and
-    punctuation go) take the transcript clock's time, so every line still carries one.
+    punctuation go) take the transcript clock's time, so every line still carries one. So do lines
+    the one-sequence alignment cannot be right about:
+
+    - **Several voices singing different lines at once.** A forced alignment lays the sheet out one
+      line after another, so lines sung together get queued end to end. 고스트시티's last chorus
+      has two voices over 194–212 s and the model clock ran 3.5 s late through all of it, while the
+      transcript clock sat within 0.3–1.1 s. Lines whose model or transcript time falls inside a
+      stretch the diarizer hears two voices for `TOGETHER_LEAST_MS` take the transcript time.
+    - **A line squeezed faster than anyone sings.** The same song's 「24 to 7 drug」 got 0.38 s for
+      four grains (95 ms each) and 「nicotine과 pain 가둬 lock」 landed 2 s early on top of it; the
+      transcript had it at 138.81 s against a sheet 139.03. When the line before is shorter than
+      `PACE_LEAST_MS` a grain and the transcript puts this line later, the transcript wins.
 
     @param {Path} path - The original audio.
     @param {list[dict]} lines - Lyric lines.
@@ -3258,6 +3273,21 @@ def our_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     placed = model_clock(path, lines, tokenize)
     if not placed:
         return heard
+    if heard and CLOCK_GUARD:
+        together = sung_together(voices_apart(path), TOGETHER_LEAST_MS)
+        grains = [len([grain for word in tokenize(line.get("text", "")) for grain in grains_of(speakable(word))])
+                  for line in lines]
+        model = list(placed)
+        last = None
+        for at, one in enumerate(model):
+            if one is None or heard[at] is None:
+                continue
+            if any(a <= one <= b or a <= heard[at] <= b for a, b in together):
+                placed[at] = heard[at]
+            elif (last is not None and grains[last]
+                  and (one - model[last]) / grains[last] < PACE_LEAST_MS and heard[at] > one):
+                placed[at] = heard[at]
+            last = at
     return [one if one is not None else (heard[at] if heard else None) for at, one in enumerate(placed)]
 
 
@@ -3701,6 +3731,32 @@ def held_by(said: dict, since: float, until: float) -> dict[int, float]:
             if over > 0:
                 held[one["누구"]] = held.get(one["누구"], 0.0) + over / room
     return held
+
+
+def sung_together(said: dict, least_ms: int) -> list[tuple[int, int]]:
+    """Find the stretches where two or more voices sing at once for a long while.
+
+    Gaps under half a second between such stretches are closed first — a duet does not stop
+    being a duet across one breath.
+
+    @param {dict} said - The diarizer's answer.
+    @param {int} least_ms - How long a stretch must last to count, in ms.
+    @returns {list[tuple[int, int]]} `(since, until)` in ms.
+    """
+    events = sorted([(a, 1) for one in said.get("쪽", []) for a, _ in one["토막"]]
+                    + [(b, -1) for one in said.get("쪽", []) for _, b in one["토막"]])
+    spans: list[list[float]] = []
+    now, since = 0, None
+    for at, step in events:
+        before, now = now, now + step
+        if before < 2 <= now:
+            since = at
+        elif before >= 2 > now and since is not None:
+            if spans and since - spans[-1][1] < 0.5:
+                spans[-1][1] = at
+            else:
+                spans.append([since, at])
+    return [(int(a * 1000), int(b * 1000)) for a, b in spans if (b - a) * 1000 >= least_ms]
 
 
 def split_runs(said: dict, lines: list[dict], out: list[list[dict]],
@@ -4467,12 +4523,16 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize,
             before = [two for one in out[earlier] for two in (one.get("chars") or []) if two.get("at") is not None]
             if before:
                 break
-        if before:
-            tail = before[-1]["at"]
-            if len(before) >= 2 and before[-1]["at"] - before[-2]["at"] > TAIL_STRETCH_MS:
-                tail = before[-2]["at"]
-            if tail > start + REST_SLACK_MS:
-                continue
+        #: 첫 줄은 옮기지 않는다. 앞 줄이 없으니 그 쉼이 줄과 줄 사이의 쉼인지 알 길이 없다 —
+        #: 하치와레girl 은 전주 속 말(「알았지?」 21.2~22.3 초)과 가사에 없는 소리(22.9~23.6 초) 사이의
+        #: 쉼 끝 22.92 초로 첫 줄이 1.16 초 당겨졌다. 노래는 24.0 초에, 시트는 24.3 초에 시작한다.
+        if not before:
+            continue
+        tail = before[-1]["at"]
+        if len(before) >= 2 and before[-1]["at"] - before[-2]["at"] > TAIL_STRETCH_MS:
+            tail = before[-2]["at"]
+        if tail > start + REST_SLACK_MS:
+            continue
         #: 머리는 쉼 끝에서 `REST_LEAD_MS` 뒤에 둔다 — 그 값을 잰 내력은 상수 쪽에.
         end = end + REST_LEAD_MS
         if abs(head - end) <= REST_SNAP_MS:
