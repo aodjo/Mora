@@ -15,6 +15,7 @@ import type { WorkerEnv } from "../env.js";
 import { audit, authenticate, requirePermission, sha256, type Actor } from "./auth.js";
 import { bootstrapOptions, bootstrapVerify, credentialOptions, credentialVerify, loginOptions, loginVerify, logout } from "./webauthn.js";
 import { serveArtifact } from "./artifacts.js";
+import { completeModelUpload, serveModel, startModelUpload, uploadModelPart } from "./models.js";
 import { approveCollectorPairing, pollCollectorPairing, startCollectorPairing } from "./collector-pairing.js";
 import { approveGeneratorPairing, pollGeneratorPairing, startGeneratorPairing } from "./generator-pairing.js";
 import {
@@ -2202,11 +2203,18 @@ async function recordEval(env: WorkerEnv, actor: Actor, value: Record<string, un
   // D1 은 한 번에 보낼 수 있는 문장 수가 제한된다. 곡 하나가 백 줄을 넘기도 하므로 나눠 보낸다.
   for (let at = 0; at < lines.length; at += 200) {
     await env.ADMIN_DB.batch(
-      lines.slice(at, at + 200).map(([video, index, text, ours, truth]) =>
-        env.ADMIN_DB.prepare(
-          "INSERT INTO eval_lines (run_id,video_id,line_index,text,ours_ms,truth_ms) VALUES (?1,?2,?3,?4,?5,?6)",
-        ).bind(id, video, index, text, ours, truth),
-      ),
+      lines
+        .slice(at, at + 200)
+        .map(([video, index, text, ours, truth]) =>
+          env.ADMIN_DB.prepare("INSERT INTO eval_lines (run_id,video_id,line_index,text,ours_ms,truth_ms) VALUES (?1,?2,?3,?4,?5,?6)").bind(
+            id,
+            video,
+            index,
+            text,
+            ours,
+            truth,
+          ),
+        ),
     );
   }
   await audit(env, actor, "eval.record", "eval", id, { songs: songs.length, lines: lines.length });
@@ -2446,7 +2454,21 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "POST" && url.pathname === "/admin/api/generator/queue/retry")
     return generatorQueueAction(env, actor, "retry", await body(request, 16 * 1024));
 
-  let match = url.pathname.match(/^\/admin\/api\/generator\/jobs\/([^/]+)$/u);
+  // 워커가 쓰는 모델 파일(노래로 학습한 정렬 무게 등) — 관리자가 조각으로 올리고 워커가 받는다.
+  let match = url.pathname.match(/^\/admin\/api\/generator\/models\/([^/]+)$/u);
+  if ((request.method === "GET" || request.method === "HEAD") && match?.[1] !== undefined)
+    return serveModel(request, env, actor, decodeURIComponent(match[1]));
+  match = url.pathname.match(/^\/admin\/api\/generator\/models\/([^/]+)\/uploads$/u);
+  if (request.method === "POST" && match?.[1] !== undefined)
+    return startModelUpload(env, actor, decodeURIComponent(match[1]), await body(request));
+  match = url.pathname.match(/^\/admin\/api\/generator\/models\/([^/]+)\/uploads\/([^/]+)\/parts\/(\d+)$/u);
+  if (request.method === "PUT" && match?.[1] !== undefined && match[2] !== undefined && match[3] !== undefined)
+    return uploadModelPart(request, env, actor, decodeURIComponent(match[1]), decodeURIComponent(match[2]), Number(match[3]));
+  match = url.pathname.match(/^\/admin\/api\/generator\/models\/([^/]+)\/uploads\/([^/]+)\/complete$/u);
+  if (request.method === "POST" && match?.[1] !== undefined && match[2] !== undefined)
+    return completeModelUpload(env, actor, decodeURIComponent(match[1]), decodeURIComponent(match[2]), await body(request));
+
+  match = url.pathname.match(/^\/admin\/api\/generator\/jobs\/([^/]+)$/u);
   if (request.method === "GET" && match?.[1] !== undefined) return generatorJob(env, actor, match[1]);
   // 콘솔도 아티팩트를 읽는다 — 받아쓴 내용을 보려면 필요하다. 쓰기는 Generator 경로에만 있다.
   match = url.pathname.match(/^\/admin\/api\/artifacts\/([^/]+)\/content$/u);
