@@ -3188,6 +3188,13 @@ CLOCK_FROM = os.environ.get("MORA_CLOCK", "model" if MMS_WEIGHTS else "heard")
 #: off for measuring. Two voices must overlap this long (ms) before a stretch counts as sung together.
 CLOCK_GUARD = os.environ.get("MORA_CLOCK_GUARD", "1") != "0"
 TOGETHER_LEAST_MS = int(os.environ.get("MORA_TOGETHER_MS", "4000"))
+#: `settle_disputes`: how far apart the two clocks must be (ms), how much more of the line the
+#: transcript must hold at its own place (share of letters), and how far either side of that place
+#: the line is re-aligned (ms). `MORA_CLOCK_DISPUTE=0` turns it off for measuring.
+CLOCK_DISPUTE = os.environ.get("MORA_CLOCK_DISPUTE", "1") != "0"
+CLOCK_DISPUTE_MS = int(os.environ.get("MORA_DISPUTE_MS", "2000"))
+CLOCK_DISPUTE_EDGE = float(os.environ.get("MORA_DISPUTE_EDGE", "0.1"))
+DISPUTE_REACH_MS = int(os.environ.get("MORA_DISPUTE_REACH_MS", "1500"))
 
 
 def model_clock(path: Path, lines: list[dict], tokenize) -> list[int | None] | None:
@@ -3242,7 +3249,83 @@ def model_clock(path: Path, lines: list[dict], tokenize) -> list[int | None] | N
     for token, span in enumerate(F.merge_tokens(route[0], scores[0].exp())):
         if owner[token] >= 0 and made[owner[token]] is None:
             made[owner[token]] = int(span.start * per_frame)
+    #: `settle_disputes` 가 줄 하나를 다른 자리에서 다시 맞출 때 같은 확률을 쓴다.
+    _bag()["model_clock"] = {"stem": str(stem), "log_probs": log_probs, "per_frame": per_frame, "star": star,
+                             "ids": [[one for word in tokenize(line.get("text", ""))
+                                      for grain in grains_of(speakable(word)) for one in letters(grain)]
+                                     for line in lines]}
     return made
+
+
+def settle_disputes(path: Path, lines: list[dict], tokenize, model: list, heard: list, placed: list) -> int:
+    """Re-place a line the two clocks put far apart, inside the stretch where the transcript heard it.
+
+    The model clock is sharp but can pick the wrong one of two near-identical passages. 하치와레girl
+    ends on a variant of its first verse — 「달린거야 맨발로」 becomes 「그은거야 식칼로」 — and the model
+    clock set the last four lines 3.5–14.5 s late on a later passage, while whisper, which hears the
+    changed words, had them within 0.6 s. Taking the transcript's time outright does not work:
+    whisper often hears a line's words and still stamps them 1–2 s off (Trip line 2: every letter
+    heard, 1.7 s early), and swapping those in cost more lines than it saved (574 → 567).
+
+    So the transcript only chooses **where**, and the model says **when**. Where the clocks differ
+    by more than `CLOCK_DISPUTE_MS`, the transcript words around each clock's time are matched
+    against the line; if the transcript's own place holds clearly more of the line's letters (by
+    `CLOCK_DISPUTE_EDGE`), the line is force-aligned again on the model's probabilities inside
+    `DISPUTE_REACH_MS` either side of that place, with a star on each side to take whatever else is
+    sung there. The answer is kept only if it stays between its neighbours.
+
+    @param {Path} path - The original audio; the transcript sits beside it.
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @param {list} model - The model clock, ms per line.
+    @param {list} heard - The transcript clock, ms per line.
+    @param {list} placed - The clock being built, rewritten in place.
+    @returns {int} How many lines were re-placed.
+    """
+    import torch
+    import torchaudio.functional as F
+
+    held = _bag().get("model_clock")
+    said = (kept(beside(path, ".heard.json")) or {}).get("낱말") or []
+    if not held or held["stem"] != str(vocals_of(path)) or not said:
+        return 0
+    log_probs, per_frame, star, ids = held["log_probs"], held["per_frame"], held["star"], held["ids"]
+
+    def heard_share(mine: str, clock: list, at: int, when: int) -> float:
+        later = next((one for one in clock[at + 1:] if one is not None and one > when), when + 4000)
+        words = "".join(word for word, stamp in said if when - 500 <= stamp <= min(later, when + 6000))
+        return alike_of(mine, jamo_of([(words, 0)])[0])
+
+    moved = 0
+    for at, line in enumerate(lines):
+        m, h = model[at], heard[at]
+        if m is None or h is None or placed[at] != m or abs(m - h) <= CLOCK_DISPUTE_MS or not ids[at]:
+            continue
+        mine, _ = jamo_of([(grain, 0) for word in tokenize(line.get("text", "")) for grain in grains_of(speakable(word))])
+        if heard_share(mine, heard, at, h) <= heard_share(mine, model, at, m) + CLOCK_DISPUTE_EDGE:
+            continue
+        later = next((one for one in heard[at + 1:] if one is not None and one > h), h + 4000)
+        since = max(0, int((h - DISPUTE_REACH_MS) / per_frame))
+        until = min(log_probs.shape[1], int((min(later, h + 8000) + DISPUTE_REACH_MS) / per_frame))
+        window = [star] + ids[at] + [star]
+        if until - since < 2 * len(window):
+            continue
+        try:
+            route, scores = F.forced_align(log_probs[:, since:until], torch.tensor([window], dtype=torch.int32),
+                                           blank=_bag().get("blank", 0))
+        except Exception:
+            continue
+        merged = F.merge_tokens(route[0], scores[0].exp())
+        if len(merged) < 2:
+            continue
+        now = int((since + merged[1].start) * per_frame)
+        before = next((placed[one] for one in range(at - 1, -1, -1) if placed[one] is not None), None)
+        after = next((placed[one] for one in range(at + 1, len(placed)) if placed[one] is not None), None)
+        if (before is not None and now <= before) or (after is not None and now >= after):
+            continue
+        placed[at] = now
+        moved += 1
+    return moved
 
 
 def our_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
@@ -3288,6 +3371,8 @@ def our_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
                   and (one - model[last]) / grains[last] < PACE_LEAST_MS and heard[at] > one):
                 placed[at] = heard[at]
             last = at
+        if CLOCK_DISPUTE:
+            settle_disputes(path, lines, tokenize, model, heard, placed)
     return [one if one is not None else (heard[at] if heard else None) for at, one in enumerate(placed)]
 
 
