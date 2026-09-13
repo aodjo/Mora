@@ -2762,12 +2762,18 @@ REST_MS = 250
 #: 쉼 앞 줄의 수, 그리고 whisper 가 CTC 를 얼마나 이겨야 절대 모드인지(ms).
 REST_BEFORE_MS = 1500
 REST_AFTER_MS = 800
-REST_SNAP_MS = 250
+REST_SNAP_MS = int(os.environ.get("MORA_SNAP_MS", "250"))
 REST_LEAST = 3
 REST_EDGE_MS = 250
 #: 쉼 끝에서 CTC 머리까지의 관례 거리(ms), 앞 줄이 쉼 시작을 넘어도 봐주는 여유(ms), 앞 줄 마지막
 #: 낱자를 늘어진 꼬리로 보는 간격(ms).
-REST_LEAD_MS = 170
+#:
+#: 머리 거리는 170 이었다가 0 이 됐다. 기준 열한 곡을 쉼 끝 붙이기 없이 맞춰 재 보니 머리 − 쉼 끝의
+#: 가운뎃값이 원래 MMS −14 ms, 노래 무게 −11 ms 였고, 시트 시각 − 쉼 끝도 +4 ~ +59 ms 였다. 170 을
+#: 더하면 제자리에 있던 머리까지 늦게 밀었다 — 사랑하게 될거야 첫 줄이 1.42 → 1.82 초(목소리는 1.50 초에
+#: 솟고, 시트는 1.60), 사람이 첫 줄부터 틀렸다고 했다. 쌩 가사 0.25 초 안: 원래 MMS 393 → 406, 노래
+#: 무게 471 → 485. 0.5 초 안은 그대로(516 → 520, 565 → 564).
+REST_LEAD_MS = int(os.environ.get("MORA_REST_LEAD_MS", "0"))
 REST_SLACK_MS = 300
 TAIL_STRETCH_MS = 1000
 
@@ -3491,7 +3497,8 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 펴기는 「모델이 못 들은 줄」의 마지막 수단이고, 여기서는 그 줄을 실제로 듣는다.
     polish(path, lines, out)
     #: 받아쓰기가 낱말 단위로 들은 자리에 줄 안의 낱말을 맞춘다 — 크게 어긋난 곳만.
-    settle_heard(path, lines, out, tokenize, anchor=ours)
+    if SETTLE_HEARD:
+        settle_heard(path, lines, out, tokenize, anchor=ours)
     #: 리드가 쉬는 구멍 안에 든 줄을 밖으로 꺼내는 단계를 두었다가 거뒀다. 야해 7 번 「워낙 넌 착해서
     #: 그렇게는 못할걸」은 리드가 −33 dB 인 44.4~47.6 초에서 **속삭이듯** 불리고, 분리기가 그 약한
     #: 목소리를 보컬 갈래로 보냈다. 보컬 갈래의 CTC 는 거기에 열세 낱자를 확신 −3~−7 로 놓았고
@@ -4137,6 +4144,13 @@ HEARD_WHO_LEAST = 20
 #: 야해는 +182 — 평소값에서 350 벗어난다. 파란달팽이가 222 로 그다음이다.
 HEARD_TYPICAL_MS = int(os.environ.get("MORA_TYPICAL_MS", "-170"))
 HEARD_SHIFT_MS = int(os.environ.get("MORA_SHIFT_MS", "300"))
+#: Drop a line-initial pin that runs early of the next pin — see `settle_heard`. `MORA_HEAD_EARLY=0`
+#: brings back the old behaviour for measuring.
+HEARD_HEAD_EARLY = os.environ.get("MORA_HEAD_EARLY", "1") != "0"
+#: Measuring switches: `MORA_SETTLE_HEARD=0` skips `settle_heard` altogether, `MORA_REST_SNAP=0` keeps
+#: its pins but skips the snap of line heads to the end of a breath.
+SETTLE_HEARD = os.environ.get("MORA_SETTLE_HEARD", "1") != "0"
+REST_SNAP = os.environ.get("MORA_REST_SNAP", "1") != "0"
 
 
 def squeeze_before(out: list[list[dict]], index: int, roof: int) -> bool:
@@ -4292,6 +4306,14 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize,
         for at, when in marks:
             if not in_turn or when > in_turn[-1][1] + LEAST_MS * (at - in_turn[-1][0]):
                 in_turn.append((at, when))
+        #: 줄 첫 낱말의 못이 다음 못보다 `HEARD_PULL_MS` 넘게 **이르면** 버린다. whisper 는 쉼 뒤에
+        #: 오는 낱말의 시작을 쉼 쪽으로 끌어당긴다 — 사랑하게 될거야 1 번 「영원을」을 0 초에(소리는
+        #: 1.42 초), 2 번 「슬퍼하던」을 5.38 초에(소리는 6.68 초) 들었다. 그 못이 기준이 되니 나머지
+        #: 낱말이 모두 늦은 것으로 읽혀 두 줄이 1.3~1.5 초씩 늘어졌고, 사람이 첫 줄부터 틀렸다고 했다.
+        if (HEARD_HEAD_EARLY and len(in_turn) >= 2 and in_turn[0][0] == 0
+                and in_turn[0][1] - chars[0]["at"]
+                < in_turn[1][1] - chars[in_turn[1][0]]["at"] - HEARD_PULL_MS):
+            in_turn = in_turn[1:]
         plans[index] = (held, chars, in_turn)
     if not plans:
         return 0
@@ -4423,7 +4445,7 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize,
     #: 47.61 에 다시 소리를 낸다 — 7 번(속삭임)의 꼬리가 그 소리를 물고 있었다. 24 번은 104.10 →
     #: 104.51. 절대 모드에서 못이 박힌 줄은 머리와 첫 못 사이만 늘이고, 아니면 줄을 통째로 민다.
     #: 꼬리가 다음 줄에 닿으면 그 안에 맞춰 줄이고, 그래서 뭉치면 두지 않는다.
-    if not anchor:
+    if not anchor or not REST_SNAP:
         return done
     pinned = {index: marks for index, (held, chars, marks) in plans.items()}
     for index, words in enumerate(out):
@@ -4451,8 +4473,7 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize,
                 tail = before[-2]["at"]
             if tail > start + REST_SLACK_MS:
                 continue
-        #: CTC 의 머리는 열두 곡에서 쉼 끝보다 145~232 ms 뒤에 앉는다 — 목소리가 문턱을 넘고 낱자가
-        #: 서는 사이다. 그 자리에 둔다.
+        #: 머리는 쉼 끝에서 `REST_LEAD_MS` 뒤에 둔다 — 그 값을 잰 내력은 상수 쪽에.
         end = end + REST_LEAD_MS
         if abs(head - end) <= REST_SNAP_MS:
             continue
