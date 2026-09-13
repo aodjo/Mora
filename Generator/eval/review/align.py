@@ -3871,9 +3871,13 @@ def voices_apart(path: Path) -> dict:
             into.unlink(missing_ok=True)
     if not DIARIZE_PY.exists():
         return {}
-    subprocess.run([str(DIARIZE_PY), str(Path(__file__).parent / "diarize.py"),
-                    str(stem), str(into)], check=False, capture_output=True)
+    ran = subprocess.run([str(DIARIZE_PY), str(Path(__file__).parent / "diarize.py"),
+                          str(stem), str(into)], check=False, capture_output=True, text=True)
     if not into.exists():
+        #: 화자 가르기가 없으면 고른 짐작도, 그것에 기대는 받아쓰기 시계도 없다 — 정렬기가 모델 시계 하나로 돈다.
+        #: 조용히 넘기면 그렇게 된 것을 아무도 모른다(MSI 의 NVML 어긋남에서 스무 곡이 그렇게 돌았다).
+        why = (ran.stderr or ran.stdout or "").strip().splitlines()
+        print(f"[voices_apart] 화자 가르기 실패 · {stem.name} · {why[-1][:200] if why else ran.returncode}", file=sys.stderr)
         return {}
     try:
         _said[str(into)] = json.loads(into.read_text(encoding="utf-8"))
