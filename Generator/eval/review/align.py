@@ -258,6 +258,11 @@ def device():
 #: over ten songs, with the old result kept as the warning it is.
 ACOUSTIC = os.environ.get("MORA_ACOUSTIC", "mms")
 
+#: MMS_FA weights fine-tuned on sung Korean (`~/mora-train/models/mms_sing_b.pt`), loaded over the
+#: stock model when set. Over 110 held-out songs a whole-song alignment put 89.0% of line starts
+#: within 0.3 s against the stock model's 84.0%.
+MMS_WEIGHTS = os.environ.get("MORA_MMS_WEIGHTS", "")
+
 
 def load():
     """Load the alignment model once and hand back the cached copy.
@@ -303,7 +308,11 @@ def load():
             bag["table"] = bundle.get_dict()
             bag["blank"] = 0
             bag["roman"] = uroman.Uroman()
-            bag["model"] = bundle.get_model().eval().to(where)
+            model = bundle.get_model()
+            #: 노래로 미세조정한 무게(`~/mora-train`). 겉껍질째 저장한 state_dict 라 그대로 들어간다.
+            if MMS_WEIGHTS:
+                model.load_state_dict(torch.load(os.path.expanduser(MMS_WEIGHTS), map_location="cpu"))
+            bag["model"] = model.eval().to(where)
     return bag["table"], bag["model"]
 
 
@@ -3157,6 +3166,95 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     return made
 
 
+#: Where the blind path's clock comes from: `"heard"` (the transcript, `heard_clock`) or `"model"`
+#: (one whole-song alignment on the vocals stem, `model_clock`, with the transcript filling any line
+#: the model could not place). Blind over the eleven benchmark songs (622 lines within 0.5 s):
+#:
+#:                 transcript clock   model clock
+#:   stock MMS          517               513
+#:   mms_sing_b         523               567
+#:
+#: The model clock only pays with the fine-tuned weights — the stock model collapses whole songs
+#: (하치와레girl 3%) — so it is the default exactly when those weights are loaded. Tightening the
+#: pull to it did not help: `MORA_OURS_APART` 400 → 564, 300 → 556; `MORA_OURS_TIGHT` 600 → 562.
+CLOCK_FROM = os.environ.get("MORA_CLOCK", "model" if MMS_WEIGHTS else "heard")
+
+
+def model_clock(path: Path, lines: list[dict], tokenize) -> list[int | None] | None:
+    """Place every line by aligning the whole lyric sheet at once on the vocals stem.
+
+    The transcript clock is a guess built from what whisper recognised, and on the eleven benchmark
+    songs it put 465 of 625 line starts within 0.5 s. The fine-tuned MMS aligning the whole sheet in
+    one pass did better on its own — 534 on the lead stem, 567 on the vocals stem, 571 with a star
+    between lines — while the stock MMS collapsed whole songs the same way (하치와레girl 2 of 32),
+    which is why the transcript used to be the safer prior. Handed to the rest of the blind path as
+    its clock, it took the finished result from 517 to 567 of 622 lines, better on every song.
+
+    Two choices carry most of that gain:
+
+    - **The vocals stem**, not the lead. The fine-tuning audio was the BS-Roformer vocals stem, and
+      the lead stem is missing every line the karaoke split sent to the backing.
+    - **A star token around every line.** MMS_FA's wrapper appends a star column that matches any
+      sound; putting one between lines gives ad-libs, a featured voice or spoken intros somewhere
+      to go instead of dragging the next line onto them.
+
+    @param {Path} path - The original audio; the vocals stem beside it is what gets read.
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @returns {list[int | None] | None} Each line's start in ms (None where the line has no letters),
+        or None when there is no vocals stem or nothing to align.
+    """
+    import torch
+    import torchaudio.functional as F
+
+    stem = vocals_of(path)
+    if ACOUSTIC != "mms" or not stem.exists():
+        return None
+    audio = read_audio(stem)
+    load()
+    log_probs = whole_logits(audio)
+    star = log_probs.shape[-1] - 1
+
+    tokens, owner = [star], [-1]
+    for index, line in enumerate(lines):
+        ids = [one for word in tokenize(line.get("text", ""))
+               for grain in grains_of(speakable(word)) for one in letters(grain)]
+        if ids:
+            tokens += ids + [star]
+            owner += [index] * len(ids) + [-1]
+    if len(tokens) < 3 or len(tokens) > log_probs.shape[1]:
+        return None
+
+    per_frame = audio.shape[-1] / log_probs.shape[1] / SAMPLE_RATE * 1000
+    route, scores = F.forced_align(log_probs, torch.tensor([tokens], dtype=torch.int32),
+                                   blank=_bag().get("blank", 0))
+    made: list[int | None] = [None] * len(lines)
+    for token, span in enumerate(F.merge_tokens(route[0], scores[0].exp())):
+        if owner[token] >= 0 and made[owner[token]] is None:
+            made[owner[token]] = int(span.start * per_frame)
+    return made
+
+
+def our_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
+    """The clock handed to the blind path, from the source `CLOCK_FROM` names.
+
+    With `"model"`, lines the whole-song alignment could not place (no letters after brackets and
+    punctuation go) take the transcript clock's time, so every line still carries one.
+
+    @param {Path} path - The original audio.
+    @param {list[dict]} lines - Lyric lines.
+    @param {callable} tokenize - Splits a line into words.
+    @returns {list[int] | None} A start in ms for each line, or None when there is nothing to go on.
+    """
+    heard = heard_clock(path, lines, tokenize)
+    if CLOCK_FROM != "model":
+        return heard
+    placed = model_clock(path, lines, tokenize)
+    if not placed:
+        return heard
+    return [one if one is not None else (heard[at] if heard else None) for at, one in enumerate(placed)]
+
+
 def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     """Align a song against every separated stem and keep the best placement per line.
 
@@ -3245,7 +3343,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 움직이므로, 밑그림이 틀려도 소리가 이긴다.
     ours = False
     if not any(one.get("at") is not None for one in lines):
-        guessed = heard_clock(path, lines, tokenize)
+        guessed = our_clock(path, lines, tokenize)
         if guessed:
             lines = [{**one, "at": at} for one, at in zip(lines, guessed)]
             ours = True
