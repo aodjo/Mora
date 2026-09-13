@@ -2026,6 +2026,12 @@ HEARD_LOCAL_MS = int(os.environ.get("MORA_LOCAL_MS", "8000"))
 #: 줄 시작이 이보다 촘촘히 이어지는 것이 이 수 넘게 잇달으면 더미다(ms, 줄 수).
 HEARD_PILE_MS = 300
 HEARD_PILE_LEAST = 4
+#: Lines before the first pin and after the last are stretched out at the pace of the pins within this
+#: many syllables of that edge, not at the song's average pace. The average takes in intros and breaks,
+#: so it is slower than the singing at the edges: 고스트시티's transcript stops at 201.8 s in the last
+#: chorus, and lines 87–98 ran 1–3 s late on the average pace. 0 keeps the song's pace. Read from
+#: `MORA_HEARD_EDGE`.
+HEARD_EDGE_GRAINS = int(os.environ.get("MORA_HEARD_EDGE", "60"))
 #: A hole in the lead stem this long and this far below the song's own loudness is masked like a
 #: rest, whoever the diarizer thinks is singing through it. Forced alignment has to spend every
 #: token, so a stretch nobody sings gets filled by stretching the line before it or pulling the
@@ -3134,6 +3140,14 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
     #: 막기가 「첫 줄이 3 초」로 읽어 아무것도 못 막는다. 곡이 통째로 14 초 앞으로 밀렸다.
     span = max(1, pairs[-1][0] - pairs[0][0])
     rate = (pairs[-1][1] - pairs[0][1]) / span
+    head_rate = tail_rate = rate
+    if HEARD_EDGE_GRAINS > 0:
+        near_head = [one for one in pairs if one[0] - pairs[0][0] <= HEARD_EDGE_GRAINS]
+        near_tail = [one for one in pairs if pairs[-1][0] - one[0] <= HEARD_EDGE_GRAINS]
+        if near_head[-1][0] - near_head[0][0] >= HEARD_EDGE_GRAINS // 2:
+            head_rate = (near_head[-1][1] - near_head[0][1]) / (near_head[-1][0] - near_head[0][0])
+        if near_tail[-1][0] - near_tail[0][0] >= HEARD_EDGE_GRAINS // 2:
+            tail_rate = (near_tail[-1][1] - near_tail[0][1]) / (near_tail[-1][0] - near_tail[0][0])
 
     #: 줄 첫 낱알의 못 — 급한 못 규칙과 반복 뽑기를 지난 뒤의 것.
     pin_at = {}
@@ -3151,9 +3165,9 @@ def heard_clock(path: Path, lines: list[dict], tokenize) -> list[int] | None:
         if here is None:
             out.append(None)
         elif here < pairs[0][0]:
-            out.append(pairs[0][1] - int((pairs[0][0] - here) * rate))
+            out.append(pairs[0][1] - int((pairs[0][0] - here) * head_rate))
         elif here > pairs[-1][0]:
-            out.append(pairs[-1][1] + int((here - pairs[-1][0]) * rate))
+            out.append(pairs[-1][1] + int((here - pairs[-1][0]) * tail_rate))
         else:
             #: 그 자리를 사이에 둔 두 짝 사이에서 곧게 읽는다.
             after = next(one for one in range(len(pairs)) if pairs[one][0] >= here)
