@@ -38,10 +38,12 @@ def find_cuda() -> None:
     """
     if os.environ.get("MORA_CUDA_SET"):
         return
-    found = sorted(Path.home().glob("*/.venv/lib/python3*/site-packages/nvidia/*/lib"))
-    #: 워커 이미지는 살림들을 `MORA_VENVS` 아래(예: /opt/mora/aligner)에 둔다.
+    #: 워커 이미지는 살림들을 `MORA_VENVS` 아래(예: /opt/mora/aligner)에 두고, 그때는 거기만 본다. 홈의 살림까지
+    #: 이름순으로 섞으면 CUDA 13 판 라이브러리를 먼저 집어 CTranslate2(CUDA 12)가 「장치가 없다」며 죽었다(MSI).
     if os.environ.get("MORA_VENVS"):
-        found += sorted(Path(os.environ["MORA_VENVS"]).glob("*/lib/python3*/site-packages/nvidia/*/lib"))
+        found = sorted(Path(os.environ["MORA_VENVS"]).glob("*/lib/python3*/site-packages/nvidia/*/lib"))
+    else:
+        found = sorted(Path.home().glob("*/.venv/lib/python3*/site-packages/nvidia/*/lib"))
     if not found:
         return
     os.environ["MORA_CUDA_SET"] = "1"

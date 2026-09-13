@@ -2483,6 +2483,11 @@ def kresnik_song(path: Path) -> list[tuple[str, int]]:
         log_probs = whole_logits(audio)
         table, _ = load()
         blank = _bag()["blank"]
+    except ImportError as trouble:
+        #: 워커 이미지에는 kresnik(transformers)을 넣지 않았다. whisper 가 못 돈 곡은 받아쓰기 없이 간다 —
+        #: 곡을 통째로 죽이는 것보다 낫다(처음 보는 20곡 검증에서 그렇게 죽었다).
+        print(f"[heard_song] kresnik 도 없다 · {path.name} · {trouble}", file=sys.stderr)
+        return []
     finally:
         ACOUSTIC = was
     per_frame = audio.shape[-1] / log_probs.shape[1] / SAMPLE_RATE * 1000
