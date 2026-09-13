@@ -63,11 +63,12 @@ RUN set -eu; \
     done; \
     uv pip install -q --python /opt/mora/aligner/bin/python --index-url "$TORCH_INDEX" torchaudio==2.11.0; \
     uv pip install -q --python /opt/mora/aligner/bin/python \
-      uroman==1.3.1.1 soundfile numpy scipy librosa samplerate resampy pydub "audio-separator==0.47.0" onnxruntime audioread; \
+      uroman==1.3.1.1 soundfile numpy scipy librosa samplerate resampy pydub "audio-separator==0.47.0" onnxruntime audioread \
+      speechbrain==1.1.1 scikit-learn==1.9.0; \
     uv pip install -q --python /opt/mora/qwen/bin/python qwen-asr==0.0.6 transformers==4.57.6 accelerate==1.12.0 soundfile librosa; \
     uv pip install -q --python /opt/mora/dia/bin/python "nemo-toolkit[asr]==3.0.0" soundfile; \
     uv pip install -q --python /opt/mora/ears/bin/python faster-whisper==1.2.1; \
     rm -rf /opt/mora/.uv-cache; \
-    /opt/mora/aligner/bin/python -c "import torch, torchaudio, uroman, audio_separator; print('정렬기', torch.__version__, torchaudio.__version__)"
+    /opt/mora/aligner/bin/python -c "import torch, torchaudio, uroman, audio_separator, sklearn; from speechbrain.inference.speaker import EncoderClassifier; print('정렬기', torch.__version__, torchaudio.__version__)"
 COPY --from=ts-build /app/dist ./dist
 CMD ["node", "dist/Generator/src/worker-cli.js"]
