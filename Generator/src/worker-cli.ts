@@ -114,6 +114,7 @@ try {
     throw new Error("MORA_WORKER_ID does not match the credential file");
 
   const admin = new AdminClient(adminUrl, token);
+  const reviewWeights = await fetchReviewWeights(admin);
   /** 파이프라인 단계를 사람이 읽는 말로. 화면에 뜨는 것은 코드가 아니라 지금 하는 일이어야 한다. */
   const STAGE_NAMES: Record<string, string> = {
     probe: "살펴보는 중",
@@ -139,6 +140,7 @@ try {
     queue: new AdminJobQueue(admin),
     daemon,
     artifactPublicKey: await readArtifactPublicKey(),
+    ...(reviewWeights === undefined ? {} : { reviewWeights }),
     onStatus: (status) => {
       // 지금 곡을 잡고 있는지를 파일로 남긴다. worker.stop() 은 데몬을 곧바로 닫으므로 작업
       // 중에 끊으면 그 곡을 잃는다 — 새 판이 나왔을 때 감독 스크립트가 언제 갈아탈지 알려면
@@ -168,6 +170,31 @@ try {
 } catch (error) {
   daemon.close();
   throw error;
+}
+
+/**
+ * Fetch the sung aligner's trained weights from the server, when this machine can run that aligner.
+ *
+ * The image says so by setting `MORA_REVIEW_PYTHON`. Nothing is fatal here: without the weights the
+ * daemon keeps aligning Korean songs the whisperx way, so a missing file costs accuracy, not the worker.
+ *
+ * @param {AdminClient} admin - The authenticated admin client.
+ * @returns {Promise<string | undefined>} Path to the checked weights, or undefined.
+ */
+async function fetchReviewWeights(admin: AdminClient): Promise<string | undefined> {
+  if (!process.env.MORA_REVIEW_PYTHON) return undefined;
+  const name = process.env.MORA_REVIEW_MODEL ?? "mms_sing_b.pt";
+  const folder = process.env.MORA_MODEL_DIR ?? resolve(process.cwd(), "Generator/.models");
+  try {
+    await mkdir(folder, { recursive: true });
+    process.stdout.write(`노래 정렬 무게를 받는 중: ${name}…\n`);
+    const path = await admin.fetchModel(name, resolve(folder, name));
+    process.stdout.write(`노래 정렬 무게 준비됨: ${path}\n`);
+    return path;
+  } catch (error) {
+    process.stdout.write(`노래 정렬 무게를 못 받았다 — 한국어 곡도 whisperx 로 맞춘다 (${String(error)})\n`);
+    return undefined;
+  }
 }
 
 /** 등록과 짝짓기가 똑같이 보내는 것. 두 곳에 적어 두면 한쪽만 고치는 날이 온다. */

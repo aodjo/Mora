@@ -1,6 +1,9 @@
 import { createHash, publicEncrypt, randomBytes, constants } from "node:crypto";
-import { createReadStream, promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import { basename } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import type {
   GeneratorCandidateSubmission,
   GeneratorJobInput,
@@ -51,6 +54,57 @@ export class AdminClient {
       method: "POST",
       body: JSON.stringify({ lease_id: leaseId, delay_seconds: delaySeconds }),
     });
+  }
+  /**
+   * Fetch a model file the pipeline needs from the server, once, into `destination`.
+   *
+   * The server states the file's size and SHA-256. A copy already on disk whose size matches and
+   * whose recorded hash is the server's is used as is; a partial download resumes from where it
+   * stopped; the finished file is hashed before it takes the final name, so a truncated or wrong
+   * file never reaches the aligner.
+   *
+   * @param {string} name - The model's name on the server, e.g. `mms_sing_b.pt`.
+   * @param {string} destination - Where the file should end up.
+   * @returns {Promise<string>} `destination`, once it holds the checked file.
+   * @throws {Error} `MODEL_<status>_<name>` when the server will not hand it over, `MODEL_SHA_MISMATCH` when the bytes are wrong.
+   */
+  async fetchModel(name: string, destination: string): Promise<string> {
+    const url = `${this.baseUrl.replace(/\/$/u, "")}/admin/api/generator/models/${encodeURIComponent(name)}`;
+    const authorization = `Bearer ${this.token}`;
+    const head = await this.fetcher(url, { method: "HEAD", headers: { authorization } });
+    if (!head.ok) throw new Error(`MODEL_${head.status}_${name}`);
+    const size = Number(head.headers.get("content-length") ?? "0");
+    const digest = head.headers.get("x-mora-sha256") ?? "";
+    const marker = `${destination}.sha256`;
+    const known = await fs.readFile(marker, "utf8").catch(() => "");
+    const kept = await fs.stat(destination).catch(() => null);
+    if (kept !== null && kept.size === size && known.trim() === digest) return destination;
+
+    const partial = `${destination}.part`;
+    let have = (await fs.stat(partial).catch(() => null))?.size ?? 0;
+    if (have > size) {
+      await fs.rm(partial, { force: true });
+      have = 0;
+    }
+    if (have < size) {
+      const response = await this.fetcher(url, { headers: { authorization, ...(have > 0 ? { range: `bytes=${have}-` } : {}) } });
+      if (response.status !== 200 && response.status !== 206) throw new Error(`MODEL_${response.status}_${name}`);
+      if (response.body === null) throw new Error(`MODEL_EMPTY_${name}`);
+      // 200 이면 서버가 이어받기를 무시하고 처음부터 보낸 것이다 — 이어 붙이면 앞머리가 두 번 들어간다.
+      await pipeline(
+        Readable.fromWeb(response.body as unknown as NodeReadableStream<Uint8Array>),
+        createWriteStream(partial, { flags: response.status === 206 ? "a" : "w" }),
+      );
+    }
+    const hash = createHash("sha256");
+    await pipeline(createReadStream(partial), hash);
+    if (hash.digest("hex") !== digest) {
+      await fs.rm(partial, { force: true });
+      throw new Error("MODEL_SHA_MISMATCH");
+    }
+    await fs.rename(partial, destination);
+    await fs.writeFile(marker, digest, "utf8");
+    return destination;
   }
   static async enroll(
     baseUrl: string,

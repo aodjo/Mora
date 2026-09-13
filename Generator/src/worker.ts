@@ -31,6 +31,8 @@ export interface GeneratorWorkerOptions {
   queue: GeneratorQueue;
   daemon: MlDaemon;
   artifactPublicKey: string;
+  /** The sung aligner's trained weights on this machine; without them Korean songs take the whisperx path. */
+  reviewWeights?: string;
   idleMs?: number;
   onStatus?: (status: GeneratorWorkerStatus) => void;
 }
@@ -179,6 +181,7 @@ export class GeneratorWorker {
         cookie_file: process.env.YTDLP_COOKIE_FILE ?? null,
         proxy: process.env.YTDLP_PROXY ?? null,
         work_dir: workDir,
+        review_weights: this.options.reviewWeights ?? null,
       });
       const artifactIds: string[] = [];
       for (const artifact of result.artifacts) {
