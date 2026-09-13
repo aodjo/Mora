@@ -3194,6 +3194,8 @@ TOGETHER_LEAST_MS = int(os.environ.get("MORA_TOGETHER_MS", "4000"))
 CLOCK_DISPUTE = os.environ.get("MORA_CLOCK_DISPUTE", "1") != "0"
 CLOCK_DISPUTE_MS = int(os.environ.get("MORA_DISPUTE_MS", "2000"))
 CLOCK_DISPUTE_EDGE = float(os.environ.get("MORA_DISPUTE_EDGE", "0.1"))
+#: …and the least share of the line's letters the transcript must hold at its own place at all.
+CLOCK_DISPUTE_LEAST = float(os.environ.get("MORA_DISPUTE_LEAST", "0.4"))
 DISPUTE_REACH_MS = int(os.environ.get("MORA_DISPUTE_REACH_MS", "1500"))
 
 
@@ -3232,10 +3234,13 @@ def model_clock(path: Path, lines: list[dict], tokenize) -> list[int | None] | N
     log_probs = whole_logits(audio)
     star = log_probs.shape[-1] - 1
 
+    #: 괄호 속은 줄 단위로 걷어낸 뒤 낱말로 가른다. 낱말마다 걷으면 「(나 너 싫으니까 꺼지라고)」처럼
+    #: 괄호가 여러 낱말에 걸친 코러스가 남아, 다른 목소리 몫까지 이 줄에 넣느라 다음 줄을 밀었다
+    #: (하치와레girl 24 번 1.1 초). 줄 사이 별표가 그 소리를 받는다.
+    ids_of = [[one for word in tokenize(speakable(line.get("text", "")))
+               for grain in grains_of(word) for one in letters(grain)] for line in lines]
     tokens, owner = [star], [-1]
-    for index, line in enumerate(lines):
-        ids = [one for word in tokenize(line.get("text", ""))
-               for grain in grains_of(speakable(word)) for one in letters(grain)]
+    for index, ids in enumerate(ids_of):
         if ids:
             tokens += ids + [star]
             owner += [index] * len(ids) + [-1]
@@ -3251,9 +3256,7 @@ def model_clock(path: Path, lines: list[dict], tokenize) -> list[int | None] | N
             made[owner[token]] = int(span.start * per_frame)
     #: `settle_disputes` 가 줄 하나를 다른 자리에서 다시 맞출 때 같은 확률을 쓴다.
     _bag()["model_clock"] = {"stem": str(stem), "log_probs": log_probs, "per_frame": per_frame, "star": star,
-                             "ids": [[one for word in tokenize(line.get("text", ""))
-                                      for grain in grains_of(speakable(word)) for one in letters(grain)]
-                                     for line in lines]}
+                             "ids": ids_of}
     return made
 
 
@@ -3301,12 +3304,21 @@ def settle_disputes(path: Path, lines: list[dict], tokenize, model: list, heard:
         m, h = model[at], heard[at]
         if m is None or h is None or placed[at] != m or abs(m - h) <= CLOCK_DISPUTE_MS or not ids[at]:
             continue
-        mine, _ = jamo_of([(grain, 0) for word in tokenize(line.get("text", "")) for grain in grains_of(speakable(word))])
-        if heard_share(mine, heard, at, h) <= heard_share(mine, model, at, m) + CLOCK_DISPUTE_EDGE:
+        mine, _ = jamo_of([(grain, 0) for word in tokenize(speakable(line.get("text", ""))) for grain in grains_of(word)])
+        there = heard_share(mine, heard, at, h)
+        #: 받아쓰기가 그 자리에서 이 줄을 **들었어야** 한다. 하치와레girl 4 번은 받아쓰기가 그 둘레에서
+        #: 「알았지?」 하나만 들었는데 글자 15% 가 겹친다고 모델 자리(아무것도 못 들음, 0%)를 이겼고,
+        #: 다시 맞춘 4 번이 3 번 소리를 차지해 3 번이 0.7 초로 뭉개졌다 — 사람 귀에는 「건너뛰었다」.
+        if there < CLOCK_DISPUTE_LEAST or there <= heard_share(mine, model, at, m) + CLOCK_DISPUTE_EDGE:
             continue
         later = next((one for one in heard[at + 1:] if one is not None and one > h), h + 4000)
         since = max(0, int((h - DISPUTE_REACH_MS) / per_frame))
         until = min(log_probs.shape[1], int((min(later, h + 8000) + DISPUTE_REACH_MS) / per_frame))
+        #: 앞 줄이 불릴 만큼은 비워 둔다 — 앞 줄 시작에서 그 낱알 수 × `PACE_LEAST_MS` 뒤부터 찾는다.
+        prev = next((one for one in range(at - 1, -1, -1) if placed[one] is not None), None)
+        if prev is not None:
+            sung = sum(len(grains_of(word)) for word in tokenize(speakable(lines[prev].get("text", ""))))
+            since = max(since, int((placed[prev] + sung * PACE_LEAST_MS) / per_frame))
         window = [star] + ids[at] + [star]
         if until - since < 2 * len(window):
             continue
