@@ -1821,7 +1821,8 @@ def align_song(path: Path, lines: list[dict], tokenize, separate: bool = True,
 
 #: Where the syllable refiner lives — Qwen3-ForcedAligner in its own environment, because
 #: `qwen-asr` pulls torch 2.14 and the aligner sits on 2.13. Missing means the stage is skipped.
-POLISH_PY = Path.home() / "qwen/bin/python"
+#: 워커 이미지에서는 딴 살림이 홈이 아닌 곳에 있다 — `MORA_QWEN_PYTHON` 이 가리킨다.
+POLISH_PY = Path(os.environ.get("MORA_QWEN_PYTHON") or Path.home() / "qwen/bin/python")
 #: Whether the refiner runs at all. Read from the environment so the probes can measure both sides.
 POLISH = os.environ.get("MORA_POLISH", "1") != "0"
 #: Room added on each side of a line's own span when it is cut out for the refiner (ms). The refiner
@@ -1995,7 +1996,7 @@ HEARD = os.environ.get("MORA_HEARD", "1") != "0"
 #: Where whisper lives. mlx has nothing to do with torch, but it sits in its own venv for the same
 #: reason `~/dia` and `~/qwen` do — one venv repinning another's versions has broken all three.
 #: Missing, `heard_song` falls back to kresnik, which is much worse but always there.
-EARS_PY = Path.home() / "ears/bin/python"
+EARS_PY = Path(os.environ.get("MORA_EARS_PYTHON") or Path.home() / "ears/bin/python")
 #: A pin from the transcript must sit on voice: an onset within this many ms of it. **Off by
 #: default (0) — measured and it loses.** It was built for 야해, where whisper wrote `작은 손목에`
 #: at 43.1 s beside a 4.6 s stretch holding four onsets; but that pin sat on one of the four and
@@ -3839,7 +3840,7 @@ FASTER = {"use_native_fp16": True, "use_torch_compile": True}
 #: Where the diarizer lives. It needs torch 2.8 and the aligner is pinned to 2.7 by `torchaudio`
 #: and MMS_FA, so it gets a home of its own; putting them together made pip pull torch 2.13 and
 #: break `torchvision` outright.
-DIARIZE_PY = Path.home() / "dia/bin/python"
+DIARIZE_PY = Path(os.environ.get("MORA_DIA_PYTHON") or Path.home() / "dia/bin/python")
 #: How much of a line one voice must hold before it counts as singing it.
 #:
 #: A breath caught at the edge of a neighbouring line would otherwise make every line a duet.

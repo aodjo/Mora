@@ -2077,6 +2077,266 @@ def align_line(
     return [word for part in aligned.get("segments", []) for word in part.get("words", [])]
 
 
+#: 노래로 학습한 정렬기 — 검수 도구의 align.py 를 그 살림의 파이썬으로 `align_runner.py` 를 통해 부른다.
+#: whisperx 는 torch 2.8 에, 그 정렬기는 torchaudio 2.11·torch 2.13 에 묶여 한 살림에 못 산다. 한국어 가사만
+#: 이 길로 가고, 파이썬이 없거나 무게가 없거나 실패하면 whisperx 길로 물러선다. 기준 11곡 쌩 가사에서 줄
+#: 머리 0.5초 안 94% · 0.25초 안 81% — whisperx 길(받아쓰기 시계)은 83% · 63% 였다.
+REVIEW_PYTHON = os.getenv("MORA_REVIEW_PYTHON", "")
+REVIEW_RUNNER = Path(__file__).resolve().parents[1] / "eval" / "review" / "align_runner.py"
+REVIEW_TIMEOUT_S = int(os.getenv("MORA_REVIEW_TIMEOUT_S", "1800"))
+#: 편집기는 0.35 아래를 「파이프라인이 자리를 못 찾아 끼워 넣은 낱말」로 표시한다(Admin/src/confidence.ts).
+#: 정렬기가 잰 낱말은 그 위(0.4~0.99)에, 끼워 넣은 낱말은 이 값에 둔다.
+REVIEW_GUESSED = 0.25
+#: 정렬기가 낱말로 보지 않는 덩어리(probe_blind.NOT_A_WORD 와 같다) — 이것을 빼야 정렬기의 낱말 차례와 맞는다.
+REVIEW_NOT_A_WORD = re.compile(r"^[♪♫🎵🎶~\-–—…·.,()\[\]{}\"'“”‘’!?]+$")
+
+
+def review_ready(weights: str | None) -> bool:
+    """Whether the sung aligner can run here: its interpreter, its runner and the trained weights.
+
+    @param {str | None} weights - Path to the trained MMS weights the worker fetched.
+    @returns {bool} True when all three are present.
+    """
+    return bool(REVIEW_PYTHON and weights) and Path(REVIEW_PYTHON).exists() and REVIEW_RUNNER.exists() and Path(str(weights)).exists()
+
+
+def review_grains(chunk: str) -> list[tuple[int, int]]:
+    """Where each grain of a whitespace-separated chunk sits, by the aligner's `grains_of` rule.
+
+    Hangul goes one syllable at a time; Latin letters, digits and apostrophes run together; anything
+    else only breaks a run. The aligner times grains, so this is how its times are put back on the
+    characters of the line.
+
+    @param {str} chunk - One whitespace-separated piece of a lyric line.
+    @returns {list[tuple[int, int]]} `(start, end)` character offsets of each grain within the chunk.
+    """
+    out: list[tuple[int, int]] = []
+    run = -1
+    for position, character in enumerate(chunk):
+        if "가" <= character <= "힣":
+            if run >= 0:
+                out.append((run, position))
+                run = -1
+            out.append((position, position + 1))
+        elif character.isascii() and (character.isalnum() or character == "'"):
+            if run < 0:
+                run = position
+        elif run >= 0:
+            out.append((run, position))
+            run = -1
+    if run >= 0:
+        out.append((run, len(chunk)))
+    return out
+
+
+def review_confidence(sure: float | None) -> float:
+    """Turn the aligner's log-probability into the 0..1 confidence a candidate carries.
+
+    @param {float | None} sure - Mean log-probability of the token's grains (≤ 0).
+    @returns {float} 0.4 for a barely heard token up to 0.99 for a certain one.
+    """
+    if sure is None:
+        return 0.4
+    return round(0.4 + 0.59 * math.exp(max(float(sure), -12.0) / 4.0), 3)
+
+
+def review_word_spans(
+    text_lines: list[str],
+    line_words: list[list[str]],
+    line_spans_at: list[list[list[int]] | None],
+    review_lines: list[list[dict[str, Any]]],
+) -> tuple[list[list[int | float]], list[list[int]], int]:
+    """Put the sung aligner's syllable times onto the worker's tokens.
+
+    The aligner splits a line on whitespace and times its grains; the worker's tokens come from
+    tokenizeV2 with their character span inside the line. A token takes the grains that overlap its
+    span — its start is the first grain's, its end the last grain's. Tokens no grain reaches (the
+    aligner could not place them) are spread between their timed neighbours by syllables and marked
+    guessed; a line with nothing timed is spread over the gap its neighbours leave.
+
+    @param {list[str]} text_lines - The kept lines, as sent by the worker.
+    @param {list[list[str]]} line_words - Canonical tokens of each line.
+    @param {list[list[list[int]] | None]} line_spans_at - Each token's `[start, end]` inside its line, when sent.
+    @param {list[list[dict[str, Any]]]} review_lines - The runner's words per line.
+    @returns {tuple} `(word_spans, line_windows, measured)` — `[token, start_ms, end_ms, confidence]` per token,
+        `[start, end]` per line, and how many tokens the aligner timed itself.
+    """
+    timed_lines: list[list[tuple[int, int, int, int, float | None]]] = []
+    for index, text in enumerate(text_lines):
+        words = review_lines[index] if index < len(review_lines) else []
+        chunks = [match for match in re.finditer(r"\S+", text) if not REVIEW_NOT_A_WORD.match(match.group(0))]
+        grains: list[tuple[int, int, int, int, float | None]] = []
+        for chunk, word in zip(chunks, words):
+            places = review_grains(chunk.group(0))
+            for (left, right), grain in zip(places, word.get("chars") or []):
+                if grain.get("at") is None or grain.get("stuck"):
+                    continue
+                at = int(grain["at"])
+                end = int(grain["end"]) if grain.get("end") is not None else at
+                grains.append((chunk.start() + left, chunk.start() + right, at, max(at, end), grain.get("sure")))
+        timed_lines.append(grains)
+
+    spans_out: list[list[int | float]] = []
+    windows: list[list[int] | None] = []
+    measured = 0
+    token = 0
+    pending: list[int] = []
+    for index, text in enumerate(text_lines):
+        tokens = line_words[index] if index < len(line_words) else []
+        spans = line_spans_at[index] if index < len(line_spans_at) else None
+        if not spans or len(spans) != len(tokens):
+            spans, cursor = [], 0
+            for word in tokens:
+                found = text.find(word, cursor)
+                spans.append([found, found + len(word)] if found >= 0 else [cursor, cursor])
+                cursor = found + len(word) if found >= 0 else cursor
+        row: list[list[int | float] | None] = []
+        for left, right in spans:
+            hit = [one for one in timed_lines[index] if one[0] < right and one[1] > left]
+            if hit:
+                sures = [float(one[4]) for one in hit if one[4] is not None]
+                row.append([token, min(one[2] for one in hit), max(one[3] for one in hit),
+                            review_confidence(sum(sures) / len(sures) if sures else None)])
+                measured += 1
+            else:
+                row.append(None)
+            token += 1
+        weights = [max(1, syllables(word)) for word in tokens]
+        timed = [position for position, one in enumerate(row) if one is not None]
+        if timed:
+            for position, one in enumerate(row):
+                if one is not None:
+                    continue
+                before = max((k for k in timed if k < position), default=None)
+                after = min((k for k in timed if k > position), default=None)
+                first = before + 1 if before is not None else 0
+                last = after - 1 if after is not None else len(row) - 1
+                share = max(1, sum(weights[first:last + 1]))
+                #: 양쪽에 잰 낱말이 있으면 그 사이, 한쪽뿐이면 그쪽에서 음절마다 0.3초씩.
+                if before is not None and after is not None:
+                    low, high = int(row[before][2]), int(row[after][1])
+                elif after is not None:
+                    high = int(row[after][1])
+                    low = max(0, high - 300 * share)
+                else:
+                    low = int(row[before][2])
+                    high = low + 300 * share
+                start = low + (high - low) * sum(weights[first:position]) / share
+                end = low + (high - low) * sum(weights[first:position + 1]) / share
+                row[position] = [token - len(row) + position, round(start), round(max(start, end)), REVIEW_GUESSED]
+            windows.append([int(row[0][1]), int(max(one[2] for one in row))])
+        else:
+            windows.append(None)
+            pending.append(index)
+        spans_out.extend(row)
+
+    #: 한 낱말도 못 놓은 줄은 앞뒤 줄이 남긴 틈에 음절 수대로 편다.
+    starts = [sum(len(line_words[k]) for k in range(index)) for index in range(len(text_lines))]
+    for index in pending:
+        before = next((windows[k][1] for k in range(index - 1, -1, -1) if windows[k] is not None), 0)
+        after = next((windows[k][0] for k in range(index + 1, len(windows)) if windows[k] is not None), before + 3000)
+        count = len(line_words[index])
+        weights = [max(1, syllables(word)) for word in line_words[index]]
+        total = max(1, sum(weights))
+        for position in range(count):
+            start = before + (after - before) * sum(weights[:position]) / total
+            end = before + (after - before) * sum(weights[:position + 1]) / total
+            spans_out[starts[index] + position] = [starts[index] + position, round(start), round(end), REVIEW_GUESSED]
+        windows[index] = [round(before), round(after)] if count else [round(before), round(before)]
+    return spans_out, [window or [0, 0] for window in windows], measured
+
+
+def run_review_aligner(mixture: Path, vocals: Path, text_lines: list[str], title: str, weights: str, directory: Path) -> list[list[dict[str, Any]]]:
+    """Run the sung aligner on one set of lines in its own interpreter.
+
+    It works in its own folder under the job's, keeping its stems, transcript and diarization
+    there, so a retry of the job does not redo them. The worker's vocal stem comes from the same
+    BS-Roformer model the aligner would use, so it is handed over rather than separated again.
+
+    @param {Path} mixture - The song as decoded audio.
+    @param {Path} vocals - The worker's vocal stem.
+    @param {list[str]} text_lines - The kept lines.
+    @param {str} title - The song title, for the aligner's logs.
+    @param {str} weights - The trained MMS weights.
+    @param {Path} directory - The job's work directory.
+    @returns {list[list[dict[str, Any]]]} The runner's words per line.
+    @throws {RuntimeError} `REVIEW_ALIGN_FAILED` when the runner fails or answers in another shape.
+    """
+    home = directory / "review"
+    home.mkdir(exist_ok=True)
+    song = home / "song.wav"
+    if not song.exists():
+        shutil.copyfile(mixture, song)
+    seeded = home / "song.vocals.wav"
+    if not seeded.exists() and vocals.exists() and VOCALS_MODEL == "model_bs_roformer_ep_317_sdr_12.9755.ckpt":
+        shutil.copyfile(vocals, seeded)
+    env = {**os.environ, "MORA_MMS_WEIGHTS": weights}
+    try:
+        got = subprocess.run([REVIEW_PYTHON, str(REVIEW_RUNNER)], input=json.dumps({"audio": str(song), "lines": text_lines, "title": title}),
+                             capture_output=True, text=True, timeout=REVIEW_TIMEOUT_S, env=env, cwd=str(REVIEW_RUNNER.parent))
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("REVIEW_ALIGN_FAILED") from error
+    sys.stderr.write(got.stderr[-4000:])
+    if got.returncode != 0:
+        raise RuntimeError("REVIEW_ALIGN_FAILED")
+    answer = json.loads(got.stdout)
+    lines = answer.get("lines")
+    if not isinstance(lines, list) or len(lines) != len(text_lines):
+        raise RuntimeError("REVIEW_ALIGN_FAILED")
+    return lines
+
+
+def review_variant(
+    mixture: Path,
+    vocals: Path,
+    variant: dict[str, Any],
+    asr: dict[str, Any],
+    duration_ms: int,
+    detected: str,
+    weights: str,
+    directory: Path,
+    title: str,
+) -> dict[str, Any]:
+    """Align one lyric variant with the sung aligner and measure it the way `align_variant` does.
+
+    The quality metrics keep their meaning: anchors are still the transcript's witnesses on the
+    lyric's words, breath gaps are measured on the new line boundaries, coverage is the share of
+    tokens the aligner timed itself rather than spread between neighbours.
+
+    @param {Path} mixture - The song as decoded audio.
+    @param {Path} vocals - The worker's vocal stem.
+    @param {dict[str, Any]} variant - One lyric variant as the worker sent it.
+    @param {dict[str, Any]} asr - The worker's transcript.
+    @param {int} duration_ms - Length of the audio.
+    @param {str} detected - Language the transcript heard.
+    @param {str} weights - The trained MMS weights.
+    @param {Path} directory - The job's work directory.
+    @param {str} title - The song title.
+    @returns {dict[str, Any]} `{variant_id, line_spans, word_spans, quality}`.
+    """
+    text_lines, line_words, line_spans_at = variant_lines(variant)
+    review_lines = run_review_aligner(mixture, vocals, text_lines, title, weights, directory)
+    result_words, line_windows, measured = review_word_spans(text_lines, line_words, line_spans_at, review_lines)
+    lyric_words = [comparable(word) for words in line_words for word in words if comparable(word)]
+    anchors = match_sequences(lyric_words, asr_words(asr))
+    anchored_at = sorted(anchors)
+    edges = [-1, *anchored_at, len(lyric_words)]
+    widest_gap = max(edges[k + 1] - edges[k] - 1 for k in range(len(edges) - 1)) if anchored_at else len(lyric_words)
+    import whisperx
+
+    with redirect_stdout(sys.stderr):
+        audio = whisperx.load_audio(str(vocals))
+    breathing, gaps_seen = breath_gaps(audio, WHISPER_SAMPLE_RATE, line_windows)
+    declared = str(variant.get("language", "und")).split("-")[0]
+    coverage = measured / max(1, len(result_words))
+    #: 받아쓰기가 가사를 붙들었는가 — `anchored_windows` 가 창을 짓는 문턱과 같다.
+    anchored = len(anchors) >= max(4, len(lyric_words) // 12)
+    quality = measure(result_words, line_windows, coverage, duration_ms, anchored, declared, detected,
+                      anchors=len(anchors), lyric_words=len(lyric_words), widest_gap=widest_gap, breathing=breathing)
+    print(f"[review_align] {measured}/{len(result_words)} token(s) timed · breath {breathing:.0%} of {gaps_seen}", file=sys.stderr)
+    return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}
+
+
 def align_variant(
     vocals: Path,
     variant: dict[str, Any],
@@ -2502,7 +2762,19 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     notify("language_validate", "started", 0.65)
     validate_language(detected, str(job["recording"].get("language", "und")))
     notify("forced_align", "started", 0.66)
-    variants = [align_variant(stems["vocals"], variant, asr, duration_ms, config["backend"], detected, second_voice) for variant in job["lyrics"]]
+    #: 한국어 가사는 노래로 학습한 정렬기로. 워커가 무게를 받아 두었고 그 살림이 있을 때만, 실패하면 whisperx 로.
+    weights = params.get("review_weights") or os.getenv("MORA_MMS_WEIGHTS")
+    title = str(job.get("recording", {}).get("title") or job.get("title") or "")
+    variants = []
+    for variant in job["lyrics"]:
+        declared = str(variant.get("language", "und")).split("-")[0]
+        if review_ready(weights) and written_language(str(variant.get("text", "")), declared) == "ko":
+            try:
+                variants.append(review_variant(mixture, stems["vocals"], variant, asr, duration_ms, detected, str(weights), directory, title))
+                continue
+            except Exception as error:
+                print(f"[review_align] fallback to whisperx: {type(error).__name__}: {str(error)[:200]}", file=sys.stderr)
+        variants.append(align_variant(stems["vocals"], variant, asr, duration_ms, config["backend"], detected, second_voice))
     notify("forced_align", "completed", 0.8)
     notify("diarize", "started", 0.81)
     turns = diarize(stems["vocals"], config["backend"], job["pipeline"].get("min_speakers"), job["pipeline"].get("max_speakers"))

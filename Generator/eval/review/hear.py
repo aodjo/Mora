@@ -39,6 +39,9 @@ def find_cuda() -> None:
     if os.environ.get("MORA_CUDA_SET"):
         return
     found = sorted(Path.home().glob("*/.venv/lib/python3*/site-packages/nvidia/*/lib"))
+    #: 워커 이미지는 살림들을 `MORA_VENVS` 아래(예: /opt/mora/aligner)에 둔다.
+    if os.environ.get("MORA_VENVS"):
+        found += sorted(Path(os.environ["MORA_VENVS"]).glob("*/lib/python3*/site-packages/nvidia/*/lib"))
     if not found:
         return
     os.environ["MORA_CUDA_SET"] = "1"

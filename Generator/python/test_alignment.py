@@ -829,6 +829,50 @@ TIGHT = [[1000, 4000], [4050, 7500], [8000, 11000], [11500, 14500], [15000, 1800
 tight_ratio, tight_seen = daemon.breath_gaps(VOICE, BREATH_RATE, TIGHT)
 check("붙어 있는 틈은 재지 않는다", tight_seen == 3, f"잰 틈 {tight_seen}")
 
+# ── 노래로 학습한 정렬기(검수 도구 align.py)의 음절 시각을 워커의 토큰에 옮긴다 ──
+check("음절 자리: 한글은 한 자씩, 라틴은 이어서", daemon.review_grains("poem과") == [(0, 4), (4, 5)])
+check("음절 자리: 괄호·물음표는 끊기만 한다", daemon.review_grains("(꺼져)") == [(1, 2), (2, 3)])
+
+REVIEW_LINES = ["구린 이 내 poem과", "소외된 노예 (헛소리)"]
+REVIEW_TOKENS = [["구린", "이", "내", "poem", "과"], ["소외된", "노예", "헛소리"]]
+REVIEW_SPANS = [[[0, 2], [3, 4], [5, 6], [7, 11], [11, 12]], [[0, 3], [4, 6], [8, 11]]]
+
+
+def chars(*rows):
+    return [{"text": text, "at": at, "end": end, "sure": -0.5} for text, at, end in rows]
+
+
+REVIEW_OUT = [
+    [
+        {"text": "구린", "chars": chars(("구", 1000, 1200), ("린", 1200, 1400))},
+        {"text": "이", "chars": chars(("이", None, None))},
+        {"text": "내", "chars": chars(("내", 1600, 1800))},
+        {"text": "poem과", "chars": chars(("poem", 1800, 2200), ("과", 2200, 2400))},
+    ],
+    [
+        {"text": "소외된", "chars": chars(("소", 3000, 3100), ("외", 3100, 3200), ("된", 3200, 3300))},
+        {"text": "노예", "chars": chars(("노", 3300, 3400), ("예", 3400, 3600))},
+        {"text": "(헛소리)", "chars": chars(("헛", 3000, 3100), ("소", 3100, 3200), ("리", 3200, 3300))},
+    ],
+]
+spans, windows, measured = daemon.review_word_spans(REVIEW_LINES, REVIEW_TOKENS, REVIEW_SPANS, REVIEW_OUT)
+check("토큰마다 한 칸, 번호는 곡 전체로 이어진다", [one[0] for one in spans] == list(range(8)), str(spans))
+check("낱말 안의 두 토큰이 음절을 나눠 가진다", spans[3][1:3] == [1800, 2200] and spans[4][1:3] == [2200, 2400], str(spans[3:5]))
+check("못 놓은 낱말은 이웃 사이에 끼우고 끼웠다고 적는다",
+      1400 <= spans[1][1] <= spans[1][2] <= 1600 and spans[1][3] == daemon.REVIEW_GUESSED, str(spans[1]))
+check("잰 낱말의 확신도는 편집기의 「끼워 넣음」 선 위", all(one[3] > 0.35 for k, one in enumerate(spans) if k != 1), str(spans))
+check("괄호 속 낱말은 괄호 안 음절을 받는다(백보컬은 겹쳐 부른다)", spans[7][1:3] == [3000, 3300], str(spans[7]))
+check("줄 구간은 첫 토큰 머리부터 가장 늦은 끝까지", windows == [[1000, 2400], [3000, 3600]], str(windows))
+check("정렬기가 잰 토큰 수", measured == 7, str(measured))
+
+EMPTY_OUT = [REVIEW_OUT[0], [{"text": "소외된", "chars": chars(("소", None, None))}]]
+_, empty_windows, _ = daemon.review_word_spans(REVIEW_LINES + ["다음 줄"], REVIEW_TOKENS + [["다음", "줄"]], REVIEW_SPANS + [None],
+                                               EMPTY_OUT + [[{"text": "다음", "chars": chars(("다", 5000, 5100), ("음", 5100, 5200))},
+                                                             {"text": "줄", "chars": chars(("줄", 5200, 5400))}]])
+check("한 낱말도 못 놓은 줄은 앞뒤 줄 사이 틈에 편다", empty_windows[1] == [2400, 5000], str(empty_windows))
+check("가르는 자리를 안 보낸 옛 워커도 글자로 찾아 붙인다", empty_windows[2] == [5000, 5400], str(empty_windows))
+check("확신도는 0.4~0.99", daemon.review_confidence(0.0) == 0.99 and 0.4 <= daemon.review_confidence(-30.0) < 0.45)
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")
