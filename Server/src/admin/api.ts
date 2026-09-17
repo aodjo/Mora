@@ -16,6 +16,7 @@ import { audit, authenticate, requirePermission, sha256, type Actor } from "./au
 import { bootstrapOptions, bootstrapVerify, credentialOptions, credentialVerify, loginOptions, loginVerify, logout } from "./webauthn.js";
 import { serveArtifact } from "./artifacts.js";
 import { completeModelUpload, serveModel, startModelUpload, uploadModelPart } from "./models.js";
+import { STAGE_JOB_UPDATE } from "./stage-state.js";
 import { approveCollectorPairing, pollCollectorPairing, startCollectorPairing } from "./collector-pairing.js";
 import { approveGeneratorPairing, pollGeneratorPairing, startGeneratorPairing } from "./generator-pairing.js";
 import {
@@ -1562,9 +1563,14 @@ async function stageEvent(env: WorkerEnv, actor: Actor, value: Record<string, un
       now,
     ),
     // Stage events keep arriving after the job settles; they must not walk a finished job back to running.
-    env.ADMIN_DB.prepare(
-      "UPDATE jobs SET state=CASE WHEN state IN ('candidate_ready','published','cancelled','unsupported_language') THEN state ELSE ?1 END,current_stage=?2,progress=?3,error_code=?4,updated_at=?5 WHERE id=?6",
-    ).bind(nextState, item.stage, item.progress ?? (item.state === "completed" ? 1 : 0), item.code ?? null, now, item.job_id),
+    env.ADMIN_DB.prepare(STAGE_JOB_UPDATE).bind(
+      nextState,
+      item.stage,
+      item.progress ?? (item.state === "completed" ? 1 : 0),
+      item.code ?? null,
+      now,
+      item.job_id,
+    ),
   ]);
   await event(env, "job.stage", { job_id: item.job_id, stage: item.stage, state: item.state, progress: item.progress ?? null });
   return json({ accepted: true }, 202);
