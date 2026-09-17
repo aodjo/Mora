@@ -127,6 +127,21 @@ Collector는 뮤직비디오·live·cover·karaoke·instrumental·sped-up 결과
 
 그 밖에 `/v1/align/fingerprint`, `/v1/tokenize`, `/v1/dump`와 `?format=spans|lrc-a2|lyricsfile|ttml|webvtt`를 지원합니다.
 
+## 모델과 출처
+
+한국어 가사 정렬(`Generator/eval/review/align.py`, 워커에서는 `align_runner.py`)은 아래 모델을 씁니다. 타이밍은 이 모델들의 출력에서 나옵니다.
+
+| 단계 | 모델 | 만든 곳 | 라이선스 |
+|---|---|---|---|
+| 곡 전체 강제 정렬 | torchaudio `MMS_FA`와, 이것을 노래로 미세조정한 `mms_sing_b.pt` | Meta AI, *Scaling Speech Technology to 1,000+ Languages* (Pratap et al., 2023) | **CC-BY-NC 4.0** |
+| 누가 언제 부르나 | `nvidia/diar_sortformer_4spk-v1` | NVIDIA | **CC-BY-NC 4.0** |
+| 줄 안 음절 다듬기 | `Qwen/Qwen3-ForcedAligner-0.6B` | Alibaba Qwen | Apache-2.0 |
+| 받아쓰기 | `openai/whisper-large-v3` (`Systran/faster-whisper-large-v3`) | OpenAI · SYSTRAN | Apache-2.0 · MIT |
+| 목소리 구별 | `speechbrain/spkrec-ecapa-voxceleb` | SpeechBrain | Apache-2.0 |
+| 반주·리드 분리 | `model_bs_roformer_ep_317_sdr_12.9755`, `mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956` (python-audio-separator) | viperx · aufr33 | 체크포인트에 라이선스 표기 없음 |
+
+MMS_FA(와 그 미세조정)와 Sortformer v1은 비상업용입니다. 이 경로로 만든 타이밍을 유료로 제공하려면 두 모델을 상업 이용이 되는 것으로 바꿔야 합니다. Sortformer는 v2가 CC-BY-4.0입니다.
+
 ## 운영 정책
 
 - 초기 100개 승인 결과는 사람이 교정합니다. 100번째 승인 후 품질 threshold를 통과한 후보의 자동 승격이 활성화됩니다.
