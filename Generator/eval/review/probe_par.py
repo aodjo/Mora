@@ -15,6 +15,7 @@ import multiprocessing
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -55,6 +56,7 @@ def one_song(job: tuple[dict, bool]) -> dict:
     from probe_onset import NEAR_MS, nearest, onsets_of
 
     row, blind_only = job
+    began = time.time()
     found = align.source_in(HERE / "audio", row["video_id"])
     lines = json.loads(row["lines"])
     said = {index: one["at"] for index, one in enumerate(lines) if one.get("at") is not None}
@@ -78,6 +80,9 @@ def one_song(job: tuple[dict, bool]) -> dict:
         onset = sum(1 for one in far if one <= NEAR_MS) / len(far) if far else 0
         broke = sum(1 for one in out if one and one[0].get("stuck"))
         got_all[name] = (hit, len(off), mid, off[-1] - off[0], hit / len(off), onset, broke, tight, piled(out, lanes))
+        #: 표는 모든 곡이 끝나야 찍힌다 — 도는 동안 어디까지 왔는지 보이게 곡마다 한 줄을 먼저 남긴다.
+        print(f"  끝 [{row['id']}] {row['title'][:16]} · {name} · {time.time() - began:.0f}초"
+              f" · 0.5초 {hit}/{len(off)} · 0.25초 {tight}/{len(off)}", file=sys.stderr, flush=True)
     return {"id": row["id"], "title": row["title"], "passes": got_all}
 
 
