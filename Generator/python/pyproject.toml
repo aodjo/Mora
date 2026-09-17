@@ -5,6 +5,9 @@ requires-python = ">=3.11,<3.15"
 dependencies = [
   # 리드 위에 겹쳐 부른 목소리를 갈라내, 괄호로 적힌 가사가 언제 불렸는지 재는 데 쓴다.
   "audio-separator>=0.44,<1",
+  # audio-separator 가 불러오는 것인데 제 의존성에 적지 않고 librosa 에 기대 왔다. librosa 1.0 이
+  # 그것을 빼자 새로 세운 spark 워커가 분리 첫 줄(`import audioread`)에서 곡마다 죽었다.
+  "audioread>=3,<4",
   "demucs>=4.0.1,<5",
   "numpy>=2.0,<3",
   "pyannote.audio>=4.0,<5",
