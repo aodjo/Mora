@@ -14,6 +14,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 import unicodedata
 import wave
@@ -2112,6 +2113,8 @@ def align_line(
 REVIEW_PYTHON = os.getenv("MORA_REVIEW_PYTHON", "")
 REVIEW_RUNNER = Path(__file__).resolve().parents[1] / "eval" / "review" / "align_runner.py"
 REVIEW_TIMEOUT_S = int(os.getenv("MORA_REVIEW_TIMEOUT_S", "1800"))
+#: 정렬기가 도는 동안 진행 보고를 보내는 간격(초). Admin 이 멈췄다고 보는 3분보다 넉넉히 짧게.
+REVIEW_BEAT_S = 60
 #: 편집기는 0.35 아래를 「파이프라인이 자리를 못 찾아 끼워 넣은 낱말」로 표시한다(Admin/src/confidence.ts).
 #: 정렬기가 잰 낱말은 그 위(0.4~0.99)에, 끼워 넣은 낱말은 이 값에 둔다.
 REVIEW_GUESSED = 0.25
@@ -2299,11 +2302,25 @@ def run_review_aligner(mixture: Path, vocals: Path, text_lines: list[str], title
     if not seeded.exists() and vocals.exists() and VOCALS_MODEL == "model_bs_roformer_ep_317_sdr_12.9755.ckpt":
         shutil.copyfile(vocals, seeded)
     env = {**os.environ, "MORA_MMS_WEIGHTS": weights}
+    #: 정렬기는 한 곡에 몇 분을 말없이 돈다(spark 첫 곡은 받아쓰기·다듬기·화자 가르기까지 4분 넘게). 그동안
+    #: 단계 보고가 없으면 Admin 은 3분 뒤 「몇 분째 소식이 없습니다」를 띄우고 다시 시작 버튼을 내미는데,
+    #: 누르면 돌고 있는 곡을 버린다. 도는 동안 조금씩 나아가는 진행을 보낸다.
+    done = threading.Event()
+
+    def beat() -> None:
+        beats = 0
+        while not done.wait(REVIEW_BEAT_S):
+            beats += 1
+            notify("forced_align", "progress", min(0.79, round(0.66 + 0.01 * beats, 2)))
+
+    threading.Thread(target=beat, daemon=True).start()
     try:
         got = subprocess.run([REVIEW_PYTHON, str(REVIEW_RUNNER)], input=json.dumps({"audio": str(song), "lines": text_lines, "title": title}),
                              capture_output=True, text=True, timeout=REVIEW_TIMEOUT_S, env=env, cwd=str(REVIEW_RUNNER.parent))
     except subprocess.TimeoutExpired as error:
         raise RuntimeError("REVIEW_ALIGN_FAILED") from error
+    finally:
+        done.set()
     sys.stderr.write(got.stderr[-4000:])
     if got.returncode != 0:
         raise RuntimeError("REVIEW_ALIGN_FAILED")
