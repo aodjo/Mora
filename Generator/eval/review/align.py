@@ -1845,7 +1845,15 @@ POLISH_FENCE = os.environ.get("MORA_POLISH_FENCE", "mid")
 #: against 463 with it — because its window opens `POLISH_EDGE_MS` early and it pulled heads into that
 #: margin, while inside the line it put more syllables on a loudness onset (45.6% → 50.7%). Keeping the
 #: head gets both: 577 at 0.5 s, 497 at 0.25 s, 48.9% on an onset (it was 572 · 433 · 49.8%).
-POLISH_HEAD = os.environ.get("MORA_POLISH_HEAD", "keep")
+#: It costs one duet: 아름다운 세상 went 29 → 27 at 0.5 s because the aligner had two short 「아름다워」
+#: lines 0.35 s later than the refiner. Choosing per line did not pay. With both heads saved for the
+#: eleven benchmark songs and twenty unseen ballads (1,195 lines), `keep` hit 1079 · 948 and `move`
+#: 1073 · 907. Taking the head nearer a loudness onset gave 1071 · 933, and rules on line length,
+#: how far the head moved, or how long the first syllable was all stayed at 0.25 s ≤ 946. The refiner
+#: was nearer the sheet on only one of four lines where the two differed by 100 ms or more, even
+#: where it sat nearer an onset (66 against 206). Even picking the right head on every line would
+#: only reach 1087 · 978.
+POLISH_HEAD =os.environ.get("MORA_POLISH_HEAD", "keep")
 
 
 def polish(path: Path, lines: list[dict], out: list[list[dict]], lanes: dict[int, int] | None = None) -> int:
