@@ -524,6 +524,34 @@ def sung_language(text: str, stated: str) -> str:
     return stated
 
 
+whisper_on_cpu: dict[str, bool] = {}
+
+
+def whisper_device(backend: str) -> tuple[str, str]:
+    """
+    Where faster-whisper runs, and at what precision.
+
+    torch 가 GPU 를 봐도 CTranslate2 가 못 볼 수 있다 — PyPI 의 aarch64 CTranslate2 는 CUDA 없이 지어져
+    DGX Spark(GB10)에서 장치가 0 개다. 그대로 "cuda" 를 넘기면 load_model 이 곡마다 죽으므로 받아쓰기만
+    CPU(int8)로 내린다. 낱말 시각을 붙이는 wav2vec2 는 torch 라 GPU 에 그대로 둔다.
+
+    @param {str} backend - The torch backend the daemon detected.
+    @returns {tuple[str, str]} The device and compute type to hand to whisperx.load_model.
+    """
+    if backend == "cuda":
+        try:
+            import ctranslate2
+            if ctranslate2.get_cuda_device_count() > 0:
+                return "cuda", "float16"
+        except Exception:
+            pass
+        if not whisper_on_cpu:
+            whisper_on_cpu["said"] = True
+            print("[asr] CTranslate2 가 GPU 를 못 본다 — 받아쓰기는 CPU(int8)로 돈다", file=sys.stderr)
+        return "cpu", "int8"
+    return backend, "float16" if backend in ("xpu", "rocm") else "int8"
+
+
 def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any], str]:
     if backend == "mps":
         import mlx_whisper
@@ -551,11 +579,11 @@ def coarse_asr(vocals: Path, language: str, backend: str) -> tuple[dict[str, Any
         return result, str(result.get("language", language))
     import whisperx
     device = "cuda" if backend == "cuda" else backend
-    compute_type = "float16" if backend in ("cuda", "xpu", "rocm") else "int8"
+    hearing, compute_type = whisper_device(backend)
     with redirect_stdout(sys.stderr):
         model = whisperx.load_model(
             os.getenv("MORA_WHISPER_MODEL", "large-v3"),
-            device,
+            hearing,
             compute_type=compute_type,
             language=None if language == "und" else language.split("-")[0],
             # 맥 쪽과 같은 까닭으로 온도를 하나로 못박는다. 여기서는 `asr_options` 를 거쳐야
