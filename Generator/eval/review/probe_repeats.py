@@ -78,12 +78,12 @@ def score(order: list[int], given: list[str], truth: list[str]) -> tuple[int, in
     return len(truth) - base, max(0, common - base), len(got) - max(common, base)
 
 
-def songs(db: Path, count: int) -> list[tuple[str, list[str], list[tuple[str, int]]]]:
+def songs(db: Path, count: int) -> list[tuple[str, list[str], list[tuple[str, int]], tuple[Path, str]]]:
     """The first `count` songs with a transcript, as probe_par picks them.
 
     @param {Path} db - A review database beside its `audio` folder.
     @param {int} count - How many songs.
-    @returns {list[tuple[str, list[str], list[tuple[str, int]]]]} Title, lines as sung, transcript words.
+    @returns {list[tuple[str, list[str], list[tuple[str, int]], tuple[Path, str]]]} Title, lines as sung, transcript words, where the audio is.
     """
     picked = []
     rows = sqlite3.connect(db).execute("SELECT id, title, video_id, lines FROM songs ORDER BY id").fetchall()[:count]
@@ -96,7 +96,7 @@ def songs(db: Path, count: int) -> list[tuple[str, list[str], list[tuple[str, in
             print(f"  받아쓰기 없음 [{song_id}] {title}", file=sys.stderr)
             continue
         words = [(word, at) for word, at in json.load(open(heard, encoding="utf-8")).get("낱말") or []]
-        picked.append((f"[{song_id}] {title}", [one["text"] for one in lines], words))
+        picked.append((f"[{song_id}] {title}", [one["text"] for one in lines], words, (db.parent / "audio", video)))
     return picked
 
 
@@ -111,18 +111,31 @@ def main() -> int:
         at = args.index("--cost")
         costs = [float(one) for one in args[at + 1].split(",")]
         del args[at:at + 2]
+    ears = "--listen" in args
+    if ears:
+        args.remove("--listen")
     picked = [song for db, count in zip(args[::2], args[1::2]) for song in songs(Path(db), int(count))]
-    print(f"곡 {len(picked)} · 되돌아감 값 {costs}\n")
+    print(f"곡 {len(picked)} · 되돌아감 값 {costs}{' · 소리 모델로 가림' if ears else ''}\n")
     for cost in costs:
         repeat_fill.REPEAT = cost
         began = time.time()
         need = back = made = plain_made = with_repeats = 0
         rows = []
-        for title, truth, words in picked:
+        for title, truth, words, (folder, video) in picked:
+            listen, until = None, None
+            if ears:
+                import align
+                import soundfile
+                from probe_blind import words_of
+                found = align.source_in(folder, video)
+                stem = found.with_suffix(".lead.wav")
+                ears = align.repeat_ears(found, words_of)
+                listen = None if ears is None else ears[0]
+                until = int(soundfile.info(str(stem)).duration * 1000) if stem.exists() else None
             kept = collapse(truth)
             given = [truth[k] for k in kept]
-            a, b, c = score(repeat_fill.expand(given, words), given, truth)
-            plain = repeat_fill.expand(truth, words)
+            a, b, c = score(repeat_fill.expand(given, words, listen, until), given, truth)
+            plain = repeat_fill.expand(truth, words, listen, until)
             _, _, d = score(plain, truth, truth)
             need, back, made, plain_made = need + a, back + b, made + c, plain_made + d
             with_repeats += 1 if a else 0

@@ -9,6 +9,14 @@
 실제로 적혀 있을 때만 치를 만하다 — 적혀 있지 않으면 되돌아간 줄을 전부 「못 들음」으로 치르느니
 안 되돌아가는 편이 싸다. 받아쓰기가 빠뜨린 반복은 못 살리지만, 없는 반복을 지어내지도 않는다.
 
+소리 모델로 가리는 길은 재 보고 껐다(`listen` 을 주면 켜진다). 서른한 곡에서 받아쓰기만 쓰면 되살림
+63/121 · 지어냄 8 인데, CTC 로 「이 창에서 이 가사가 들리나」를 물어 가리면 57/121 · 25 로 나빠진다.
+까닭은 그 물음의 판별력이다 — 제 글은 가운데 0.87, **같은 곡의 엉뚱한 줄도 0.40** 이고 문턱 0.6 에서
+엉뚱한 줄 17%가 지난다. 목소리 없는 창 거르기, 창 넓히기, 글자를 뒤집은 대조 글과 견주기를 차례로
+넣어 43 → 25 까지 줄였지만 받아쓰기만 못했다. 프레임별 발음 확률로 두 구간의 닮은꼴을 재는 길도
+갈리지 않았다(같은 글 0.96 · 다른 글 0.94, 빈칸을 빼도 같음). 랩 후렴처럼 받아쓰기가 뭉갠 반복은
+그래서 아직 못 살린다.
+
     from repeat_fill import expand
     order = expand(["A", "B"], heard)   # [0, 0, 0, 1] — A 를 세 번 부르고 B
 """
@@ -25,13 +33,34 @@ MISSED = float(os.environ.get("MORA_REPEAT_MISSED", "0.8"))
 REPEAT = float(os.environ.get("MORA_REPEAT_COST", "2.5"))
 #: 되돌아갈 수 있는 묶음의 줄 수.
 BLOCK = int(os.environ.get("MORA_REPEAT_BLOCK", "4"))
-#: 곡 앞뒤의 받아쓰기(인사·말소리)는 싸게 버린다.
+#: 곡 앞뒤의 받아쓰기(인사·말소리)는 싸게 버린다. 끝 후렴의 되풀이도 그 꼬리에 함께 버려지지만,
+#: 그것을 값으로 되살리려 하면(꼬리를 EXTRA 로 무겁게) 서른한 곡에서 지어낸 줄이 8 → 20 으로 늘고
+#: 되살림은 63 → 61 로 줄었다. 끝 반복은 값이 아니라 소리로 판단한다(`fill_quiet` 의 꼬리).
 EDGE = 0.3
 #: 받아쓰기의 시각이 이만큼(ms) 넘게 거꾸로 가면 같은 소리를 두 번 적은 것이다. 보고싶다 친구야는
 #: 「작은 책상 앞에 … 철이야 안녕」을 29.8 초까지 적고 20.4 초로 돌아가 한 번 더 적었다 — 듣기를
 #: 여러 번 해 합친 자리의 겹침이다. 그대로 두면 부르지 않은 반복이 들린 것처럼 보여, 줄이지 않은
 #: 가사 서른한 곡에 없는 반복 마흔세 줄을 끼워 넣었다.
 BACKWARD_MS = 300
+
+
+#: 소리 모델이 이만큼(0~1)은 들어야 그 자리에서 불렸다고 본다. 열한 곡 614 줄에서 제 글은 가운데 0.87,
+#: 같은 곡의 다른 줄은 0.40 이었다 — 0.6 이면 제 글 78%가 지나고 다른 줄은 17%만 지난다.
+SHARE = float(os.environ.get("MORA_REPEAT_SHARE", "0.6"))
+#: 그 값만으로는 모자란다. 노래는 곡마다 모델이 듣는 정도가 달라(붉은 노을은 제 글도 가운데 0.57)
+#: 같은 묶음이 **원래 불린 자리**에서 받은 값과도 견준다.
+RELATIVE = float(os.environ.get("MORA_REPEAT_RELATIVE", "0.8"))
+#: 받아쓰기가 아무것도 적지 않은 자리가 이보다 길면 무엇이 불렸는지 소리로 물어본다(ms).
+QUIET_MS = int(os.environ.get("MORA_REPEAT_QUIET_MS", "2500"))
+#: 한 묶음을 이어서 이만큼까지 되풀이해 본다.
+MOST = int(os.environ.get("MORA_REPEAT_MOST", "6"))
+#: 들은 자리 앞뒤로 창을 이만큼 넓혀 묻는다(ms) — 받아쓰기 시각은 낱말 머리라 끝이 짧다.
+LEAD_MS, TAIL_MS = 250, 600
+#: 한 묶음을 다시 부르기까지의 숨(ms). 묶음 길이를 잴 때 더한다.
+PAUSE_MS = 300
+#: CTC 는 노랫소리 위에 어떤 글이든 밀어 넣는다 — 같은 곡의 엉뚱한 줄도 가운데 0.40 을 받았다. 그래서
+#: 후보와 **글자를 거꾸로 돌린 대조 글**을 같은 창에서 재고, 후보가 이만큼은 앞서야 그 가사로 본다.
+MARGIN = float(os.environ.get("MORA_REPEAT_MARGIN", "0.15"))
 
 
 def syllables(text: str) -> list[str]:
@@ -57,8 +86,30 @@ def unlike(a: str, b: str) -> float:
     return 1.0
 
 
-def expand(lines: list[str], heard: list[tuple[str, int]]) -> list[int]:
+def expand(lines: list[str], heard: list[tuple[str, int]], listen=None, until: int | None = None) -> list[int]:
     """The order the lines were sung in, with immediate repeats the text left out put back.
+
+    With `listen` — a function from `align.repeat_ears` saying what share of a text the acoustic
+    model hears in a window — two more things happen. A repeat the transcript claims is dropped
+    when the model does not hear it, and a **quiet stretch the transcript wrote nothing in** is
+    offered the block of lines before it, once or several times over, and kept when the model does
+    hear it. That is the only way to reach a hook the transcript cannot write down.
+
+    @param {list[str]} lines - The lyric lines as written.
+    @param {list[tuple[str, int]]} heard - The transcript: each word and the ms it starts at.
+    @param {callable | None} [listen=None] - `listen(text, since_ms, until_ms) -> share 0..1`.
+    @param {int | None} [until=None] - Where the singing ends (ms), so the last hole can be asked about too.
+    @returns {list[int]} Line indices in sung order.
+    """
+    order, times = walk(lines, heard)
+    if listen is None:
+        return order
+    order, times = only_heard(lines, order, times, listen)
+    return fill_quiet(lines, order, times, listen, until)
+
+
+def walk(lines: list[str], heard: list[tuple[str, int]]) -> tuple[list[int], list[tuple[int, int] | None]]:
+    """The sung order from the transcript alone, and when each line's words were heard.
 
     A dynamic program over (transcript unit, lyric unit). Each column takes the transcript one unit
     further: match or substitute, a unit only the transcript has, then units only the lyric has,
@@ -77,17 +128,23 @@ def expand(lines: list[str], heard: list[tuple[str, int]]) -> list[int]:
         starts.append(len(sheet))
         sheet.extend(syllables(line))
         ends.append(len(sheet))
-    forward: list[str] = []
+    forward: list[tuple[str, int]] = []
     latest = None
     for word, at in heard:
         if latest is not None and at < latest - BACKWARD_MS:
             continue
-        forward.append(word)
+        forward.append((word, at))
         latest = at if latest is None else max(latest, at)
-    said = [unit for word in forward for unit in syllables(word)]
+    said: list[str] = []
+    when: list[int] = []
+    for word, at in forward:
+        for unit in syllables(word):
+            said.append(unit)
+            when.append(at)
+    mine = [index for index, line in enumerate(lines) for _ in syllables(line)]
     size, count = len(sheet), len(said)
     if not size or not count:
-        return list(range(len(lines)))
+        return list(range(len(lines))), [None] * len(lines)
     back: list[tuple[int, int, int]] = []
     for last in range(len(lines)):
         if ends[last] == starts[last]:
@@ -132,13 +189,14 @@ def expand(lines: list[str], heard: list[tuple[str, int]]) -> list[int]:
 
     t = min(range(count + 1), key=lambda k: finish[k] + (count - k) * EDGE)
     p = size
-    repeats: list[tuple[int, int]] = []
+    trail: list[tuple[str, int, int]] = []
     while t > 0 or p > 0:
         if t == 0:
             p -= 1
             continue
         kind = steps[t][p]
         if kind == 0:
+            trail.append(("들림", mine[p - 1], when[t - 1]))
             t, p = t - 1, p - 1
         elif kind == 1:
             t -= 1
@@ -147,13 +205,117 @@ def expand(lines: list[str], heard: list[tuple[str, int]]) -> list[int]:
         else:
             end, last = jumps[t][p]
             first = next(k for k in range(len(lines)) if starts[k] == p and ends[k] > starts[k])
-            repeats.append((last, first))
+            trail.append(("되돌아감", last, first))
             p = end
-    repeats.reverse()
+    trail.reverse()
     order: list[int] = []
+    times: list[tuple[int, int] | None] = []
     cursor = 0
-    for last, first in repeats:
-        order.extend(range(cursor, last + 1))
-        cursor = first
-    order.extend(range(cursor, len(lines)))
-    return order
+    marks: dict[int, list[int]] = {}
+
+    def close(last: int) -> None:
+        """Write out the lines of the block that just ended, with the times heard inside it."""
+        for line in range(cursor, last + 1):
+            order.append(line)
+            got = marks.get(line)
+            times.append((min(got), max(got)) if got else None)
+        marks.clear()
+
+    for kind, a, b in trail:
+        if kind == "들림":
+            marks.setdefault(a, []).append(b)
+        else:
+            close(a)
+            cursor = b
+    close(len(lines) - 1)
+    return order, times
+
+
+def only_heard(lines: list[str], order: list[int], times: list[tuple[int, int] | None],
+               listen) -> tuple[list[int], list[tuple[int, int] | None]]:
+    """Drop the repeats the transcript claims but the acoustic model does not hear.
+
+    The transcript is written by a model that sometimes says a line twice where it was sung once.
+    A repeat is kept only when the model also hears it in the window the transcript puts it in.
+
+    @param {list[str]} lines - The lyric lines as written.
+    @param {list[int]} order - Line indices in sung order.
+    @param {list[tuple[int, int] | None]} times - When each place's words were heard.
+    @param {callable} listen - `listen(text, since_ms, until_ms) -> share 0..1`.
+    @returns {tuple[list[int], list[tuple[int, int] | None]]} The order and times that survive.
+    """
+    seen: set[int] = set()
+    kept_order: list[int] = []
+    kept_times: list[tuple[int, int] | None] = []
+    for place, (line, at) in enumerate(zip(order, times)):
+        again = line in seen
+        seen.add(line)
+        if again and at is not None and lines[line].strip():
+            #: 받아쓰기 시각은 낱말 **머리**라 줄의 끝이 창 밖에 남는다. 다음 줄이 들린 자리까지 열어
+            #: 준다 — 좁게 물으면 진짜 반복도 떨어진다(좁은 창에서 되살림 63 → 49).
+            later = next((one[0] for one in times[place + 1:] if one is not None), None)
+            until = at[1] + TAIL_MS if later is None else max(at[1] + TAIL_MS, min(later, at[1] + 4000))
+            if listen(lines[line], at[0] - LEAD_MS, until) < SHARE:
+                continue
+        kept_order.append(line)
+        kept_times.append(at)
+    return kept_order, kept_times
+
+
+def fill_quiet(lines: list[str], order: list[int], times: list[tuple[int, int] | None], listen,
+               until: int | None = None) -> list[int]:
+    """Offer the block before a silent stretch to the acoustic model, and put it back when heard.
+
+    Where the transcript wrote nothing for seconds on end — a fast hook, a heavily processed
+    chorus — there is no evidence to jump on, so the sung repeats are lost. The block of lines just
+    before the hole is the thing most likely to fill it, so it is aligned there once, twice, as
+    many times as the hole is long, and the reading the model hears best is taken.
+
+    @param {list[str]} lines - The lyric lines as written.
+    @param {list[int]} order - Line indices in sung order.
+    @param {list[tuple[int, int] | None]} times - When each place's words were heard.
+    @param {callable} listen - `listen(text, since_ms, until_ms) -> share 0..1`.
+    @param {int | None} [until=None] - Where the singing ends (ms). The hole after the last line is
+        where a shortened last chorus hides, and the transcript's own tail is thrown away cheaply,
+        so nothing but the model can say what is in there.
+    @returns {list[int]} The order with the heard blocks put back.
+    """
+    spots = [index for index, at in enumerate(times) if at is not None]
+    holes = list(zip(spots, spots[1:]))
+    if until is not None and spots:
+        holes.append((spots[-1], None))
+    added: dict[int, list[int]] = {}
+    for one, two in holes:
+        here = times[one]
+        next_one = times[two] if two is not None else (until, until)
+        gap = next_one[0] - here[1]
+        if gap < QUIET_MS:
+            continue
+        best: tuple[float, int, list[int]] = (0.0, 0, [])
+        for size in range(1, BLOCK + 1):
+            first = one - size + 1
+            if first < 0 or times[first] is None or any(not lines[order[k]].strip() for k in range(first, one + 1)):
+                continue
+            block = [order[k] for k in range(first, one + 1)]
+            span = max(500, here[1] - times[first][0] + PAUSE_MS)
+            text = " ".join(lines[line] for line in block)
+            floor = max(SHARE, RELATIVE * listen(text, times[first][0] - LEAD_MS, here[1] + TAIL_MS))
+            for many in range(min(MOST, int(gap / span)), 0, -1):
+                said = " ".join(lines[line] for line in block * many)
+                share = listen(said, here[1] + 100, next_one[0])
+                if share < max(best[0], floor) or many * len(block) <= len(best[2]):
+                    continue
+                #: 같은 창, 같은 글자, 뒤집힌 차례. 이보다 앞서지 못하면 그 자리에서 들리는 것은
+                #: 이 가사가 아니라 그냥 노랫소리다.
+                control = " ".join(word[::-1] for word in said.split())
+                if share - listen(control, here[1] + 100, next_one[0]) >= MARGIN:
+                    best = (share, many, block * many)
+        if best[2]:
+            added[one] = best[2]
+    if not added:
+        return order
+    grown: list[int] = []
+    for index, line in enumerate(order):
+        grown.append(line)
+        grown.extend(added.get(index, []))
+    return grown

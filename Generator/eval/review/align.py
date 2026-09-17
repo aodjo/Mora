@@ -1033,6 +1033,124 @@ def voices_of(path: Path) -> tuple[Path, Path]:
     return lead, back
 
 
+#: 한 낱자가 「그 자리에서 들렸다」고 볼 여유(자기 자리에서 모델이 고른 것과의 로그 차). 0 이면 모델도
+#: 같은 낱자를 들었다는 뜻이고, 크게 낮으면 다른 소리를 들으면서 우리가 우기는 것이다. 줄 하나를
+#: 의심하는 문턱(`DOUBT`)보다 느슨하게 둔다 — 여기서는 낱자 하나가 아니라 묶음의 비율로 가린다.
+REPEAT_HEARD = float(os.environ.get("MORA_REPEAT_HEARD", "-3.0"))
+#: 창의 이만큼은 목소리가 있어야 물어볼 값어치가 있다. 간주에 가사를 밀어 넣은 답을 막는다.
+REPEAT_VOICE = float(os.environ.get("MORA_REPEAT_VOICE", "0.6"))
+
+
+def repeat_ears(path: Path, tokenize, separate: bool = True):
+    """Hand back a function that says how much of a candidate text the model hears in one window.
+
+    Written for the repeat filler. The transcript can only put back a repeat it wrote down, and on
+    a fast or heavily processed hook it writes nothing usable — 고스트시티's 「구린 이 내 poem과 /
+    소외된 노예 …」 came back as 「과소와 뗀 너의 헛소리」, so forty sung lines had no evidence at all.
+    The acoustic model is the other witness: the whole song's frame probabilities are already what
+    the aligner runs on, so a candidate text can be forced into the empty window and scored.
+
+    The score is a **share of letters the model also heard**, not a likelihood: CTC will happily
+    align any text to any audio, and the absolute path score says more about the window's length
+    than about the words. Per letter, the margin against the model's own best guess at that frame
+    is what separates "it is there" (near 0) from "we are insisting" (far below), the same measure
+    the aligner's per-character confidence uses.
+
+    @param {Path} path - The song; the vocal stem beside it is what gets read.
+    @param {callable} tokenize - Splits a line into alignable words.
+    @param {bool} [separate=True] - Extract vocals first; False when `path` is already a stem.
+    **Measured and not adopted.** Over eleven songs and 614 lines the share is 0.87 for a line's own
+    text and 0.40 for another line of the same song; at a 0.6 cut, 78% of the right texts pass and
+    17% of the wrong ones do. That is not sharp enough to decide a repeat: putting it in front of
+    `repeat_fill` turned 63 recovered · 8 invented lines into 57 · 25. `alike` separated even less
+    (0.96 against 0.94). Both stay here because the numbers are worth keeping, and because a better
+    question asked of the same probabilities may yet work.
+
+    @returns {tuple[callable, callable] | None} `listen(text, since_ms, until_ms) -> share 0..1` and
+      `alike((since, until), (since, until)) -> 0..1`, or None when the model or the audio is missing.
+    """
+    import torch
+    import torchaudio.functional as F
+
+    try:
+        audio = read_audio(vocals_of(path) if separate else path)
+        load()
+        log_probs = whole_logits(audio)
+    except Exception as trouble:
+        print(f"  반복 듣기 건너뜀: {type(trouble).__name__}: {str(trouble)[:160]}", file=sys.stderr)
+        return None
+    frames = log_probs.shape[1]
+    per_frame = audio.shape[-1] / frames / SAMPLE_RATE * 1000
+    best = log_probs[0].max(dim=-1).values
+    blank = _bag().get("blank", 0)
+    #: 반주만 흐르는 구멍에도 CTC 는 어떤 글이든 밀어 넣는다. 그 자리에 목소리가 있었는지부터 본다 —
+    #: 소리 모델에 묻기 전에 걸러야, 후렴이 끝난 뒤의 간주가 「한 번 더 불렀다」로 읽히지 않는다.
+    quiet = rests_of(vocals_of(path) if separate else path)
+
+    def voiced(since: int, until: int) -> float:
+        """What share of the window is not one of the stem's own rests."""
+        if until <= since:
+            return 0.0
+        rest = sum(max(0, min(until, end) - max(since, start)) for start, end in quiet)
+        return 1 - rest / (until - since)
+
+    def alike(mine: tuple[int, int], yours: tuple[int, int]) -> float:
+        """How alike two stretches sound to the model, 0 to 1.
+
+        A chorus sung again is the same words on the same tune, so the model's frame-by-frame
+        letter probabilities trace nearly the same path through the window. That is a far stronger
+        signal than forcing a text in: CTC will align any text to any singing (a line from
+        elsewhere in the same song still scored 0.40), while a stretch that is not the same singing
+        does not follow the same path.
+
+        The shorter stretch is stretched onto the longer one and the two are compared frame by
+        frame, so a repeat sung a little faster still matches.
+
+        @param {tuple[int, int]} mine - A window in ms.
+        @param {tuple[int, int]} yours - The window to compare it with, in ms.
+        @returns {float} Mean cosine similarity of the probability paths, 0 when either is empty.
+        """
+        cuts = [(max(0, int(one / per_frame)), min(frames, int(two / per_frame))) for one, two in (mine, yours)]
+        if any(end - start < 2 for start, end in cuts):
+            return 0.0
+        #: 빈칸(무음) 갈래가 프레임 대부분을 차지해, 그대로 견주면 어디든 0.9 가 나온다 — 같은 글
+        #: 285 쌍 0.94, 다른 글 381 쌍 0.90 으로 갈리지 않았다. 빈칸을 빼고 낱자 분포만 본다.
+        pieces = []
+        for start, end in cuts:
+            got = log_probs[0, start:end].exp()
+            got = torch.cat([got[:, :blank], got[:, blank + 1:]], dim=-1)
+            pieces.append(got / got.sum(dim=-1, keepdim=True).clamp_min(1e-6))
+        long, short = (pieces[0], pieces[1]) if pieces[0].shape[0] >= pieces[1].shape[0] else (pieces[1], pieces[0])
+        spread = torch.linspace(0, short.shape[0] - 1, long.shape[0]).round().long()
+        pulled = short[spread]
+        return float(torch.nn.functional.cosine_similarity(long, pulled, dim=-1).mean())
+
+    def listen(text: str, since: int, until: int) -> float:
+        """What share of the text's letters the model also hears inside the window."""
+        if voiced(since, until) < REPEAT_VOICE:
+            return 0.0
+        tokens = [one for word in tokenize(text) for grain in grains_of(speakable(word)) for one in letters(grain)]
+        first, last = max(0, int(since / per_frame)), min(frames, int(until / per_frame))
+        piece = log_probs[:, first:last]
+        if not tokens or piece.shape[1] < len(tokens):
+            return 0.0
+        try:
+            paths, scores = F.forced_align(piece, torch.tensor([tokens]), blank=blank)
+            merged = F.merge_tokens(paths[0], scores[0], blank=blank)
+        except Exception:
+            return 0.0
+        if len(merged) != len(tokens):
+            return 0.0
+        heard = 0
+        for span in merged:
+            peak = first + span.start
+            stop = min(frames, max(peak + 1, first + span.end))
+            heard += float((log_probs[0, peak:stop, int(span.token)] - best[peak:stop]).max()) >= REPEAT_HEARD
+        return heard / len(tokens)
+
+    return listen, alike
+
+
 def weigh(log_probs, tokens: list[int], since: int, until: int):
     """Align inside frames [since, until) only, and report the **mean per-token score** together
     with the first token's frame.
