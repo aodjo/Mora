@@ -55,6 +55,8 @@ export interface MlVariantResult {
   text?: string;
   /** 되살린 가사에서 새로 끼워 넣은 줄의 자리. */
   filled?: number[];
+  /** 어느 정렬기가 냈나: `sung`(노래 정렬기) · `whisperx`(그 길이 아니었다) · `fallback`(죽어서 물러섰다). */
+  aligner?: string;
 }
 export interface MlRunResult {
   backend: string;

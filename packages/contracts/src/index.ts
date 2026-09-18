@@ -87,6 +87,14 @@ export interface AlignmentCandidate {
   text?: string;
   /** 되살린 가사에서 새로 끼워 넣은 줄의 자리. 검수 화면이 그 줄을 표시한다. */
   filled?: number[];
+  /**
+   * 어느 정렬기가 이 타이밍을 냈나.
+   *
+   * `sung` 은 노래로 학습한 정렬기, `whisperx` 는 애초에 그 길이 아니었던 곡(한국어가 아니거나
+   * 무게가 없다), `fallback` 은 **노래 정렬기로 가다가 죽어서 물러선 것**이다. 셋을 뭉치면
+   * 물러선 후보가 성한 것과 똑같은 얼굴로 공개된다 — 검정치마 EVERYTHING 이 그랬다.
+   */
+  aligner?: "sung" | "whisperx" | "fallback";
 }
 
 export interface GeneratorCandidateSubmission {

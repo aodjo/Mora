@@ -3960,6 +3960,11 @@ textarea:focus-visible {
   font-style: normal;
   opacity: 0.8;
 }
+/** 정렬기가 물러선 후보. 점수로는 구별이 안 되므로 여기서만 눈에 띈다. */
+.fallback-note {
+  font-style: normal;
+  color: var(--warning-text, #b45309);
+}
 
 /* 이 곡이 아니라고 표시한 영상 — 목록에는 남기되 눈에 덜 띄게. */
 .source-row.rejected {

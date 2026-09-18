@@ -537,6 +537,11 @@ export function RecordingDetail({
                   <strong>
                     {text(candidate.provider) || "되살린"} 가사 · {text(candidate.language).toUpperCase()}
                     {text(candidate.preprocessor) === "repeat-fill-v1" && <em className="restored-note"> · 반복 되살림</em>}
+                    {/*
+                      노래 정렬기가 죽어서 옛 길로 물러선 후보. 다른 지표는 멀쩡하게 나오므로
+                      점수만 보면 구별이 안 된다 — 검정치마 EVERYTHING 이 0.96 으로 공개됐다.
+                    */}
+                    {text(candidate.aligner) === "fallback" && <em className="fallback-note"> · 정렬기가 물러섬 — 들어 보세요</em>}
                     {number(candidate.source_selected) !== 1 && (
                       <em className="restored-note"> · 옛 음원 {text(candidate.video_id).slice(0, 6)}</em>
                     )}

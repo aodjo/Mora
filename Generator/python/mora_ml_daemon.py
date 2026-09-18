@@ -2854,13 +2854,20 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     variants = []
     for variant in job["lyrics"]:
         declared = str(variant.get("language", "und")).split("-")[0]
-        if review_ready(weights) and written_language(str(variant.get("text", "")), declared) == "ko":
+        sung = review_ready(weights) and written_language(str(variant.get("text", "")), declared) == "ko"
+        if sung:
             try:
-                variants.append(review_variant(mixture, stems["vocals"], variant, asr, duration_ms, detected, str(weights), directory, title))
+                done = review_variant(mixture, stems["vocals"], variant, asr, duration_ms, detected, str(weights), directory, title)
+                variants.append({**done, "aligner": "sung"})
                 continue
             except Exception as error:
                 print(f"[review_align] fallback to whisperx: {type(error).__name__}: {str(error)[:200]}", file=sys.stderr)
-        variants.append(align_variant(stems["vocals"], variant, asr, duration_ms, config["backend"], detected, second_voice))
+        #: 노래 정렬기로 갈 곡이었는데 그것이 죽어서 물러선 것과, 애초에 그 길이 아닌 것(한국어가
+        #: 아니거나 무게가 없다)은 전혀 다른 말이다. 앞의 것은 사람이 들어 봐야 한다 — 검정치마
+        #: EVERYTHING 이 받아쓰기가 깨져 옛 정렬로 나왔는데, 품질 0.96 을 달고 자동 공개됐다.
+        #: 어느 쪽인지 여기서 적지 않으면 뒤에서는 영영 알 수 없다.
+        done = align_variant(stems["vocals"], variant, asr, duration_ms, config["backend"], detected, second_voice)
+        variants.append({**done, "aligner": "fallback" if sung else "whisperx"})
     notify("forced_align", "completed", 0.8)
     notify("diarize", "started", 0.81)
     turns = diarize(stems["vocals"], config["backend"], job["pipeline"].get("min_speakers"), job["pipeline"].get("max_speakers"))

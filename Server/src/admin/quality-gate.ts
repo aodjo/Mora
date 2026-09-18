@@ -52,6 +52,13 @@ export interface CandidateStanding {
   reach: number;
   /** 줄과 줄 사이가 양옆보다 뚜렷이 내려앉은 비율. 잴 틈이 없으면 1 이다. */
   breath: number;
+  /**
+   * 어느 정렬기가 냈나. `fallback` 이면 노래 정렬기로 가다가 죽어서 물러선 것이다.
+   *
+   * 옛 Generator 는 이 말을 안 하므로 없으면 `unknown` 이고, 그것은 막지 않는다 — 그때는
+   * 물러섬 자체가 드물었고, 모르는 것을 전부 사람에게 보내면 밀린 후보가 통째로 검수함에 쌓인다.
+   */
+  aligner?: string | undefined;
 }
 
 export interface QualityLimits {
@@ -61,8 +68,22 @@ export interface QualityLimits {
   breath: number;
 }
 
+/**
+ * Decide whether a candidate may be published with nobody looking at it.
+ *
+ * 문턱 넷은 「얼마나 맞았나」를 재지만, 그 앞에 재지 않고 아는 것이 하나 있다: **무엇이 이것을
+ * 냈는가**. 노래 정렬기로 가다가 죽어서 옛 길로 물러선 후보는 여기서 막는다 — 재 보면 다른
+ * 지표는 멀쩡하기 때문이다. 검정치마 EVERYTHING 은 밀도 0.85 · 도달 0.93 · 숨 1.00 으로 문을
+ * 가뿐히 넘고 품질 0.96 을 달고 공개됐는데, 사람이 듣고 「최악」이라고 했다. 물러섰다는 사실만이
+ * 그것을 미리 말할 수 있었다.
+ *
+ * @param {CandidateStanding} item - The candidate's standing.
+ * @param {QualityLimits} limits - The floors in force.
+ * @returns {boolean} True when it may go out on its own.
+ */
 export function passesQualityGate(item: CandidateStanding, limits: QualityLimits): boolean {
   return (
+    item.aligner !== "fallback" &&
     item.score >= limits.score &&
     item.language >= 0.9 &&
     item.density >= limits.density &&

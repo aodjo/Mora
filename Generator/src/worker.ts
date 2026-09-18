@@ -38,6 +38,20 @@ export interface GeneratorWorkerOptions {
 }
 
 /** 빈 큐를 물어보는 간격의 천장. */
+/**
+ * Keep only a name the contract knows for the aligner that produced a variant.
+ *
+ * 데몬이 보내는 글자를 그대로 계약에 실으면, 오타 하나가 서버에서 「모르는 정렬기」가 되어
+ * 조용히 지나간다. 아는 이름만 싣고 나머지는 없는 것으로 둔다 — 없으면 서버가 `unknown` 으로
+ * 적고, `unknown` 은 자동 공개를 막지 않는다.
+ *
+ * @param {string | undefined} said - What the daemon called it.
+ * @returns {AlignmentCandidate["aligner"]} The name, or undefined when it is not one we know.
+ */
+function alignerOf(said: string | undefined): AlignmentCandidate["aligner"] {
+  return said === "sung" || said === "whisperx" || said === "fallback" ? said : undefined;
+}
+
 const IDLE_CEILING_MS = 60_000;
 /** 심장 소리 사이의 최소 간격. 워커가 죽은 것을 알아채는 데 이 정도면 충분하다. */
 const HEARTBEAT_EVERY_MS = 30_000;
@@ -214,6 +228,7 @@ export class GeneratorWorker {
         if (timed === undefined) return [];
         // 반복을 되살렸으면 그 가사가 이 후보의 가사다 — 줄이 늘었으므로 지문도 그것으로 다시 짓는다.
         const sung = timed.text ?? variant.text;
+        const aligner = alignerOf(timed.aligner);
         const tokens = tokenizeV2(sung, variant.language);
         return [
           {
@@ -222,6 +237,7 @@ export class GeneratorWorker {
             text_hash: textHash(tokens.canonical),
             fingerprint: fingerprint(tokens),
             ...(timed.text === undefined ? {} : { text: timed.text, filled: timed.filled ?? [] }),
+            ...(aligner === undefined ? {} : { aligner }),
             line_spans: timed.line_spans,
             word_spans: timed.word_spans,
             speaker_turns: result.speaker_turns,

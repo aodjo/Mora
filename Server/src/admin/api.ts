@@ -322,7 +322,7 @@ async function recordingDetail(env: WorkerEnv, actor: Actor, recordingId: string
   // The song's timings live here too, so one screen covers a recording end to end.
   const candidates = await list(
     env.ADMIN_DB,
-    `SELECT c.id,c.job_id,c.input_revision_id,c.status,c.tokenizer,c.quality,c.quality_score,c.created_at,
+    `SELECT c.id,c.job_id,c.input_revision_id,c.status,c.tokenizer,c.quality,c.quality_score,c.aligner,c.created_at,
        (SELECT group_concat(s.provider) FROM lyric_sources s WHERE s.text_id=l.id) provider,
        l.language,l.preprocessor,m.video_id,m.selected source_selected
      FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id
@@ -1835,7 +1835,8 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
     .first();
   if (owned === null) throw new ServiceError(409, "CONFLICT");
   const ids: string[] = [];
-  const scores: Array<{ id: string; score: number; language: number; density: number; reach: number; breath: number }> = [];
+  const scores: Array<{ id: string; score: number; language: number; density: number; reach: number; breath: number; aligner: string }> =
+    [];
   for (const candidate of submission.alignments) {
     const id = crypto.randomUUID();
     const variantId = await sungVariant(env.ADMIN_DB, submission.input_revision_id, candidate);
@@ -1852,9 +1853,10 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
       density: candidate.quality.anchor_density ?? 0,
       reach: candidate.quality.anchor_reach ?? 0,
       breath: candidate.quality.breath_gaps ?? 0,
+      aligner: candidate.aligner ?? "unknown",
     });
     await env.ADMIN_DB.prepare(
-      `INSERT INTO alignment_candidates (id,job_id,input_revision_id,variant_id,status,tokenizer,text_hash,fp_lens,fp_types,line_spans,word_spans,word_scores,speaker_turns,word_speakers,line_speakers,quality,quality_score,pipeline_version,backend,hardware,created_by,created_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)`,
+      `INSERT INTO alignment_candidates (id,job_id,input_revision_id,variant_id,status,tokenizer,text_hash,fp_lens,fp_types,line_spans,word_spans,word_scores,speaker_turns,word_speakers,line_speakers,quality,quality_score,pipeline_version,backend,hardware,aligner,created_by,created_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)`,
     )
       .bind(
         id,
@@ -1878,6 +1880,7 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
         submission.pipeline_version,
         submission.backend,
         submission.hardware,
+        candidate.aligner ?? "unknown",
         actor.id,
         Date.now(),
       )
@@ -1901,6 +1904,10 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
     const reach = Number(values.anchor_reach_floor ?? String(ANCHOR_REACH_FLOOR));
     const breath = Number(values.breath_floor ?? String(BREATH_FLOOR));
     const system: Actor = { type: "service", id: "quality-gate", permissions: new Set(["*"]) };
+    //: 한 곡에 여러 벌이 공개되는 것은 고장이 아니라 설계다. 제공처마다 가사 글이 조금씩 다르고,
+    //: `/v1/align` 은 부르는 쪽이 들고 온 글로 지문을 맞춰 그중 가장 맞는 벌을 고른다
+    //: (packages/core/src/service.ts 의 `exact` → `bestCandidate`). 한 벌만 올리면 그 제공처의
+    //: 글을 든 사람만 제대로 받고 나머지는 덜 맞는 벌에 투영된다 — 그러니 문을 넘은 것은 다 올린다.
     for (const item of scores)
       if (passesQualityGate(item, { score: threshold, density, reach, breath })) {
         await promote(env, system, item.id);
