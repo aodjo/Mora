@@ -494,13 +494,19 @@ async function spotifyConnected(env: WorkerEnv): Promise<boolean> {
  * @param {Request} request - The redirect request carrying `code` and `state`.
  * @returns {Promise<Response>} A small page telling the person to go back to the tab they came from.
  */
-async function spotifyCallback(env: WorkerEnv, actor: Actor, request: Request): Promise<Response> {
-  requirePermission(actor, "jobs.manage");
+async function spotifyCallback(env: WorkerEnv, request: Request): Promise<Response> {
+  //: 여기서는 로그인 쿠키를 물을 수 없다. 세션 쿠키가 SameSite=Strict 라, 스포티파이에서 돌아오는
+  //: 요청에는 브라우저가 쿠키를 싣지 않는다 — 그래서 콜백이 매번 남의 요청처럼 거절됐고, 사람은
+  //: 첫 화면으로 돌아와 아무 말도 못 들었다. 대신 우리가 보낸 표(state)로 확인한다: 서버에만 있고,
+  //: 한 번 쓰면 지우며, 맞을 때만 코드를 토큰으로 바꾼다.
   const keys = spotifyKeys(env);
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
-  const kept = await env.ADMIN_DB.prepare("SELECT value FROM settings WHERE key='spotify.state'").first<{ value: string }>();
+  const kept = await env.ADMIN_DB.prepare("SELECT value,updated_by FROM settings WHERE key='spotify.state'").first<{
+    value: string;
+    updated_by: string | null;
+  }>();
   //: 무엇이 잘못됐는지는 화면이 말해 줘야 한다. 오류를 그대로 던지면 사람은 빈 페이지만 보고
   //: 「돌아왔는데 아무 말도 없다」가 된다. 까닭을 주소에 실어 화면으로 돌려보낸다.
   const failed = (why: string): Response => Response.redirect(`${url.origin}/?spotify=${encodeURIComponent(why)}`, 302);
@@ -521,10 +527,17 @@ async function spotifyCallback(env: WorkerEnv, actor: Actor, request: Request): 
     env.ADMIN_DB.prepare(
       `INSERT INTO settings (key,value,secret,updated_by,updated_at) VALUES ('spotify.refresh_token',?1,1,?2,?3)
        ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_by=excluded.updated_by,updated_at=excluded.updated_at`,
-    ).bind(await sealSecret(env, answer.refresh_token), actor.id, now),
+    ).bind(await sealSecret(env, answer.refresh_token), kept.updated_by, now),
     env.ADMIN_DB.prepare("DELETE FROM settings WHERE key='spotify.state'"),
   ]);
-  await audit(env, actor, "spotify.connect", "settings", "spotify.refresh_token");
+  //: 누가 연결했는지는 표를 만든 사람으로 남긴다 — 여기서는 물어볼 쿠키가 없다.
+  await audit(
+    env,
+    kept.updated_by === null ? null : { type: "user", id: kept.updated_by, permissions: new Set<string>() },
+    "spotify.connect",
+    "settings",
+    "spotify.refresh_token",
+  );
   //: 사람을 원래 보던 화면으로 되돌린다. 「연결됐다」를 화면이 스스로 말하게 하는 편이, 빈 창을
   //: 닫으라고 하는 것보다 낫다.
   return Response.redirect(`${url.origin}/?spotify=connected`, 302);
@@ -2471,6 +2484,9 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   const pairingMatch = url.pathname.match(/^\/admin\/api\/collector\/pairings\/([^/]+)$/u);
   if (request.method === "GET" && pairingMatch?.[1] !== undefined) return pollCollectorPairing(request, env, pairingMatch[1]);
 
+  //: 스포티파이가 돌려보내는 자리는 인증 앞에 둔다. 세션 쿠키가 SameSite=Strict 라 그 요청에는
+  //: 쿠키가 실리지 않는다 — 여기서 인증을 물으면 연결은 영영 끝나지 않는다. 대신 표(state)로 가린다.
+  if (request.method === "GET" && url.pathname === "/admin/api/spotify/callback") return spotifyCallback(env, request);
   const actor = await authenticate(request, env);
   if (request.method === "GET" && url.pathname === "/admin/api/overview") {
     requirePermission(actor, "dashboard.read");
@@ -2604,7 +2620,6 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "POST" && rejecting !== null)
     return judgeSource(env, actor, decodeURIComponent(rejecting[1] ?? ""), rejecting[2] === "reject");
   if (request.method === "POST" && url.pathname === "/admin/api/spotify/connect") return spotifyConnect(env, actor, request);
-  if (request.method === "GET" && url.pathname === "/admin/api/spotify/callback") return spotifyCallback(env, actor, request);
   const reselecting = url.pathname.match(/^\/admin\/api\/recordings\/([^/]+)\/reselect$/u);
   if (request.method === "POST" && reselecting !== null) return reselectSource(env, actor, decodeURIComponent(reselecting[1] ?? ""));
   if (request.method === "GET" && url.pathname.startsWith("/admin/api/recordings/"))
