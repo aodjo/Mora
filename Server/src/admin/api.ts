@@ -2,7 +2,7 @@ import { preprocessLyrics } from "../../../packages/preprocess/src/index.js";
 import { sheetHash } from "../../../packages/core/src/tokenization/fingerprint.js";
 import { tokenizeV2 } from "../../../packages/core/src/tokenization/tokenizer-v2.js";
 import { ServiceError } from "../../../packages/core/src/shared/errors.js";
-import { playlistId, playlistTracks, spotifyAuthorizeUrl, spotifyToken } from "./spotify.js";
+import { playlistId, playlistTracks, publicPlaylist, spotifyAuthorizeUrl, spotifyToken, type SpotifyTrack } from "./spotify.js";
 import { ANCHOR_DENSITY_FLOOR, ANCHOR_REACH_FLOOR, BREATH_FLOOR, passesQualityGate } from "./quality-gate.js";
 import type {
   GeneratorCandidateSubmission,
@@ -572,16 +572,25 @@ async function importPlaylist(env: WorkerEnv, actor: Actor, value: Record<string
   requirePermission(actor, "jobs.manage");
   const playlist = playlistId(requiredString(value.url, 300));
   if (playlist === undefined) throw new ServiceError(400, "INVALID_PLAYLIST");
-  let found;
+  //: 공개 목록이면 아무도 로그인할 필요가 없다 — 붙임 화면이 곡 목록을 그대로 준다. 로그인은
+  //: 비공개 목록에만 쓴다. 스포티파이 대시보드에 사람을 하나하나 등록해야 로그인이 되는 터라,
+  //: 흔한 쪽이 준비 없이 되는 편이 훨씬 낫다.
+  let found: { name?: string; tracks: SpotifyTrack[]; total: number; capped?: boolean };
   try {
-    found = await playlistTracks(playlist, await spotifyAccess(env));
-  } catch (error) {
-    // 무엇이 잘못됐는지 한 코드로 뭉치면 사람이 할 일을 알 수 없다 — 열쇠를 고칠 일과
-    // 플레이리스트를 공개로 바꿀 일은 다르다. 다만 위쪽이 보낸 글자를 그대로 싣지는 않는다.
-    // 그 안에 토큰이 실려 올 수 있고, 이 서버는 잡은 값을 남기지 않기로 되어 있다.
-    const said = error instanceof Error ? error.message : "";
-    if (said.startsWith("SPOTIFY_TOKEN")) throw new ServiceError(502, "SPOTIFY_AUTH_FAILED");
-    throw new ServiceError(502, "PLAYLIST_UNAVAILABLE");
+    found = await publicPlaylist(playlist);
+  } catch {
+    try {
+      found = await playlistTracks(playlist, await spotifyAccess(env));
+    } catch (error) {
+      // 무엇이 잘못됐는지 한 코드로 뭉치면 사람이 할 일을 알 수 없다 — 열쇠를 고칠 일과
+      // 플레이리스트를 공개로 바꿀 일은 다르다. 다만 위쪽이 보낸 글자를 그대로 싣지는 않는다.
+      // 그 안에 토큰이 실려 올 수 있고, 이 서버는 잡은 값을 남기지 않기로 되어 있다.
+      // 아무도 로그인해 두지 않았다는 말은 그대로 올려 보낸다 — 화면이 로그인을 권할 수 있게.
+      if (error instanceof ServiceError) throw error;
+      const said = error instanceof Error ? error.message : "";
+      if (said.startsWith("SPOTIFY_TOKEN")) throw new ServiceError(502, "SPOTIFY_AUTH_FAILED");
+      throw new ServiceError(502, "PLAYLIST_UNAVAILABLE");
+    }
   }
   const kept = await keepInBasket(
     env,
@@ -589,7 +598,7 @@ async function importPlaylist(env: WorkerEnv, actor: Actor, value: Record<string
     found.tracks.map((track) => ({ ...track, providers: ["spotify"] })),
   );
   await audit(env, actor, "basket.import", "song_basket", playlist, { kept, total: found.total, name: found.name ?? null });
-  return json({ kept, total: found.total, name: found.name ?? null, skipped: found.total - kept }, 201);
+  return json({ kept, total: found.total, name: found.name ?? null, skipped: found.total - kept, capped: found.capped === true }, 201);
 }
 
 async function readBasket(env: WorkerEnv, actor: Actor): Promise<Response> {

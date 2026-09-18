@@ -232,19 +232,22 @@ export function AddSongsView() {
     if (url.length === 0) return;
     setImporting(true);
     try {
-      const result = await api<{ kept: number; total: number; name: string | null; skipped: number }>("/basket/import", {
+      const result = await api<{ kept: number; total: number; name: string | null; skipped: number; capped?: boolean }>("/basket/import", {
         method: "POST",
         body: JSON.stringify({ url }),
       });
       // 지나친 곡이 있으면 말해 준다 — 팟캐스트나 올린 파일은 맞출 가사가 없다.
       const passed = result.skipped > 0 ? ` (${result.skipped}곡은 타이밍을 만들 수 없어 지나침)` : "";
-      showToast(`${result.name ?? "플레이리스트"}에서 ${result.kept}곡을 담았습니다${passed}.`);
+      // 공개 목록은 앞 100곡까지만 읽힌다. 말 안 하면 나머지를 담은 줄 안다.
+      const rest = result.capped === true ? " 앞 100곡까지만 읽힙니다 — 더 있으면 나눠서 담아 주세요." : "";
+      showToast(`${result.name ?? "플레이리스트"}에서 ${result.kept}곡을 담았습니다${passed}.${rest}`);
       setPlaylist("");
       await loadBasket();
     } catch (reason) {
       const code = reason instanceof Error ? reason.message : "";
+      // 공개 목록은 로그인 없이 읽힌다. 여기까지 왔다면 비공개거나 지워진 목록이다.
       if (code.includes("SPOTIFY_NOT_CONNECTED")) {
-        showToast("스포티파이에 한 번 로그인해야 목록을 읽을 수 있습니다.", { variant: "error" });
+        showToast("비공개 목록입니다 — 스포티파이에 로그인해야 읽을 수 있습니다.", { variant: "error" });
         await connectSpotify();
         return;
       }
@@ -255,7 +258,7 @@ export function AddSongsView() {
           : code.includes("INVALID_PLAYLIST")
             ? "플레이리스트 주소가 아닙니다."
             : code.includes("PLAYLIST_UNAVAILABLE")
-              ? "플레이리스트를 읽을 수 없습니다 — 공개인지 확인하세요."
+              ? "플레이리스트를 읽을 수 없습니다 — 주소가 맞는지, 공개인지 확인하세요."
               : "가져오기에 실패했습니다.";
       showToast(said, { variant: "error" });
     } finally {

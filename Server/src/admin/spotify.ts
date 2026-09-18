@@ -7,7 +7,12 @@
  *
  * 앱 자격(client credentials)만으로는 이제 못 읽는다. 2024-11-27 이후에 만든 앱에서 `/playlists/{id}/tracks`
  * 는 폐지돼 403 을 주고, 갈음할 `/playlists/{id}/items` 는 「Valid user authentication required」로 401 을
- * 준다. 그래서 사람이 한 번 로그인해 준 토큰으로 읽는다 — 권한은 `playlist-read-private` 하나.
+ * 준다. 곡 하나를 묻는 `/tracks` 조차 403 이다.
+ *
+ * 그런데 **공개 목록은 로그인 없이도 읽힌다** — 누구나 보는 붙임(embed) 화면이 곡 목록을 그대로
+ * 싣고 있다. 그래서 공개 목록은 그쪽으로 읽고(앞 100곡), 비공개 목록만 사람이 로그인해 준
+ * 토큰으로 읽는다. 로그인을 세우는 데 스포티파이 대시보드에 사람을 등록해야 하는 걸림돌이 있어,
+ * 흔한 쪽(공개 목록)이 아무 준비 없이 되는 것이 중요하다.
  */
 
 export interface SpotifyTrack {
@@ -54,6 +59,70 @@ export function playlistId(given: string): string | undefined {
 
 /** 사람이 로그인해 준 권한. 플레이리스트를 읽는 데 이것 하나면 된다. */
 export const SPOTIFY_SCOPE = "playlist-read-private";
+
+/** 붙임 화면이 한 번에 싣는 곡 수. 150곡짜리를 받아 보면 정확히 여기서 끊긴다. */
+export const PUBLIC_MOST = 100;
+
+interface EmbedTrack {
+  title?: string;
+  subtitle?: string;
+  duration?: number;
+}
+
+interface EmbedPage {
+  props?: { pageProps?: { state?: { data?: { entity?: { name?: string; trackList?: EmbedTrack[] } } } } };
+}
+
+/**
+ * Read a public playlist with nobody logged in.
+ *
+ * 붙임 화면(`open.spotify.com/embed/playlist/…`)은 누구나 보라고 있는 것이고, 그릴 곡 목록을
+ * `__NEXT_DATA__` 에 통째로 싣고 온다. 가수·제목·길이가 거기 다 있다. ISRC 와 앨범은 없지만,
+ * 수집기는 이미 가수·제목·길이로 영상을 고르므로 그것만으로 충분하다.
+ *
+ * @param {string} playlist - The playlist identifier.
+ * @param {typeof fetch} [fetcher=fetch] - How to call Spotify.
+ * @returns {Promise<{ name?: string; tracks: SpotifyTrack[]; total: number; capped: boolean }>} What the page carried; `capped` when the list stopped at {@link PUBLIC_MOST}.
+ * @throws {Error} `SPOTIFY_EMBED_<status>` when the page refuses, `SPOTIFY_EMBED_EMPTY` when it carries no list.
+ */
+export async function publicPlaylist(
+  playlist: string,
+  fetcher: typeof fetch = fetch,
+): Promise<{ name?: string; tracks: SpotifyTrack[]; total: number; capped: boolean }> {
+  const response = await fetcher(`https://open.spotify.com/embed/playlist/${playlist}`, {
+    // 사람이 쓰는 브라우저라고 말하지 않으면 빈 껍데기를 준다.
+    headers: { "user-agent": "Mozilla/5.0", "accept-language": "ko,en;q=0.8" },
+  });
+  if (!response.ok) throw new Error(`SPOTIFY_EMBED_${response.status}`);
+  const hit = /<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/u.exec(await response.text());
+  if (hit?.[1] === undefined) throw new Error("SPOTIFY_EMBED_EMPTY");
+  let entity;
+  try {
+    entity = (JSON.parse(hit[1]) as EmbedPage).props?.pageProps?.state?.data?.entity;
+  } catch {
+    throw new Error("SPOTIFY_EMBED_EMPTY");
+  }
+  const listed = entity?.trackList ?? [];
+  const tracks: SpotifyTrack[] = [];
+  for (const one of listed) {
+    // 여러 가수는 이미 「A, B」로 붙어 온다.
+    const artist = (one.subtitle ?? "").trim();
+    const title = (one.title ?? "").trim();
+    if (artist.length === 0 || title.length === 0) continue;
+    tracks.push({
+      artist,
+      title,
+      ...(typeof one.duration === "number" && one.duration > 0 ? { duration_ms: one.duration } : {}),
+    });
+  }
+  if (tracks.length === 0) throw new Error("SPOTIFY_EMBED_EMPTY");
+  return {
+    ...(entity?.name === undefined ? {} : { name: entity.name }),
+    tracks,
+    total: tracks.length,
+    capped: listed.length >= PUBLIC_MOST,
+  };
+}
 
 /**
  * Trade an authorization code or a refresh token for an access token.
