@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "node:sqlite";
-import { reopenForSource, type RevisionStore } from "../Server/src/admin/reselect.js";
+import { dropStaleCandidates, reopenForSource, type RevisionStore } from "../Server/src/admin/reselect.js";
 
 /**
  * D1 대신 sqlite. `reopenForSource` 가 쓰는 만큼만 — prepare().bind().first()/all()/run().
@@ -39,6 +39,11 @@ function open(): InstanceType<typeof Database.DatabaseSync> {
       text TEXT NOT NULL, text_hash TEXT NOT NULL, preprocessor TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 1,
       review_required INTEGER NOT NULL DEFAULT 0, offset_map TEXT NOT NULL DEFAULT '[]', rules TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL, UNIQUE (input_revision_id, layer, text_hash));
+    CREATE TABLE alignment_candidates (
+      id TEXT PRIMARY KEY, input_revision_id TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL);
+    CREATE TABLE releases (id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL);
+    CREATE TABLE draft_edits (candidate_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (candidate_id, user_id));
+    CREATE TABLE edit_leases (candidate_id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
     CREATE TABLE lyric_sources (
       text_id TEXT NOT NULL, provider TEXT NOT NULL, provider_ref TEXT NULL, fetched_at INTEGER NOT NULL,
       PRIMARY KEY (text_id, provider));
@@ -102,5 +107,40 @@ test("a recording nobody has collected lyrics for is refused", async () => {
 test("a recording with no revision at all is not found", async () => {
   const db = open();
   await assert.rejects(() => reopenForSource(store(db), "rec-none", "user-1", "rev-2", (index) => `new-${index}`, 9), /NOT_FOUND/u);
+  db.close();
+});
+
+/** 음원을 갈아탄 회차와 지금 음원의 회차, 그리고 그 위의 후보들. */
+function withCandidates(db: InstanceType<typeof Database.DatabaseSync>): void {
+  db.exec(`
+    INSERT INTO input_revisions (id,recording_id,source_id,state,pipeline_profile,created_at)
+      VALUES ('rev-2','rec-1','src-2','ready','production-v1',5);
+    INSERT INTO alignment_candidates (id,input_revision_id,status,created_at) VALUES
+      ('old-pending','rev-1','pending',1),
+      ('old-approved','rev-1','approved',1),
+      ('old-published','rev-1','published',1),
+      ('new-pending','rev-2','pending',5);
+    INSERT INTO releases (id,candidate_id) VALUES ('rel-1','old-published');
+    INSERT INTO draft_edits (candidate_id,user_id) VALUES ('old-pending','user-1');
+    INSERT INTO edit_leases (candidate_id,user_id) VALUES ('old-pending','user-1');
+  `);
+}
+
+test("choosing a new source throws away the timings made from the old audio", async () => {
+  const db = open();
+  withCandidates(db);
+  assert.equal(await dropStaleCandidates(store(db), "rec-1", "src-2"), 1);
+  const left = (db.prepare("SELECT id FROM alignment_candidates ORDER BY id").all() as Array<{ id: string }>).map((one) => one.id);
+  assert.deepEqual(left, ["new-pending", "old-approved", "old-published"], "사람이 승인했거나 공개한 것은 남는다");
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM draft_edits").get() as { n: number }).n, 0, "고치던 초안도 함께 치운다");
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM edit_leases").get() as { n: number }).n, 0);
+  db.close();
+});
+
+test("keeping the same source throws nothing away", async () => {
+  const db = open();
+  withCandidates(db);
+  assert.equal(await dropStaleCandidates(store(db), "rec-1", "src-1"), 1, "rev-2 쪽이 딴 음원이 된다");
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM alignment_candidates").get() as { n: number }).n, 3);
   db.close();
 });

@@ -18,7 +18,7 @@ import { serveArtifact } from "./artifacts.js";
 import { completeModelUpload, serveModel, startModelUpload, uploadModelPart } from "./models.js";
 import { STAGE_JOB_UPDATE } from "./stage-state.js";
 import { filledLines, sungVariant } from "./sung-variant.js";
-import { reopenForSource } from "./reselect.js";
+import { dropStaleCandidates, reopenForSource } from "./reselect.js";
 import { approveCollectorPairing, pollCollectorPairing, startCollectorPairing } from "./collector-pairing.js";
 import { approveGeneratorPairing, pollGeneratorPairing, startGeneratorPairing } from "./generator-pairing.js";
 import {
@@ -1350,7 +1350,9 @@ async function selectSourceReview(env: WorkerEnv, actor: Actor, inputId: string,
       "INSERT INTO jobs (id,input_revision_id,state,priority,available_at,created_at,updated_at) VALUES (?1,?2,'queued',0,?3,?3,?3)",
     ).bind(jobId, inputId, now),
   ]);
-  await audit(env, actor, "source.approve", "input_revision", inputId, { source_id: sourceId, job_id: jobId });
+  // 이 음원으로 간다고 정한 순간, 다른 음원으로 만들어 둔 타이밍은 더 볼 것이 없다.
+  const dropped = await dropStaleCandidates(env.ADMIN_DB, input.recording_id, sourceId);
+  await audit(env, actor, "source.approve", "input_revision", inputId, { source_id: sourceId, job_id: jobId, dropped_candidates: dropped });
   await event(env, "collector.source_approved", { input_revision_id: inputId, job_id: jobId });
   return json({ job_id: jobId, state: "queued" }, 201);
 }
