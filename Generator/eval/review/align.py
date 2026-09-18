@@ -2539,18 +2539,23 @@ def heard_song(path: Path, language: str | None = None, vad: bool = False,
             #: 받아쓰기가 멈춰 선 채로 남으면 그 자리만 잃는 것이 아니다 — spark 에서 hear.py 한 벌이
             #: 여섯 시간 넘게 15 GB 를 쥔 채 떠 있었고, 그다음 곡의 데몬이 분리 단계에서 죽었다.
             print(f"[heard_song] whisper 가 {HEAR_TIMEOUT_S}초 안에 못 끝냈다 · {path.name}", file=sys.stderr)
-            return kresnik_song(path)
+            return []
         if ran.returncode == 0 and ran.stdout.strip():
             said = json.loads(ran.stdout).get("낱말")
             if said:
                 #: 쏠림은 여기서 한 번만 걷는다. 아래로 내려가는 모든 것이 같은 시각을 보게.
                 return [(one, max(0, at + HEARD_LEAN_MS)) for one, at in said]
-        #: whisper 가 있는데 못 돌았다면 그것은 고장이지 「없음」이 아니다. 조용히 kresnik 으로
-        #: 물러나면 열 배 못한 받아쓰기로 정렬되면서 아무도 모른다 — 맥의 파이썬 3.9 에서
-        #: `str | None` 에 걸려 죽은 것을 한 세션 내내 못 봤다. 소리는 내고, 물러서기는 한다.
+        #: whisper 가 있는데 못 돌았다면 그것은 고장이지 「없음」이 아니다. 예전에는 소리만 내고
+        #: kresnik 으로 물러났는데, 그 받아쓰기는 열 배 못한다(글자 회수 가운뎃값 13% 대 81%).
+        #: 그러면 나쁜 타이밍이 「품질 0.96」을 달고 공개되고 아무도 모른다 — 검정치마 EVERYTHING 이
+        #: 그랬다. 이제 이 갈래는 빈손으로 돌아온다. 부르는 쪽이 다음 갈래를 들어 보고, 어느
+        #: 갈래에서도 못 들으면 곡이 실패한다. 실패는 다시 돌리면 되지만 공개는 되돌리기 어렵다.
         why = (ran.stderr or ran.stdout or "").strip().splitlines()
         print(f"[heard_song] whisper 가 못 돌았다 · {path.name} · {why[-1][:160] if why else '까닭 없음'}",
               file=sys.stderr)
+        return []
+    #: whisper 가 아예 없는 기계에서만 kresnik 이 듣는다. 그것은 물러서는 것이 아니라 그 기계의
+    #: 설정이다 — `MORA_EARS_PYTHON` 이 가리키는 살림이 있으면 whisper 말고는 쓰지 않는다.
     return kresnik_song(path)
 
 

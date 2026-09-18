@@ -2854,20 +2854,20 @@ def run_job(params: dict[str, Any]) -> dict[str, Any]:
     variants = []
     for variant in job["lyrics"]:
         declared = str(variant.get("language", "und")).split("-")[0]
-        sung = review_ready(weights) and written_language(str(variant.get("text", "")), declared) == "ko"
-        if sung:
-            try:
-                done = review_variant(mixture, stems["vocals"], variant, asr, duration_ms, detected, str(weights), directory, title)
-                variants.append({**done, "aligner": "sung"})
-                continue
-            except Exception as error:
-                print(f"[review_align] fallback to whisperx: {type(error).__name__}: {str(error)[:200]}", file=sys.stderr)
-        #: 노래 정렬기로 갈 곡이었는데 그것이 죽어서 물러선 것과, 애초에 그 길이 아닌 것(한국어가
-        #: 아니거나 무게가 없다)은 전혀 다른 말이다. 앞의 것은 사람이 들어 봐야 한다 — 검정치마
-        #: EVERYTHING 이 받아쓰기가 깨져 옛 정렬로 나왔는데, 품질 0.96 을 달고 자동 공개됐다.
-        #: 어느 쪽인지 여기서 적지 않으면 뒤에서는 영영 알 수 없다.
+        #: 노래 정렬기로 갈 곡이면 **그것으로만** 간다. 죽으면 곡이 실패한다.
+        #:
+        #: 예전에는 여기서 예외를 잡아 whisperx 로 물러섰다. 그 길로 나온 타이밍은 겉으로 멀쩡해서
+        #: — 밀도 0.85 · 도달 0.93 · 숨 1.00 · 품질 0.96 — 문을 넘고 자동 공개됐고, 사람이 곡을
+        #: 듣고 「최악」이라고 하기 전까지 아무도 몰랐다(검정치마 EVERYTHING). 34곡 중 3곡이
+        #: 그렇게 나갔다. 실패한 곡은 다시 돌리면 되지만, 나쁜 타이밍이 공개되는 것은 되돌리기
+        #: 어렵다. 그래서 물러서지 않고 멈춘다.
+        if review_ready(weights) and written_language(str(variant.get("text", "")), declared) == "ko":
+            done = review_variant(mixture, stems["vocals"], variant, asr, duration_ms, detected, str(weights), directory, title)
+            variants.append({**done, "aligner": "sung"})
+            continue
+        #: 애초에 노래 정렬기의 길이 아닌 글(한국어로 안 쓰였다). 이것은 물러서는 것이 아니다.
         done = align_variant(stems["vocals"], variant, asr, duration_ms, config["backend"], detected, second_voice)
-        variants.append({**done, "aligner": "fallback" if sung else "whisperx"})
+        variants.append({**done, "aligner": "whisperx"})
     notify("forced_align", "completed", 0.8)
     notify("diarize", "started", 0.81)
     turns = diarize(stems["vocals"], config["backend"], job["pipeline"].get("min_speakers"), job["pipeline"].get("max_speakers"))
