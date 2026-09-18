@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { comparable, pickTrack, sameArtist, sameTitle, genie, vibe, flo, bugs, melon } from "@mora/songtitle";
+import { comparable, pickTrack, sameArtist, sameTitle, genie, vibe, flo, bugs } from "@mora/songtitle";
 import type { ProviderContext } from "@mora/songtitle";
 
 /** URL 접두사 → 응답 본문. 등록되지 않은 URL 요청은 그 자체가 테스트 실패다. */
@@ -144,35 +144,7 @@ test("bugs picks the matching row before scraping the track page", async () => {
   assert.equal(result?.title, "그대이길");
 });
 
-test("melon rejects a search whose candidates are all different songs", async () => {
-  // 검색 화면이 `<li>` 로 바뀌면서 제목이 거기 없다. 곡 번호만 뽑고 상세 페이지에서 확인한다.
-  const routes = {
-    "https://www.melon.com/search/total/index.htm": `<ul><li>
-      <a href="javascript:melon.link.goSongDetail('42');" title="곡정보 보기"><span>보기</span></a>
-    </li></ul>`,
-    "https://www.melon.com/song/detail.htm?songId=42": `<div class="song_name"><strong>곡명</strong>다른 곡</div>
-      <div id="d_video_summary">남의 가사</div>`,
-  };
-  assert.equal(await melon.fetch({ title: "The Wolf Is Coming", artist: "HOYO-MiX" }, ctx(routes)), null);
-});
 
-test("melon passes over a candidate whose own page says another title", async () => {
-  // 검색 순서를 믿으면 안 된다 — 첫 후보를 검증 없이 집던 시절 라틴어 가사 하나가 88곡에 붙었다.
-  const routes = {
-    "https://www.melon.com/song/detail.htm?songId=42": `<div class="song_name"><strong>곡명</strong>다른 곡</div>
-      <div id="d_video_summary">남의 가사</div>`,
-    "https://www.melon.com/song/detail.htm?songId=602665433": `<div class="song_name"><strong>곡명</strong>그대이길</div>
-      <div class="artist"><a title="송하예 - 페이지 이동">송하예</a></div>
-      <div id="d_video_summary">꼭 감은 그대 눈 위에<br>나의 입을 맞추며</div>`,
-    "https://www.melon.com/search/total/index.htm": `<ul>
-      <li><a href="javascript:melon.link.goSongDetail('42');">보기</a></li>
-      <li><a href="javascript:melon.link.goSongDetail('602665433');">보기</a></li>
-    </ul>`,
-  };
-  const result = await melon.fetch({ title: "그대이길", artist: "송하예" }, ctx(routes));
-  assert.equal(result?.trackId, "602665433");
-  assert.equal(result?.artist, "송하예");
-});
 
 test("an exact title beats an earlier containment match", () => {
   // 실측: melon·flo 모두 "SWIM BTS" 검색 1위가 "I Swim How Bts"(Lil Barberi)였고

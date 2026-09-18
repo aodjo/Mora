@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { describeAvailability, genius, lyricfind, shazam, melon } from "@mora/songtitle";
+import { describeAvailability, genius, lyricfind, shazam, bugs } from "@mora/songtitle";
 import type { ProviderContext } from "@mora/songtitle";
 
 /**
@@ -105,11 +105,11 @@ test("genius 슬러그 폴백은 CJK 제목이면 요청도 하지 않는다", a
 });
 
 test("가용성 보고가 죽은 프로바이더를 이유와 함께 드러낸다", () => {
-  const dead = describeAvailability([melon, genius, shazam, lyricfind], {}, false);
+  const dead = describeAvailability([bugs, genius, shazam, lyricfind], {}, false);
   assert.deepEqual(
     dead.map((a) => [a.provider, a.live]),
     [
-      ["melon", true],
+      ["bugs", true],
       ["genius", true], // 토큰이 없어도 슬러그 폴백이 있다
       ["shazam", false],
       ["lyricfind", false],

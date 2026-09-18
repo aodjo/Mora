@@ -91,7 +91,7 @@ function printHelp(): void {
 
 예:
   lyrics-router "너를 처음 본 순간" -a "검정치마"
-  lyrics-router -t Magenta -p melon,genie,vibe --synced
+  lyrics-router -t Magenta -p genie,vibe,bugs --synced
   lyrics-router "Bohemian Rhapsody" -a Queen --browser   # genius 등 브라우저 폴백`);
 }
 
