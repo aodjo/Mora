@@ -2116,6 +2116,9 @@ def polish(path: Path, lines: list[dict], out: list[list[dict]], lanes: dict[int
 TWIN_APART_MS = 2000
 #: The longest a line's last syllable may hold when no rest is found to stop it (ms).
 TAIL_MOST_MS = 700
+#: The longest it may hold when the audio says the voice is still going (ms). 산토리의 「같은데」는
+#: 2.8 초를 끈다 — 노래에서 그 정도는 흔하고, 그보다 길게 잡고 있으면 다음 줄이 늦는 편이 낫다.
+TAIL_HOLD_MS = int(os.environ.get("MORA_TAIL_HOLD_MS", "4000"))
 #: Whether a free transcript may sharpen the invented clock. Read from `MORA_HEARD` so the probes
 #: can measure the blind path with it and without it on the same songs.
 HEARD = os.environ.get("MORA_HEARD", "1") != "0"
@@ -3851,7 +3854,7 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             word.pop("stuck", None)
     #: 쉼을 건넨다. 안 건네면 `settle_turns` 가 일부러 넣은 쉼을 「글자 사이가 빔」으로 되돌려
     #: 부른다 — 열두 곡에서 그렇게 찍힌 구멍 열여덟 중 열일곱이 그것이었다.
-    hush_tails(out, quiet_of(path))
+    hush_tails(out, quiet_of(path), rest_ends(path.with_suffix(".lead.wav")))
     flag_stuck(lines, out, quiet_of(path))
     return out, lanes
 
@@ -4881,7 +4884,8 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize,
     return done
 
 
-def hush_tails(out: list[list[dict]], quiet: list[tuple[int, int]] | None) -> None:
+def hush_tails(out: list[list[dict]], quiet: list[tuple[int, int]] | None,
+               breaths: list[tuple[int, int]] | None = None) -> None:
     """Stop a line's last syllable when the voice stops, not when the next line starts.
 
     `loosen_chars` runs every character's end out to the next character's start, so that a
@@ -4897,21 +4901,30 @@ def hush_tails(out: list[list[dict]], quiet: list[tuple[int, int]] | None) -> No
 
     @param {list[list[dict]]} out - Per-line word dicts, modified in place.
     @param {list[tuple[int, int]] | None} quiet - Stretches nobody sings in, in ms.
+    @param {list[tuple[int, int]] | None} [breaths=None] - The lead stem's own quiet spells, in ms.
     @returns {None}
     """
-    for words in out:
+    #: 줄마다 「그다음 줄이 시작하는 자리」. 장음은 거기까지만 끌 수 있다.
+    starts = [next((one["at"] for word in words for one in (word.get("chars") or []) if one.get("at") is not None), None)
+              for words in out]
+    heads = [next((one for one in starts[index + 1:] if one is not None), None) for index in range(len(out))]
+    for index, words in enumerate(out):
         chars = [one for word in words for one in (word.get("chars") or []) if one.get("at") is not None]
         if not chars:
             continue
         last = chars[-1]
-        stop = last["at"] + TAIL_MOST_MS
-        for since, until in (quiet or []):
-            #: 마지막 낱자가 울린 뒤 처음 오는 쉼. 목소리가 거기서 멎으므로 줄도 거기서 멎는다.
-            if since >= last["at"]:
-                stop = min(stop, since)
-                break
+        #: 목소리가 어디서 멎는지: 화자 토막 사이의 쉼, 리드 갈래의 숨, 그리고 다음 줄의 첫 낱자.
+        #: 셋 가운데 가장 이른 것이 이 줄의 끝이다.
+        edges = [since for since, _ in (quiet or []) if since >= last["at"]]
+        edges += [since for since, _ in (breaths or []) if since >= last["at"] + LEAST_MS]
+        edges += [one for one in [heads[index]] if one is not None and one > last["at"]]
         held = last.get("end") or last["at"]
-        last["end"] = max(last["at"] + LEAST_MS, min(held, stop))
+        #: 멎는 자리를 하나도 못 찾으면 예전처럼 짧게 끊는다. 찾았으면 **거기까지 잡고 있는다** —
+        #: 산토리 「…없을 것 같은데」의 「데」는 2.8 초를 끄는데 소리가 그대로 울리는 동안 1.1 초에서
+        #: 꺼졌다. 「0.7 초까지만」은 쉼을 못 찾았을 때의 안전장치였지 장음의 길이가 아니다.
+        stop = last["at"] + TAIL_MOST_MS if not edges else max(last["at"] + LEAST_MS, min(min(edges), last["at"] + TAIL_HOLD_MS))
+        #: 0 이면 예전처럼 — 잡고 있지 않고 자르기만 한다(재 보려고 남겨 둔 값).
+        last["end"] = max(last["at"] + LEAST_MS, min(max(held, stop) if TAIL_HOLD_MS else held, stop))
         for word in words:
             mine = [one for one in (word.get("chars") or []) if one.get("at") is not None]
             if mine:
