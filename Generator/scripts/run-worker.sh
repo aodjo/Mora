@@ -56,6 +56,8 @@ update() {
 
 while true; do
   say "워커 $INDEX 시작 · $(git -C "$HERE" log --oneline -1)"
+  # 띄운 순간의 판. 따라가는 워커는 이것이 바뀌었는지로 갈아탈 때를 안다.
+  STARTED="$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)"
   rm -f "$BUSY"
   MORA_BUSY_FILE="$BUSY" MORA_WORKER_NAME="${MORA_WORKER_NAME:-$(hostname)-$INDEX}" \
     node "$HERE/dist/Generator/src/worker-cli.js" >>"$LOG" 2>&1 &
@@ -64,8 +66,15 @@ while true; do
   while kill -0 "$WORKER" 2>/dev/null; do
     sleep "$CHECK_EVERY"
     kill -0 "$WORKER" 2>/dev/null || break
-    [ "${MORA_NO_UPDATE:-0}" = "1" ] && continue
-    fresh || continue
+    if [ "${MORA_NO_UPDATE:-0}" = "1" ]; then
+      # 한 기계에 워커가 둘이면 받는 것은 하나만 해야 한다 — 같은 나무를 둘이 당기면 git 이
+      # 찢어진다. 그렇다고 따라가는 쪽이 옛 코드로 남으면 그것도 고장이다: 앞선 워커가 갈아타
+      # HEAD 가 바뀌면, 받지는 않고 제 노드만 다시 띄워 새 dist 를 읽는다.
+      [ "$(git -C "$HERE" rev-parse HEAD 2>/dev/null || echo unknown)" = "$STARTED" ] && continue
+      say "  앞선 워커가 갈아탔다 — 나도 다시 띄운다"
+    else
+      fresh || continue
+    fi
     # 곡을 잡고 있으면 끝날 때까지 기다린다. 한 곡이 아무리 길어도 몇 분이다.
     while [ "$(cat "$BUSY" 2>/dev/null)" = "busy" ]; do
       say "  갈아탈 판이 있으나 곡을 잡고 있다 — 기다린다"
@@ -77,7 +86,7 @@ while true; do
     for _ in $(seq 1 20); do kill -0 "$WORKER" 2>/dev/null || break; sleep 1; done
     kill -KILL "$WORKER" 2>/dev/null
     wait "$WORKER" 2>/dev/null
-    update
+    [ "${MORA_NO_UPDATE:-0}" = "1" ] || update
     break
   done
 
