@@ -234,12 +234,14 @@ export function RecordingDetail({
   // 타이밍은 글자에 붙으므로 가사만은 있어야 한다. ISRC는 식별자일 뿐이라 나중에 채워도 된다.
   const canSelect = draftId !== null && hasLyrics;
   const needsMetadata = draftId !== null && !hasLyrics;
-  const blockedReason =
-    draftId === null && detail.sources.some((source) => source.selected === 1)
-      ? "이미 작업이 만들어져 소스를 바꿀 수 없습니다."
-      : draftId === null
-        ? "소스를 확정할 수 있는 리비전이 없습니다."
-        : "";
+  // 확정한 음원이 틀렸다는 것은 대개 들어 본 뒤에 안다. 그때 가사를 그대로 옮긴 새 회차를 열어
+  // 다시 고르게 한다 — 옛 회차와 그 후보는 그대로 남는다.
+  const canReselect = draftId === null && detail.sources.some((source) => source.selected === 1);
+  const blockedReason = canReselect
+    ? "이미 작업이 만들어져 이 회차의 음원은 바꿀 수 없습니다. 아래 「음원 다시 지정」을 누르면 같은 가사로 새 회차를 열어 다른 음원을 고를 수 있습니다."
+    : draftId === null
+      ? "소스를 확정할 수 있는 리비전이 없습니다."
+      : "";
 
   /*
     다시 시작할 수 있는 작업: 끝난 것, 그리고 몇 분째 조용한 것. 돌고 있는 작업을 두 번 돌릴
@@ -267,6 +269,20 @@ export function RecordingDetail({
       refresh();
     } catch (reason) {
       showToast(reason instanceof Error ? reason.message : "다시 만들기에 실패했습니다", { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reselect(): Promise<void> {
+    setBusy(true);
+    try {
+      await api(`/recordings/${encodeURIComponent(text(recording.id))}/reselect`, { method: "POST", body: "{}" });
+      showToast("같은 가사로 새 회차를 열었습니다. 아래에서 음원을 다시 고르세요.");
+      await load();
+      refresh();
+    } catch (reason) {
+      showToast(reason instanceof Error ? reason.message : "새 회차를 열지 못했습니다", { variant: "error" });
     } finally {
       setBusy(false);
     }
@@ -363,6 +379,11 @@ export function RecordingDetail({
         <p className="detail-note">
           <TriangleAlert size={13} />
           {blockedReason}
+          {canReselect && (
+            <button className="secondary-button" disabled={busy} onClick={() => void reselect()}>
+              음원 다시 지정
+            </button>
+          )}
         </p>
       )}
 

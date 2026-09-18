@@ -18,6 +18,7 @@ import { serveArtifact } from "./artifacts.js";
 import { completeModelUpload, serveModel, startModelUpload, uploadModelPart } from "./models.js";
 import { STAGE_JOB_UPDATE } from "./stage-state.js";
 import { filledLines, sungVariant } from "./sung-variant.js";
+import { reopenForSource } from "./reselect.js";
 import { approveCollectorPairing, pollCollectorPairing, startCollectorPairing } from "./collector-pairing.js";
 import { approveGeneratorPairing, pollGeneratorPairing, startGeneratorPairing } from "./generator-pairing.js";
 import {
@@ -1280,6 +1281,24 @@ async function updateSourceReview(env: WorkerEnv, actor: Actor, inputId: string,
   return json({ input_revision_id: inputId, ready_for_source: true });
 }
 
+/**
+ * Let a recording's audio be chosen again after a job has already been made on it.
+ *
+ * @param {WorkerEnv} env - Worker bindings.
+ * @param {Actor} actor - Who is asking; needs `jobs.manage`.
+ * @param {string} recordingId - The recording to reopen.
+ * @returns {Promise<Response>} The draft revision to choose a source on.
+ */
+async function reselectSource(env: WorkerEnv, actor: Actor, recordingId: string): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const got = await reopenForSource(env.ADMIN_DB, recordingId, actor.id, crypto.randomUUID(), () => crypto.randomUUID(), Date.now());
+  if (got.reopened) {
+    await audit(env, actor, "source.reselect", "input_revision", got.input_revision_id, { recording_id: recordingId });
+    await event(env, "recording.reselect", { recording_id: recordingId, input_revision_id: got.input_revision_id });
+  }
+  return json(got, got.reopened ? 201 : 200);
+}
+
 async function selectSourceReview(env: WorkerEnv, actor: Actor, inputId: string, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "jobs.manage");
   const input = await env.ADMIN_DB.prepare(
@@ -2421,6 +2440,8 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "GET" && url.pathname === "/admin/api/collector/collected") return collectorCollected(env, actor);
   if (request.method === "GET" && url.pathname.startsWith("/admin/api/searches/"))
     return readSearchRequest(env, actor, decodeURIComponent(url.pathname.slice("/admin/api/searches/".length)));
+  const reselecting = url.pathname.match(/^\/admin\/api\/recordings\/([^/]+)\/reselect$/u);
+  if (request.method === "POST" && reselecting !== null) return reselectSource(env, actor, decodeURIComponent(reselecting[1] ?? ""));
   if (request.method === "GET" && url.pathname.startsWith("/admin/api/recordings/"))
     return recordingDetail(env, actor, decodeURIComponent(url.pathname.slice("/admin/api/recordings/".length)));
   if (request.method === "POST" && url.pathname === "/admin/api/collector/pairings/approve")
