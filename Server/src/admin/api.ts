@@ -304,7 +304,7 @@ async function recordingDetail(env: WorkerEnv, actor: Actor, recordingId: string
   if (recording === null) throw new ServiceError(404, "NOT_FOUND");
   const sources = await list(
     env.ADMIN_DB,
-    "SELECT id,url,video_id,rank,official,source_type,score,selected,metadata,created_at FROM media_sources WHERE recording_id=?1 ORDER BY selected DESC,rank",
+    "SELECT id,url,video_id,rank,official,source_type,score,selected,rejected_at,metadata,created_at FROM media_sources WHERE recording_id=?1 ORDER BY selected DESC,COALESCE(rejected_at,0),rank",
     [recordingId],
   );
   const revisions = await list(
@@ -1293,6 +1293,36 @@ async function updateSourceReview(env: WorkerEnv, actor: Actor, inputId: string,
  * @param {string} recordingId - The recording to reopen.
  * @returns {Promise<Response>} The draft revision to choose a source on.
  */
+/**
+ * Mark one collected video as not this song, or take the mark back.
+ *
+ * 수집기는 제목과 길이로 후보를 모으므로 딴 곡이 섞인다. 표를 달아 두면 워커의 대체 후보에서
+ * 빠지고 — 확정한 음원을 못 받았을 때 그 영상으로 넘어가는 일이 없어진다 — 화면에서도 아래로 접힌다.
+ *
+ * @param {WorkerEnv} env - Worker bindings.
+ * @param {Actor} actor - Who is asking; needs `jobs.manage`.
+ * @param {string} sourceId - The media source to judge.
+ * @param {boolean} reject - True to mark it as the wrong song, false to take the mark back.
+ * @returns {Promise<Response>} What the row now says.
+ * @throws {ServiceError} 404 when there is no such source, 409 when it is the confirmed one.
+ */
+async function judgeSource(env: WorkerEnv, actor: Actor, sourceId: string, reject: boolean): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const source = await env.ADMIN_DB.prepare("SELECT id,recording_id,selected FROM media_sources WHERE id=?1")
+    .bind(sourceId)
+    .first<{ id: string; recording_id: string; selected: number }>();
+  if (source === null) throw new ServiceError(404, "NOT_FOUND");
+  // 확정한 음원을 「이 곡 아님」으로 두면 그 곡은 아무 음원도 없는 채로 남는다. 먼저 다시 지정할 것.
+  if (reject && source.selected === 1) throw new ServiceError(409, "CONFLICT");
+  await env.ADMIN_DB.prepare("UPDATE media_sources SET rejected_at=?1 WHERE id=?2")
+    .bind(reject ? Date.now() : null, sourceId)
+    .run();
+  await audit(env, actor, reject ? "source.reject" : "source.restore", "media_source", sourceId, {
+    recording_id: source.recording_id,
+  });
+  return json({ source_id: sourceId, rejected: reject });
+}
+
 async function reselectSource(env: WorkerEnv, actor: Actor, recordingId: string): Promise<Response> {
   requirePermission(actor, "jobs.manage");
   const got = await reopenForSource(env.ADMIN_DB, recordingId, actor.id, crypto.randomUUID(), () => crypto.randomUUID(), Date.now());
@@ -1351,7 +1381,7 @@ async function selectSourceReview(env: WorkerEnv, actor: Actor, inputId: string,
     ).bind(jobId, inputId, now),
   ]);
   // 이 음원으로 간다고 정한 순간, 다른 음원으로 만들어 둔 타이밍은 더 볼 것이 없다.
-  const dropped = await dropStaleCandidates(env.ADMIN_DB, input.recording_id, sourceId);
+  const dropped = await dropStaleCandidates(env.ADMIN_DB, input.recording_id);
   await audit(env, actor, "source.approve", "input_revision", inputId, { source_id: sourceId, job_id: jobId, dropped_candidates: dropped });
   await event(env, "collector.source_approved", { input_revision_id: inputId, job_id: jobId });
   return json({ job_id: jobId, state: "queued" }, 201);
@@ -1500,7 +1530,7 @@ async function generatorJob(env: WorkerEnv, actor: Actor, jobId: string): Promis
     .bind(String(row.input_revision_id))
     .all<Record<string, unknown>>();
   const alternatives = await env.ADMIN_DB.prepare(
-    "SELECT url FROM media_sources WHERE recording_id=?1 AND selected=0 ORDER BY rank LIMIT 2",
+    "SELECT url FROM media_sources WHERE recording_id=?1 AND selected=0 AND rejected_at IS NULL ORDER BY rank LIMIT 2",
   )
     .bind(String(row.id))
     .all<{ url: string }>();
@@ -2043,7 +2073,7 @@ async function jobAction(env: WorkerEnv, actor: Actor, jobId: string, action: st
       .run();
     // 이 곡의 타이밍을 다시 만드는 것이니, 다른 회차에 남아 있던 타이밍도 함께 치운다 — 음원을
     // 바꾸기 전 회차의 후보가 목록에 남으면 사람이 그것을 열고 옛 노래를 듣는다.
-    if (row.source_id !== null) await dropStaleCandidates(env.ADMIN_DB, row.recording_id, row.source_id);
+    await dropStaleCandidates(env.ADMIN_DB, row.recording_id);
     // 사람이 누른 재시작이다. 자동 재시도 한도는 실패가 반복되는 것을 막으려는 것이지,
     // 코드를 고친 뒤 다시 만드는 일을 막으려는 것이 아니다.
     await env.ADMIN_DB.prepare(
@@ -2452,6 +2482,9 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   if (request.method === "GET" && url.pathname === "/admin/api/collector/collected") return collectorCollected(env, actor);
   if (request.method === "GET" && url.pathname.startsWith("/admin/api/searches/"))
     return readSearchRequest(env, actor, decodeURIComponent(url.pathname.slice("/admin/api/searches/".length)));
+  const rejecting = url.pathname.match(/^\/admin\/api\/sources\/([^/]+)\/(reject|restore)$/u);
+  if (request.method === "POST" && rejecting !== null)
+    return judgeSource(env, actor, decodeURIComponent(rejecting[1] ?? ""), rejecting[2] === "reject");
   const reselecting = url.pathname.match(/^\/admin\/api\/recordings\/([^/]+)\/reselect$/u);
   if (request.method === "POST" && reselecting !== null) return reselectSource(env, actor, decodeURIComponent(reselecting[1] ?? ""));
   if (request.method === "GET" && url.pathname.startsWith("/admin/api/recordings/"))

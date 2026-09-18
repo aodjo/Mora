@@ -118,26 +118,24 @@ export async function reopenForSource(
 }
 
 /**
- * Throw away the timings made from audio this recording no longer uses.
+ * Throw away the timings a fresh run is about to replace.
  *
- * 음원을 다시 지정하고 나면 옛 음원으로 만든 후보가 그대로 남는다. 점수는 높게 나오므로 목록에
- * 섞여 있으면 사람이 그것을 열고, 편집기는 그 작업의 음원을 들려준다 — 옛 노래를 들으며 새
- * 타이밍을 고치게 된다. 사람이 손대지 않은 것(pending·draft)만 지우고, 승인·공개한 것과 공개
- * 기록이 가리키는 것은 남긴다.
+ * 새로 만들기 시작하는 순간 지운다. 남겨 두면 화면에 「타이밍 후보 1」이 그대로 떠 있어 다 된 것처럼
+ * 보이고, 옛 음원으로 만든 것이면 편집기가 옛 노래를 들려준다 — 딴 노래를 들으며 타이밍을 고치게
+ * 된다. 사람이 손대지 않은 것(pending·draft)만 지우고, 승인·공개한 것과 공개 기록이 가리키는 것은
+ * 남긴다.
  *
  * @param {RevisionStore} db - The admin database.
- * @param {string} recordingId - The recording whose audio just changed.
- * @param {string} sourceId - The media source that now stands.
+ * @param {string} recordingId - The recording about to be aligned again.
  * @returns {Promise<number>} How many candidates were dropped.
  */
-export async function dropStaleCandidates(db: RevisionStore, recordingId: string, sourceId: string): Promise<number> {
+export async function dropStaleCandidates(db: RevisionStore, recordingId: string): Promise<number> {
   const doomed = `SELECT c.id FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id
-     WHERE i.recording_id=?1 AND (i.source_id IS NULL OR i.source_id<>?2) AND c.status IN ('draft','pending')
-       AND c.id NOT IN (SELECT candidate_id FROM releases)`;
-  const found = await db.prepare(doomed).bind(recordingId, sourceId).all<{ id: string }>();
+     WHERE i.recording_id=?1 AND c.status IN ('draft','pending') AND c.id NOT IN (SELECT candidate_id FROM releases)`;
+  const found = await db.prepare(doomed).bind(recordingId).all<{ id: string }>();
   if (found.results.length === 0) return 0;
-  await db.prepare(`DELETE FROM draft_edits WHERE candidate_id IN (${doomed})`).bind(recordingId, sourceId).run();
-  await db.prepare(`DELETE FROM edit_leases WHERE candidate_id IN (${doomed})`).bind(recordingId, sourceId).run();
-  await db.prepare(`DELETE FROM alignment_candidates WHERE id IN (${doomed})`).bind(recordingId, sourceId).run();
+  await db.prepare(`DELETE FROM draft_edits WHERE candidate_id IN (${doomed})`).bind(recordingId).run();
+  await db.prepare(`DELETE FROM edit_leases WHERE candidate_id IN (${doomed})`).bind(recordingId).run();
+  await db.prepare(`DELETE FROM alignment_candidates WHERE id IN (${doomed})`).bind(recordingId).run();
   return found.results.length;
 }

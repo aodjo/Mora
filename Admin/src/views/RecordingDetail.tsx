@@ -278,6 +278,19 @@ export function RecordingDetail({
     }
   }
 
+  async function judgeSource(sourceId: string, reject: boolean): Promise<void> {
+    setBusy(true);
+    try {
+      await api(`/sources/${encodeURIComponent(sourceId)}/${reject ? "reject" : "restore"}`, { method: "POST", body: "{}" });
+      showToast(reject ? "이 곡이 아닌 영상으로 표시했습니다." : "표시를 되돌렸습니다.");
+      await load();
+    } catch (reason) {
+      showToast(reason instanceof Error ? reason.message : "표시하지 못했습니다", { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function reselect(): Promise<void> {
     setBusy(true);
     try {
@@ -491,6 +504,12 @@ export function RecordingDetail({
             </button>
           )}
         </div>
+        {runningJob !== undefined && detail.candidates.length > 0 && (
+          <p className="detail-note">
+            <TriangleAlert size={13} />새 타이밍을 만드는 중입니다 · {stageLabel(runningJob.current_stage) || text(runningJob.job_state)} —
+            아래는 이전 결과입니다.
+          </p>
+        )}
         {detail.candidates.length === 0 ? (
           <p className="detail-empty">
             {selected === undefined
@@ -549,6 +568,7 @@ export function RecordingDetail({
               onChoose={choose}
               playing={playing}
               onPlay={setPlaying}
+              onJudge={judgeSource}
             />
           ))
         )}
@@ -658,6 +678,7 @@ function SourceRow({
   onPlay,
   confirmed = false,
   label = "이 음원으로",
+  onJudge,
 }: {
   source: AdminItem;
   catalogueMs: number;
@@ -668,6 +689,7 @@ function SourceRow({
   onPlay: (rowId: string) => void;
   confirmed?: boolean;
   label?: string;
+  onJudge?: (sourceId: string, reject: boolean) => void;
 }) {
   const metadata = parseObject(source.metadata);
   const videoId = text(source.video_id);
@@ -677,8 +699,11 @@ function SourceRow({
   // 확정된 음원과 후보 목록의 같은 업로드가 — 한 번의 클릭에 둘 다 열린다.
   const rowId = text(source.id, videoId);
   const active = playing === rowId;
+  // 수집기는 제목과 길이로 후보를 모은다 — 산토리에 아크라포빅 영상이 붙었고, 확정한 음원을 못 받은
+  // 날 워커가 그 영상으로 넘어갔다. 아니라고 표시해 두면 다시는 고르지 않는다.
+  const rejected = source.rejected_at !== null && source.rejected_at !== undefined;
   return (
-    <div className={`source-row ${confirmed ? "confirmed" : ""} ${active ? "playing" : ""}`}>
+    <div className={`source-row ${confirmed ? "confirmed" : ""} ${active ? "playing" : ""} ${rejected ? "rejected" : ""}`}>
       <Player videoId={videoId} title={title} active={active} onPlay={() => onPlay(rowId)} />
       <div className="source-row-main">
         <strong>{title}</strong>
@@ -696,10 +721,21 @@ function SourceRow({
       {confirmed ? (
         <span className="state-badge good">확정됨</span>
       ) : (
-        <button className="primary-button" disabled={!canSelect || busy} onClick={() => onChoose({ source_id: text(source.id) })}>
-          <Check size={13} />
-          {label}
-        </button>
+        <>
+          {onJudge !== undefined && (
+            <button className="secondary-button" disabled={busy} onClick={() => onJudge(text(source.id), !rejected)}>
+              {rejected ? "되돌리기" : "이 곡 아님"}
+            </button>
+          )}
+          <button
+            className="primary-button"
+            disabled={!canSelect || busy || rejected}
+            onClick={() => onChoose({ source_id: text(source.id) })}
+          >
+            <Check size={13} />
+            {label}
+          </button>
+        </>
       )}
     </div>
   );

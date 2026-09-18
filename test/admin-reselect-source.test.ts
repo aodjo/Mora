@@ -126,21 +126,21 @@ function withCandidates(db: InstanceType<typeof Database.DatabaseSync>): void {
   `);
 }
 
-test("choosing a new source throws away the timings made from the old audio", async () => {
+test("starting a fresh run throws away the timings it is about to replace", async () => {
   const db = open();
   withCandidates(db);
-  assert.equal(await dropStaleCandidates(store(db), "rec-1", "src-2"), 1);
+  assert.equal(await dropStaleCandidates(store(db), "rec-1"), 2);
   const left = (db.prepare("SELECT id FROM alignment_candidates ORDER BY id").all() as Array<{ id: string }>).map((one) => one.id);
-  assert.deepEqual(left, ["new-pending", "old-approved", "old-published"], "사람이 승인했거나 공개한 것은 남는다");
+  assert.deepEqual(left, ["old-approved", "old-published"], "사람이 승인했거나 공개한 것은 남는다");
   assert.equal((db.prepare("SELECT COUNT(*) n FROM draft_edits").get() as { n: number }).n, 0, "고치던 초안도 함께 치운다");
   assert.equal((db.prepare("SELECT COUNT(*) n FROM edit_leases").get() as { n: number }).n, 0);
   db.close();
 });
 
-test("keeping the same source throws nothing away", async () => {
+test("a recording with nothing pending loses nothing", async () => {
   const db = open();
-  withCandidates(db);
-  assert.equal(await dropStaleCandidates(store(db), "rec-1", "src-1"), 1, "rev-2 쪽이 딴 음원이 된다");
-  assert.equal((db.prepare("SELECT COUNT(*) n FROM alignment_candidates").get() as { n: number }).n, 3);
+  db.exec("INSERT INTO alignment_candidates (id,input_revision_id,status,created_at) VALUES ('kept','rev-1','approved',1)");
+  assert.equal(await dropStaleCandidates(store(db), "rec-1"), 0);
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM alignment_candidates").get() as { n: number }).n, 1);
   db.close();
 });

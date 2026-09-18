@@ -3954,3 +3954,8 @@ textarea:focus-visible {
   font-style: normal;
   opacity: 0.8;
 }
+
+/* 이 곡이 아니라고 표시한 영상 — 목록에는 남기되 눈에 덜 띄게. */
+.source-row.rejected {
+  opacity: 0.55;
+}
