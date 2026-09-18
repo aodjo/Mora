@@ -4,11 +4,14 @@
 낱말마다 시각이 있으므로 낱말 **안에서도** 칠할 수 있다: 「흘려보내요」가 2.6초 동안 불린다면
 그 2.6초에 걸쳐 다섯 글자가 차례로 진해진다. 줄만 칠하는 자막과 다른 점이 그것이다.
 
-    python play.py 노래.m4a --artist "리도어(Redoor)" --title "영원은 그렇듯"
+    python play.py --artist "리도어(Redoor)" --title "영원은 그렇듯"
     python play.py 노래.m4a 가사.txt --isrc KRA401200001
 
-가사 파일을 안 주면 제공처(bugs·flo·genie·melon·vibe)에서 받아 온다 — 그러려면 `--artist`
-와 `--title` 이 있어야 한다.
+음원도 가사도 안 주면 알아서 구해 온다 — 가사는 제공처(bugs·flo·genie·melon·vibe)에서,
+음원은 유튜브에서. 그러려면 `--title` 이 있어야 하고 `yt-dlp` 가 깔려 있어야 한다.
+
+**엉뚱한 영상을 받지 않게** 제공처가 말하는 곡 길이로 거른다. 그 검사가 없던 시절 산토리
+자리에 아크라포빅 영상이 붙어 딴 노래로 타이밍이 나왔다.
 
 소리를 내는 길이 둘이다. `sounddevice` 와 `soundfile` 이 있으면 **표본을 세어** 자리를 안다 —
 시계가 밀리지 않는다. 없으면 `ffplay` 를 띄우고 시계로 센다. 그쪽은 재생기가 뜨는 만큼 조금
@@ -20,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -157,6 +161,75 @@ def draw(alignment, head, position_ms: int, columns: int, title: str) -> None:
     sys.stdout.flush()
 
 
+#: 받아 온 영상이 곡 길이와 이만큼 넘게 다르면 그 곡이 아니다(초).
+LENGTH_SLACK = 4
+#: 검색 결과를 몇 개까지 볼지.
+LOOK_AT = 8
+#: 라이브·커버·한 시간 반복 따위는 제목으로 걸러낸다.
+NOT_THE_SONG = re.compile(r"(live|cover|remix|karaoke|inst\.|instrumental|1 ?hour|１時間|반복|nightcore|sped ?up|slowed)", re.I)
+
+
+def find_audio(title: str, artist: str | None, duration_ms: int | None, into: Path,
+               browser: str | None = None) -> Path:
+    """Find the song on YouTube and download it.
+
+    길이를 아는 곡은 길이로 고른다 — 그것이 딴 노래를 거르는 유일하게 믿을 만한 잣대다. 길이를
+    모르면(가사를 HTML 제공처에서 받아 온 경우) 제목으로 거르고 첫 결과를 쓴다.
+
+    @param {str} title - Song name.
+    @param {str | None} artist - Performer.
+    @param {int | None} duration_ms - How long the song is, when a provider said so.
+    @param {Path} into - Where to put the file.
+    @param {str | None} browser - Which browser to borrow YouTube cookies from.
+    @returns {Path} The downloaded audio.
+    @throws {SystemExit} When yt-dlp is missing or nothing fits.
+    """
+    if shutil.which("yt-dlp") is None:
+        sys.exit("yt-dlp 가 없다:  pip install yt-dlp")
+    #: 유튜브는 미디어 주소에 JS 로 푸는 서명을 건다. 노드가 없으면 403 만 받아 온다.
+    runtime = ["--js-runtimes", "node"] if shutil.which("node") else []
+    #: 유튜브는 로그인 없는 요청에 「사람인지 확인하라」고 한다. 브라우저에 있는 로그인을
+    #: 빌려 쓴다 — 쿠키는 yt-dlp 가 바로 읽어 쓰고 어디에도 남기지 않는다.
+    cookies = ["--cookies-from-browser", browser] if browser else []
+    query = " ".join(one for one in (artist, title) if one)
+    ran = subprocess.run(["yt-dlp", "--dump-single-json", "--flat-playlist", "--no-warnings",
+                          *cookies, f"ytsearch{LOOK_AT}:{query}"], capture_output=True, text=True, timeout=180)
+    if ran.returncode != 0 or not ran.stdout.strip():
+        sys.exit(f"유튜브 검색이 안 됐다: {(ran.stderr or '')[-160:]}")
+
+    picked = None
+    for entry in json.loads(ran.stdout).get("entries") or []:
+        name = entry.get("title") or ""
+        if not entry.get("id") or entry.get("live_status") == "is_live" or NOT_THE_SONG.search(name):
+            continue
+        seconds = entry.get("duration") or 0
+        if duration_ms is not None and abs(seconds * 1000 - duration_ms) > LENGTH_SLACK * 1000:
+            continue
+        picked = entry
+        break
+    if picked is None:
+        sys.exit("길이가 맞는 영상을 못 찾았다. 음원 파일을 직접 주세요.")
+
+    sys.stderr.write(f"영상: {picked['title'][:52]} ({picked.get('duration', 0)}초)\n")
+    into.mkdir(parents=True, exist_ok=True)
+    out = into / f"{picked['id']}.m4a"
+    if out.exists():
+        return out
+    ran = subprocess.run(["yt-dlp", "--no-playlist", "--no-write-info-json", *runtime, *cookies,
+                          "-f", "bestaudio/best", "-x", "--audio-format", "m4a",
+                          "-o", str(into / f"{picked['id']}.%(ext)s"),
+                          f"https://www.youtube.com/watch?v={picked['id']}"],
+                         capture_output=True, text=True, timeout=900)
+    if not out.exists():
+        why = (ran.stderr or "")
+        if "not a bot" in why or "cookies" in why:
+            sys.exit("유튜브가 로그인을 요구한다. 브라우저에 있는 로그인을 빌려 쓰세요:\n"
+                     "    python play.py --title … --artist … --browser chrome\n"
+                     "  (chrome · safari · firefox · edge · brave 중 늘 쓰는 것)")
+        sys.exit(f"내려받기가 안 됐다: {why[-200:]}")
+    return out
+
+
 def seconds_of(path: Path) -> float:
     """How long the audio runs.
 
@@ -243,7 +316,8 @@ def main() -> int:
     @returns {int} 0 when it ran to the end.
     """
     ask = argparse.ArgumentParser(description="노래를 틀면서 가사를 글자마다 칠한다")
-    ask.add_argument("audio", type=Path, help="음원 파일")
+    ask.add_argument("audio", type=Path, nargs="?", default=None,
+                     help="음원 파일. 안 주면 유튜브에서 찾아 받는다")
     ask.add_argument("lyrics", type=Path, nargs="?", default=None,
                      help="가사 글 (줄바꿈 그대로). 안 주면 제공처에서 받아 온다")
     ask.add_argument("--artist")
@@ -252,6 +326,10 @@ def main() -> int:
     ask.add_argument("--mbid")
     ask.add_argument("--language", default=None)
     ask.add_argument("--base-url", default=os.environ.get("MORA_BASE_URL", "https://mora.junx.dev"))
+    ask.add_argument("--keep", type=Path, default=Path("~/.mora-welcome").expanduser(),
+                     help="받아 온 음원을 둘 곳")
+    ask.add_argument("--browser", default=os.environ.get("MORA_BROWSER"),
+                     help="유튜브 로그인을 빌려 올 브라우저 (chrome · safari · firefox · edge · brave)")
     ask.add_argument("--offset", type=int, default=250,
                      help="바깥 재생기를 쓸 때 그것이 뜨는 데 걸리는 시간(ms)")
     args = ask.parse_args()
@@ -261,10 +339,11 @@ def main() -> int:
     except ImportError:
         sys.exit("mora-lyrics 가 없다:  pip install git+https://github.com/aodjo/mora-python")
 
+    #: 가사를 먼저 구한다 — 제공처가 곡 길이도 알려 주고, 그 길이로 영상을 고른다.
+    catalogue_ms: int | None = None
     if args.lyrics is not None:
         text = args.lyrics.read_text(encoding="utf-8")
     else:
-        #: Mora 는 타이밍만 준다. 가사 파일을 안 줬으면 제공처에서 받아 온다.
         if not args.title:
             sys.exit("가사 파일이 없으면 --title 로 곡을 알려 줘야 받아 올 수 있다")
         sys.stderr.write("가사를 찾는 중…\n")
@@ -272,8 +351,16 @@ def main() -> int:
         if not found:
             sys.exit("어느 제공처에도 가사가 없다. 파일로 주세요.")
         text = found[0].lyrics
-        sys.stderr.write(f"{found[0].provider} 에서 {len(text.splitlines())}줄\n")
-    duration_ms = round(seconds_of(args.audio) * 1000)
+        catalogue_ms = found[0].duration_ms
+        sys.stderr.write(f"{found[0].provider} 에서 {len(text.splitlines())}줄"
+                         + (f" · 곡 길이 {catalogue_ms // 1000}초\n" if catalogue_ms else "\n"))
+
+    audio = args.audio
+    if audio is None:
+        if not args.title:
+            sys.exit("음원을 안 주면 --title 로 곡을 알려 줘야 찾을 수 있다")
+        audio = find_audio(args.title, args.artist, catalogue_ms, args.keep, args.browser)
+    duration_ms = round(seconds_of(audio) * 1000)
     mora = Mora(args.base_url)
     try:
         alignment = mora.align(text, isrc=args.isrc, mbid=args.mbid, artist=args.artist,
@@ -283,10 +370,10 @@ def main() -> int:
 
     head = Playhead(alignment)
     columns = shutil.get_terminal_size((80, 24)).columns
-    title = f"{args.artist or args.isrc or ''} {args.title or ''}".strip() or args.audio.stem
+    title = f"{args.artist or args.isrc or ''} {args.title or ''}".strip() or audio.stem
     title = f"{title}   ·   {alignment.tier} {alignment.confidence:.2f}"
 
-    sound = Sound(args.audio, args.offset)
+    sound = Sound(audio, args.offset)
     if not sound.exact:
         title += "   ·   시계로 셈 (--offset 으로 맞추세요)"
     sys.stdout.write("\033[?25l")           # 커서를 숨긴다

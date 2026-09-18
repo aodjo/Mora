@@ -14,12 +14,25 @@ Mora 타이밍이 실제로 어떤지 **눈으로 보는 자리**. 노래를 틀
 ## 쓰기
 
 ```bash
-pip install git+https://github.com/aodjo/mora-python
+pip install git+https://github.com/aodjo/mora-python yt-dlp
 
-python play.py 노래.m4a --artist "리도어(Redoor)" --title "영원은 그렇듯"
+python play.py --title "영원은 그렇듯" --artist "리도어(Redoor)" --browser chrome
 ```
 
-**가사 파일은 없어도 됩니다.** 안 주면 제공처(bugs·flo·genie·melon·vibe)에서 받아 옵니다 — 그러려면 `--title` 이 있어야 합니다. 가진 파일을 쓰려면 음원 뒤에 붙이면 됩니다:
+**곡 이름만 주면 됩니다.** 가사도 음원도 알아서 구해 옵니다:
+
+| | 어디서 | |
+|---|---|---|
+| 가사 | bugs · flo · genie · melon · vibe | 받은 첫 곳 |
+| 음원 | 유튜브 | **길이가 맞는** 영상 |
+
+유튜브가 로그인 없는 요청에 「사람인지 확인하라」고 하므로 `--browser` 로 브라우저에 있는 로그인을 빌립니다(chrome · safari · firefox · edge · brave). 쿠키는 `yt-dlp` 가 바로 읽어 쓰고 어디에도 남기지 않습니다. `MORA_BROWSER` 로 미리 정해 둘 수도 있습니다.
+
+받아 온 음원은 `~/.mora-welcome` 에 두고 다음에 다시 씁니다(`--keep` 으로 바꿉니다).
+
+**엉뚱한 영상을 받지 않게 길이로 거릅니다.** 제공처가 말하는 곡 길이와 4초 넘게 다르면 거릅니다 — 그 검사가 없던 시절 산토리 자리에 아크라포빅 영상이 붙어 딴 노래로 타이밍이 나왔습니다. 라이브·커버·한 시간 반복은 제목으로도 거릅니다.
+
+가진 파일이 있으면 그걸 씁니다:
 
 ```bash
 python play.py 노래.m4a 가사.txt --isrc KRA401200001
@@ -61,7 +74,6 @@ pip install sounddevice soundfile
 - 터미널이 truecolor 를 알아야 합니다(`COLORTERM=truecolor`). 요즘 터미널은 대부분 됩니다.
 - 이 곡의 타이밍이 Mora 에 **공개돼 있어야** 합니다. 없으면 「쓸 수 있는 타이밍이 없다」로 끝납니다.
 - `Ctrl-C` 로 멈춥니다.
-- 음원은 직접 준비하세요. 이 폴더에는 넣지 않습니다.
 - 가사를 받아 오는 쪽은 저쪽 화면이 바뀌면 깨집니다. 한 곳이 막혀도 나머지로 갑니다.
 
 ## 만든 것
