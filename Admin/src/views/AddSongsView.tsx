@@ -104,6 +104,13 @@ export function AddSongsView() {
     return liveEvents(() => void loadBasket());
   }, [loadBasket]);
 
+  //: 스포티파이에서 돌아온 자리. 주소에 남은 표는 한 번 말해 주고 지운다.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("spotify") !== "connected") return;
+    showToast("스포티파이를 연결했습니다. 플레이리스트 주소를 넣고 가져오기를 누르세요.");
+    window.history.replaceState(null, "", window.location.pathname + window.location.hash);
+  }, []);
+
   const runSearch = useCallback(async function runSearch(text: string, providers: ProviderId[]): Promise<void> {
     const wanted = text.trim();
     if (wanted.length === 0 || providers.length === 0) return;
@@ -206,8 +213,9 @@ export function AddSongsView() {
   async function connectSpotify(): Promise<void> {
     try {
       const got = await api<{ url: string }>("/spotify/connect", { method: "POST", body: "{}" });
-      window.open(got.url, "_blank", "noopener");
-      showToast("스포티파이 로그인 창을 열었습니다. 허용한 뒤 이 화면에서 다시 가져오기를 누르세요.");
+      //: 새 창으로 열면 브라우저가 막는다 — 누른 순간과 여는 순간 사이에 서버를 한 번 다녀오기
+      //: 때문이다. 이 탭을 그대로 보내고, 허용이 끝나면 스포티파이가 이 화면으로 되돌려준다.
+      window.location.href = got.url;
     } catch (reason) {
       const code = reason instanceof Error ? reason.message : "";
       showToast(code.includes("SPOTIFY_NOT_CONFIGURED") ? "Spotify 자격이 설정되지 않았습니다." : "로그인을 시작하지 못했습니다.", {

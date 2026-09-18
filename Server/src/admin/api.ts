@@ -514,9 +514,9 @@ async function spotifyCallback(env: WorkerEnv, actor: Actor, request: Request): 
     env.ADMIN_DB.prepare("DELETE FROM settings WHERE key='spotify.state'"),
   ]);
   await audit(env, actor, "spotify.connect", "settings", "spotify.refresh_token");
-  return new Response("<!doctype html><meta charset=utf-8><p>스포티파이를 연결했습니다. 이 창을 닫고 원래 화면으로 돌아가세요.</p>", {
-    headers: { "content-type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
-  });
+  //: 사람을 원래 보던 화면으로 되돌린다. 「연결됐다」를 화면이 스스로 말하게 하는 편이, 빈 창을
+  //: 닫으라고 하는 것보다 낫다.
+  return Response.redirect(`${url.origin}/?spotify=connected`, 302);
 }
 
 /**
