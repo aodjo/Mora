@@ -12,7 +12,9 @@ ENVS=${MORA_SPARK_ENVS:-$HOME/mora-val2/env}
 export MORA_REVIEW_PYTHON=$ENVS/aligner/bin/python
 export MORA_QWEN_PYTHON=$ENVS/qwen/bin/python
 export MORA_DIA_PYTHON=$ENVS/dia/bin/python
-export MORA_EARS_PYTHON=$HOME/ears/bin/python
+# 받아쓰기는 워커 살림으로 한다 — 거기 CTranslate2 는 CUDA 로 지은 것이라 faster-whisper 가 GPU 를
+# 쓴다. 따로 세운 ~/ears 는 transformers 판이라 한 벌에 3분이 걸렸고, 같은 곡이 여기서는 14초다.
+export MORA_EARS_PYTHON=$ROOT/Mora/Generator/.venv/bin/python
 export MORA_MODEL_DIR=$ROOT/models MORA_WORK_ROOT=$ROOT/work MORA_CACHE_ROOT=$ROOT/cache
 # 코어 8 개에 torch 여럿이 저마다 스레드를 다 잡으면 서로 밀친다.
 export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4
