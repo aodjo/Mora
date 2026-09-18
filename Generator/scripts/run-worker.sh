@@ -39,8 +39,15 @@ update() {
   rm -rf "$HERE/Admin" "$HERE/test"
   # 파이썬 쪽이 바뀌었으면 의존도 다시 맞춘다. 대개는 안 바뀌므로 값이 거의 들지 않는다.
   if ! git -C "$HERE" diff --quiet "HEAD@{1}" HEAD -- Generator/python/pyproject.toml 2>/dev/null; then
-    say "  파이썬 의존이 바뀌었다"
-    "$HERE/Generator/.venv/bin/pip" install -q "$HERE/Generator/python[cuda]" >>"$LOG" 2>&1
+    # 세울 때 고른 것을 그대로 따른다. onnxruntime 과 onnxruntime-gpu 는 **같은 폴더**를 쓰므로,
+    # 한쪽이 깔린 기계에 다른 쪽을 얹으면 섞인 채로 남아 불러오는 순간 죽는다 — spark(aarch64)는
+    # gpu 판이 없어 CPU 판으로 세웠는데, 갈아탈 때 [cuda] 를 걸어 1.30 gpu 판이 1.20 위에 얹혔고
+    # 그 뒤로 모든 곡이 분리 단계에서 세그폴트로 죽었다.
+    EXTRA=""
+    "$HERE/Generator/.venv/bin/pip" show onnxruntime-gpu >/dev/null 2>&1 && EXTRA="[cuda]"
+    say "  파이썬 의존이 바뀌었다$([ -n "$EXTRA" ] && echo " (cuda)")"
+    "$HERE/Generator/.venv/bin/pip" install -q "$HERE/Generator/python$EXTRA" >>"$LOG" 2>&1 \
+      || say "  의존 설치가 실패했다 — 옛 환경으로 계속한다"
   fi
   ( cd "$HERE" && CI=true corepack pnpm install --frozen-lockfile >>"$LOG" 2>&1 && CI=true corepack pnpm build:services >>"$LOG" 2>&1 ) \
     || { say "  빌드 실패 — 옛 판으로 계속한다"; return 1; }
