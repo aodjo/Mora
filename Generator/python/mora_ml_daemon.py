@@ -2346,7 +2346,11 @@ def sung_order(text_lines: list[str], asr: dict[str, Any]) -> list[int]:
     try:
         sys.path.insert(0, str(REVIEW_RUNNER.parent))
         from repeat_fill import expand
-        heard = [(str(word["text"]), int(float(word["start"]) * 1000)) for word in asr_words(asr)]
+        #: `asr_words` 가 아니라 받아쓴 구간 그대로다. 그쪽은 여러 벌을 가사에 맞춰 합친 목록이라
+        #: 가사에 한 번뿐인 줄에는 낱말도 한 번씩만 남는다 — 되풀이의 증거가 거기서 지워진다.
+        heard = [(str(word.get("word", word.get("text", ""))), int(float(word["start"]) * 1000))
+                 for segment in asr.get("segments") or [] for word in segment.get("words") or []
+                 if word.get("start") is not None and str(word.get("word", word.get("text", ""))).strip()]
         return expand(text_lines, heard) if heard else list(range(len(text_lines)))
     except Exception as trouble:
         print(f"[repeat_fill] 건너뜀: {type(trouble).__name__}: {str(trouble)[:160]}", file=sys.stderr)
