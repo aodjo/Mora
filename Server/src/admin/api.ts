@@ -509,19 +509,24 @@ async function spotifyCallback(env: WorkerEnv, request: Request): Promise<Respon
   }>();
   //: 무엇이 잘못됐는지는 화면이 말해 줘야 한다. 오류를 그대로 던지면 사람은 빈 페이지만 보고
   //: 「돌아왔는데 아무 말도 없다」가 된다. 까닭을 주소에 실어 화면으로 돌려보낸다.
-  const failed = (why: string): Response => Response.redirect(`${url.origin}/?spotify=${encodeURIComponent(why)}`, 302);
+  //: 돌아온 요청이 여기까지 왔는지, 왔다면 어디서 멎었는지를 남긴다. 브라우저 화면만으로는 그것을
+  //: 알 수 없어 「안 된다」와 「안 뜬다」를 가릴 수 없었다.
+  const failed = async (why: string): Promise<Response> => {
+    await audit(env, null, "spotify.callback", "settings", "spotify", { why });
+    return Response.redirect(`${url.origin}/?spotify=${encodeURIComponent(why)}`, 302);
+  };
   const refused = url.searchParams.get("error");
-  if (refused !== null) return failed(`거절됨 ${refused}`);
+  if (refused !== null) return await failed(`거절됨 ${refused}`);
   // 돌아온 것이 우리가 보낸 것인지. 아니면 남이 우리 이름으로 붙이려는 것이다.
-  if (code === null || state === null) return failed("코드 없음");
-  if (kept === null || kept.value !== state) return failed("표가 어긋남 — 연결을 다시 누르세요");
+  if (code === null || state === null) return await failed("코드 없음");
+  if (kept === null || kept.value !== state) return await failed("표가 어긋남 — 연결을 다시 누르세요");
   let answer;
   try {
     answer = await spotifyToken({ grant_type: "authorization_code", code, redirect_uri: spotifyRedirect(request) }, keys);
   } catch (error) {
-    return failed(error instanceof Error ? error.message : "토큰 실패");
+    return await failed(error instanceof Error ? error.message : "토큰 실패");
   }
-  if (typeof answer.refresh_token !== "string") return failed("갱신 토큰을 안 줌");
+  if (typeof answer.refresh_token !== "string") return await failed("갱신 토큰을 안 줌");
   const now = Date.now();
   await env.ADMIN_DB.batch([
     env.ADMIN_DB.prepare(
