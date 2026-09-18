@@ -351,7 +351,9 @@ def main() -> int:
         if not found:
             sys.exit("어느 제공처에도 가사가 없다. 파일로 주세요.")
         text = found[0].lyrics
-        catalogue_ms = found[0].duration_ms
+        #: 옛 판 라이브러리에는 이 칸이 없다. 없으면 길이를 모르는 채로 가고, 그러면 영상을
+        #: 제목으로만 고른다 — 깨지는 것보다 낫다.
+        catalogue_ms = getattr(found[0], "duration_ms", None)
         sys.stderr.write(f"{found[0].provider} 에서 {len(text.splitlines())}줄"
                          + (f" · 곡 길이 {catalogue_ms // 1000}초\n" if catalogue_ms else "\n"))
 
