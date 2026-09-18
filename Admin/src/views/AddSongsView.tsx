@@ -201,6 +201,21 @@ export function AddSongsView() {
     }
   }
 
+  //: 앱 자격만으로는 플레이리스트 목록을 못 읽는다 — 스포티파이가 사람의 토큰을 요구한다. 한 번
+  //: 로그인해 주면 그 뒤로는 주소만 넣으면 된다.
+  async function connectSpotify(): Promise<void> {
+    try {
+      const got = await api<{ url: string }>("/spotify/connect", { method: "POST", body: "{}" });
+      window.open(got.url, "_blank", "noopener");
+      showToast("스포티파이 로그인 창을 열었습니다. 허용한 뒤 이 화면에서 다시 가져오기를 누르세요.");
+    } catch (reason) {
+      const code = reason instanceof Error ? reason.message : "";
+      showToast(code.includes("SPOTIFY_NOT_CONFIGURED") ? "Spotify 자격이 설정되지 않았습니다." : "로그인을 시작하지 못했습니다.", {
+        variant: "error",
+      });
+    }
+  }
+
   async function importPlaylist(): Promise<void> {
     const url = playlist.trim();
     if (url.length === 0) return;
@@ -217,6 +232,11 @@ export function AddSongsView() {
       await loadBasket();
     } catch (reason) {
       const code = reason instanceof Error ? reason.message : "";
+      if (code.includes("SPOTIFY_NOT_CONNECTED")) {
+        showToast("스포티파이에 한 번 로그인해야 목록을 읽을 수 있습니다.", { variant: "error" });
+        await connectSpotify();
+        return;
+      }
       const said = code.includes("SPOTIFY_NOT_CONFIGURED")
         ? "Spotify 자격이 설정되지 않았습니다."
         : code.includes("SPOTIFY_AUTH_FAILED")
@@ -343,6 +363,9 @@ export function AddSongsView() {
           />
           <button className="btn" onClick={() => void importPlaylist()} disabled={importing || playlist.trim().length === 0}>
             {importing ? "가져오는 중…" : "가져오기"}
+          </button>
+          <button className="btn ghost" onClick={() => void connectSpotify()} disabled={importing}>
+            스포티파이 연결
           </button>
         </div>
         {basket.length === 0 ? (

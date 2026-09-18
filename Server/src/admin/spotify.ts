@@ -5,8 +5,9 @@
  * 플레이리스트는 누군가 듣고 싶어서 모은 것이고, 무엇보다 Spotify 는 곡마다 ISRC 를 들고 있다 —
  * 그것이 있으면 어느 녹음인지가 처음부터 정해지므로, 이름으로 더듬어 찾는 일이 통째로 사라진다.
  *
- * 공개된 플레이리스트만 읽으므로 사람의 계정에 들어갈 일이 없다. client credentials 로 앱 자신을
- * 밝히고, 그 토큰으로 공개 자료만 읽는다.
+ * 앱 자격(client credentials)만으로는 이제 못 읽는다. 2024-11-27 이후에 만든 앱에서 `/playlists/{id}/tracks`
+ * 는 폐지돼 403 을 주고, 갈음할 `/playlists/{id}/items` 는 「Valid user authentication required」로 401 을
+ * 준다. 그래서 사람이 한 번 로그인해 준 토큰으로 읽는다 — 권한은 `playlist-read-private` 하나.
  */
 
 export interface SpotifyTrack {
@@ -20,6 +21,7 @@ export interface SpotifyTrack {
 
 interface TokenAnswer {
   access_token?: string;
+  refresh_token?: string;
   expires_in?: number;
 }
 
@@ -50,19 +52,41 @@ export function playlistId(given: string): string | undefined {
   return /^[A-Za-z0-9]{16,40}$/u.test(trimmed) ? trimmed : undefined;
 }
 
-async function appToken(id: string, secret: string, fetcher: typeof fetch): Promise<string> {
+/** 사람이 로그인해 준 권한. 플레이리스트를 읽는 데 이것 하나면 된다. */
+export const SPOTIFY_SCOPE = "playlist-read-private";
+
+/**
+ * Trade an authorization code or a refresh token for an access token.
+ *
+ * @param {Record<string, string>} grant - The form fields for this grant.
+ * @param {{ id: string; secret: string }} keys - The app's credentials.
+ * @param {typeof fetch} [fetcher=fetch] - How to call Spotify.
+ * @returns {Promise<TokenAnswer>} What Spotify answered.
+ * @throws {Error} `SPOTIFY_TOKEN_<status>` when Spotify refuses.
+ */
+export async function spotifyToken(
+  grant: Record<string, string>,
+  keys: { id: string; secret: string },
+  fetcher: typeof fetch = fetch,
+): Promise<TokenAnswer> {
   const response = await fetcher("https://accounts.spotify.com/api/token", {
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
-      authorization: `Basic ${btoa(`${id}:${secret}`)}`,
+      authorization: `Basic ${btoa(`${keys.id}:${keys.secret}`)}`,
     },
-    body: "grant_type=client_credentials",
+    body: new URLSearchParams(grant).toString(),
   });
   if (!response.ok) throw new Error(`SPOTIFY_TOKEN_${response.status}`);
   const answer = (await response.json()) as TokenAnswer;
   if (typeof answer.access_token !== "string") throw new Error("SPOTIFY_TOKEN_EMPTY");
-  return answer.access_token;
+  return answer;
+}
+
+/** 로그인 보내는 자리. state 는 돌아온 것이 우리가 보낸 것인지 보려고 쓴다. */
+export function spotifyAuthorizeUrl(id: string, redirect: string, state: string): string {
+  const query = new URLSearchParams({ client_id: id, response_type: "code", redirect_uri: redirect, scope: SPOTIFY_SCOPE, state });
+  return `https://accounts.spotify.com/authorize?${query.toString()}`;
 }
 
 /**
@@ -73,11 +97,10 @@ async function appToken(id: string, secret: string, fetcher: typeof fetch): Prom
  */
 export async function playlistTracks(
   playlist: string,
-  keys: { id: string; secret: string },
+  token: string,
   fetcher: typeof fetch = fetch,
   limit = 1000,
 ): Promise<{ name?: string; tracks: SpotifyTrack[]; total: number }> {
-  const token = await appToken(keys.id, keys.secret, fetcher);
   const headers = { authorization: `Bearer ${token}` };
 
   let name: string | undefined;
@@ -87,7 +110,7 @@ export async function playlistTracks(
   const tracks: SpotifyTrack[] = [];
   let total = 0;
   let url: string | null =
-    `https://api.spotify.com/v1/playlists/${playlist}/tracks` +
+    `https://api.spotify.com/v1/playlists/${playlist}/items` +
     "?limit=100&fields=total,next,items(track(name,duration_ms,is_local,type,artists(name),album(name,images),external_ids(isrc)))";
   while (url !== null && tracks.length < limit) {
     const response: Response = await fetcher(url, { headers });

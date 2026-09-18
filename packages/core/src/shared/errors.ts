@@ -25,6 +25,12 @@ export type ErrorCode =
   | "INVALID_RANGE"
   /** 플레이리스트를 읽을 자격이 설정되지 않았다. */
   | "SPOTIFY_NOT_CONFIGURED"
+  /** 자격은 있으나 사람이 아직 로그인해 주지 않았다 — 앱 자격만으로는 목록을 못 읽는다. */
+  | "SPOTIFY_NOT_CONNECTED"
+  /** 스포티파이에서 돌아온 것이 우리가 보낸 것이 아니다. */
+  | "SPOTIFY_STATE_MISMATCH"
+  /** 로그인은 됐는데 갱신 토큰을 안 줬다 — 다시 연결해야 한다. */
+  | "SPOTIFY_NO_REFRESH_TOKEN"
   /** 준 주소에서 플레이리스트를 알아볼 수 없다. */
   | "INVALID_PLAYLIST"
   /** 자격이 거절당했다 — 사람이 할 일은 열쇠를 다시 넣는 것이다. */

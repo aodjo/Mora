@@ -52,7 +52,7 @@ const TRACK = {
 };
 
 test("a track arrives with the ISRC that says which recording it is", async () => {
-  const found = await playlistTracks("abc", { id: "i", secret: "s" }, spotify([{ items: [TRACK], next: null, total: 1 }]));
+  const found = await playlistTracks("abc", "t", spotify([{ items: [TRACK], next: null, total: 1 }]));
   assert.equal(found.name, "저녁에 듣는 것");
   assert.equal(found.total, 1);
   assert.deepEqual(found.tracks, [
@@ -71,7 +71,7 @@ test("what is not a recording we can time is left behind", async () => {
   // 팟캐스트 에피소드, 사람이 올린 파일, 지워져서 빈 자리 — 셋 다 맞출 가사가 없다.
   const found = await playlistTracks(
     "abc",
-    { id: "i", secret: "s" },
+    "t",
     spotify([
       {
         items: [
@@ -102,30 +102,23 @@ test("a playlist longer than one page is followed to its end", async () => {
     next,
     total: 150,
   });
-  const found = await playlistTracks("abc", { id: "i", secret: "s" }, spotify([page(100, "https://api.spotify.com/next"), page(50, null)]));
+  const found = await playlistTracks("abc", "t", spotify([page(100, "https://api.spotify.com/next"), page(50, null)]));
   assert.equal(found.tracks.length, 150);
 });
 
 test("a very long playlist stops at the limit rather than filling the basket", async () => {
   // 장바구니는 사람이 훑어볼 목록이다. 만 곡을 쏟으면 그 목적이 사라진다.
   const page = { items: Array.from({ length: 100 }, () => TRACK), next: "https://api.spotify.com/next", total: 5000 };
-  const found = await playlistTracks("abc", { id: "i", secret: "s" }, spotify(Array.from({ length: 60 }, () => page)), 250);
+  const found = await playlistTracks("abc", "t", spotify(Array.from({ length: 60 }, () => page)), 250);
   assert.equal(found.tracks.length, 250);
 });
 
-test("credentials that are refused are told apart from a playlist that cannot be read", async () => {
-  const refuses = (async (input: string | URL | Request) => {
-    const url = String(input instanceof Request ? input.url : input);
-    if (url.includes("accounts.spotify.com")) return new Response("no", { status: 401 });
-    return Response.json({ items: [], next: null, total: 0 });
-  }) as typeof fetch;
-  await assert.rejects(() => playlistTracks("abc", { id: "i", secret: "s" }, refuses), /SPOTIFY_TOKEN_401/u);
-
+test("a playlist that cannot be read says so", async () => {
   const hidden = (async (input: string | URL | Request) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("accounts.spotify.com")) return Response.json({ access_token: "t" });
     if (url.includes("fields=name")) return new Response("no", { status: 404 });
     return new Response("no", { status: 404 });
   }) as typeof fetch;
-  await assert.rejects(() => playlistTracks("abc", { id: "i", secret: "s" }, hidden), /SPOTIFY_PLAYLIST_404/u);
+  await assert.rejects(() => playlistTracks("abc", "t", hidden), /SPOTIFY_PLAYLIST_404/u);
 });

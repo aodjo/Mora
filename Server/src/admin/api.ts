@@ -2,7 +2,7 @@ import { preprocessLyrics } from "../../../packages/preprocess/src/index.js";
 import { sheetHash } from "../../../packages/core/src/tokenization/fingerprint.js";
 import { tokenizeV2 } from "../../../packages/core/src/tokenization/tokenizer-v2.js";
 import { ServiceError } from "../../../packages/core/src/shared/errors.js";
-import { playlistId, playlistTracks } from "./spotify.js";
+import { playlistId, playlistTracks, spotifyAuthorizeUrl, spotifyToken } from "./spotify.js";
 import { ANCHOR_DENSITY_FLOOR, ANCHOR_REACH_FLOOR, BREATH_FLOOR, passesQualityGate } from "./quality-gate.js";
 import type {
   GeneratorCandidateSubmission,
@@ -437,16 +437,115 @@ async function keepInBasket(env: WorkerEnv, actor: Actor, songs: BasketSong[]): 
  * 곡마다 ISRC 를 들고 있다 — 그것이 있으면 어느 녹음인지가 처음부터 정해져, 이름으로 더듬어
  * 찾다가 다른 곡을 집는 일이 없어진다.
  */
-async function importPlaylist(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
-  requirePermission(actor, "jobs.manage");
+/**
+ * Where Spotify sends a person back after they allow us to read their playlists.
+ *
+ * @param {Request} request - The request being served, for its own origin.
+ * @returns {string} The redirect URI, which must match the one registered in the Spotify dashboard.
+ */
+function spotifyRedirect(request: Request): string {
+  return `${new URL(request.url).origin}/admin/api/spotify/callback`;
+}
+
+/** 스포티파이 자격. 둘 다 없으면 이 기능은 없는 것이다. */
+function spotifyKeys(env: WorkerEnv): { id: string; secret: string } {
   const id = env.SPOTIFY_CLIENT_ID;
   const secret = env.SPOTIFY_CLIENT_SECRET;
   if (id === undefined || secret === undefined) throw new ServiceError(503, "SPOTIFY_NOT_CONFIGURED");
+  return { id, secret };
+}
+
+/**
+ * Start the Spotify login, or say who is already connected.
+ *
+ * 앱 자격만으로는 이제 플레이리스트를 못 읽는다 — 2024-11-27 이후에 만든 앱에서 목록 경로는 폐지됐고,
+ * 갈음할 경로는 사람의 토큰을 요구한다. 그래서 한 번 로그인해 받은 갱신 토큰을 봉해 두고 쓴다.
+ *
+ * @param {WorkerEnv} env - Worker bindings.
+ * @param {Actor} actor - Who is asking; needs `jobs.manage`.
+ * @param {Request} request - The request, for the redirect URI.
+ * @returns {Promise<Response>} The URL to send the person to, and whether we are already connected.
+ */
+async function spotifyConnect(env: WorkerEnv, actor: Actor, request: Request): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const keys = spotifyKeys(env);
+  const state = crypto.randomUUID();
+  const now = Date.now();
+  await env.ADMIN_DB.prepare(
+    `INSERT INTO settings (key,value,secret,updated_by,updated_at) VALUES ('spotify.state',?1,0,?2,?3)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_by=excluded.updated_by,updated_at=excluded.updated_at`,
+  )
+    .bind(state, actor.id, now)
+    .run();
+  return json({ url: spotifyAuthorizeUrl(keys.id, spotifyRedirect(request), state), connected: await spotifyConnected(env) });
+}
+
+/** 연결돼 있나 — 봉해 둔 갱신 토큰이 있으면 그렇다. */
+async function spotifyConnected(env: WorkerEnv): Promise<boolean> {
+  const row = await env.ADMIN_DB.prepare("SELECT value FROM settings WHERE key='spotify.refresh_token'").first<{ value: string }>();
+  return row !== null && row.value.length > 0;
+}
+
+/**
+ * Take the code Spotify sends back and keep the refresh token.
+ *
+ * @param {WorkerEnv} env - Worker bindings.
+ * @param {Actor} actor - Who is asking; needs `jobs.manage`.
+ * @param {Request} request - The redirect request carrying `code` and `state`.
+ * @returns {Promise<Response>} A small page telling the person to go back to the tab they came from.
+ */
+async function spotifyCallback(env: WorkerEnv, actor: Actor, request: Request): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
+  const keys = spotifyKeys(env);
+  const url = new URL(request.url);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const kept = await env.ADMIN_DB.prepare("SELECT value FROM settings WHERE key='spotify.state'").first<{ value: string }>();
+  // 돌아온 것이 우리가 보낸 것인지. 아니면 남이 우리 이름으로 붙이려는 것이다.
+  if (code === null || state === null || kept === null || kept.value !== state) throw new ServiceError(400, "SPOTIFY_STATE_MISMATCH");
+  const answer = await spotifyToken({ grant_type: "authorization_code", code, redirect_uri: spotifyRedirect(request) }, keys);
+  if (typeof answer.refresh_token !== "string") throw new ServiceError(502, "SPOTIFY_NO_REFRESH_TOKEN");
+  const now = Date.now();
+  await env.ADMIN_DB.batch([
+    env.ADMIN_DB.prepare(
+      `INSERT INTO settings (key,value,secret,updated_by,updated_at) VALUES ('spotify.refresh_token',?1,1,?2,?3)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_by=excluded.updated_by,updated_at=excluded.updated_at`,
+    ).bind(await sealSecret(env, answer.refresh_token), actor.id, now),
+    env.ADMIN_DB.prepare("DELETE FROM settings WHERE key='spotify.state'"),
+  ]);
+  await audit(env, actor, "spotify.connect", "settings", "spotify.refresh_token");
+  return new Response("<!doctype html><meta charset=utf-8><p>스포티파이를 연결했습니다. 이 창을 닫고 원래 화면으로 돌아가세요.</p>", {
+    headers: { "content-type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
+/**
+ * A fresh access token from the refresh token a person left us.
+ *
+ * @param {WorkerEnv} env - Worker bindings.
+ * @returns {Promise<string>} The access token.
+ * @throws {ServiceError} 503 when nobody has connected Spotify yet.
+ */
+async function spotifyAccess(env: WorkerEnv): Promise<string> {
+  const keys = spotifyKeys(env);
+  const row = await env.ADMIN_DB.prepare("SELECT value FROM settings WHERE key='spotify.refresh_token'").first<{ value: string }>();
+  if (row === null) throw new ServiceError(503, "SPOTIFY_NOT_CONNECTED");
+  const answer = await spotifyToken({ grant_type: "refresh_token", refresh_token: await openSecret(env, row.value) }, keys);
+  // 스포티파이가 갱신 토큰을 새로 주면 그것으로 갈아 둔다 — 안 그러면 다음 갱신이 거절된다.
+  if (typeof answer.refresh_token === "string")
+    await env.ADMIN_DB.prepare("UPDATE settings SET value=?1,updated_at=?2 WHERE key='spotify.refresh_token'")
+      .bind(await sealSecret(env, answer.refresh_token), Date.now())
+      .run();
+  return String(answer.access_token);
+}
+
+async function importPlaylist(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
+  requirePermission(actor, "jobs.manage");
   const playlist = playlistId(requiredString(value.url, 300));
   if (playlist === undefined) throw new ServiceError(400, "INVALID_PLAYLIST");
   let found;
   try {
-    found = await playlistTracks(playlist, { id, secret });
+    found = await playlistTracks(playlist, await spotifyAccess(env));
   } catch (error) {
     // 무엇이 잘못됐는지 한 코드로 뭉치면 사람이 할 일을 알 수 없다 — 열쇠를 고칠 일과
     // 플레이리스트를 공개로 바꿀 일은 다르다. 다만 위쪽이 보낸 글자를 그대로 싣지는 않는다.
@@ -2493,6 +2592,8 @@ export async function handleAdmin(request: Request, env: WorkerEnv): Promise<Res
   const rejecting = url.pathname.match(/^\/admin\/api\/sources\/([^/]+)\/(reject|restore)$/u);
   if (request.method === "POST" && rejecting !== null)
     return judgeSource(env, actor, decodeURIComponent(rejecting[1] ?? ""), rejecting[2] === "reject");
+  if (request.method === "POST" && url.pathname === "/admin/api/spotify/connect") return spotifyConnect(env, actor, request);
+  if (request.method === "GET" && url.pathname === "/admin/api/spotify/callback") return spotifyCallback(env, actor, request);
   const reselecting = url.pathname.match(/^\/admin\/api\/recordings\/([^/]+)\/reselect$/u);
   if (request.method === "POST" && reselecting !== null) return reselectSource(env, actor, decodeURIComponent(reselecting[1] ?? ""));
   if (request.method === "GET" && url.pathname.startsWith("/admin/api/recordings/"))
