@@ -140,9 +140,25 @@ HEAD_ROOM_MS = 3000
 CLEAREST_EDGE = 0.3
 #: Whether characters are barred from stretches the diarizer says nobody sings in.
 VOICE_MASK = os.environ.get("MORA_VOICE_MASK", "1") != "0"
-#: 목소리를 리드와 곁소리로 가를지. 두 목소리가 겹치는 곡에서만 값어치가 있고, 솔로 곡에서는
-#: 한 목소리를 둘로 흩어 정렬기가 무음에 맞추게 만든다. `MORA_SPLIT=0` 으로 끄고 잰다.
-SPLIT_VOICES = os.environ.get("MORA_SPLIT", "1") != "0"
+#: 목소리를 리드와 곁소리로 가를지. **기본은 가르지 않는다.**
+#:
+#: 가르는 값어치는 두 목소리가 겹칠 때만 생기는데, 가르는 모델은 겹치지 않는 곡에서 한 목소리를
+#: 두 갈래에 흩어 놓는다. 「영원은 그렇듯」은 노래하는 142초 가운데 52초(37%)에서 리드가 비고
+#: 목소리가 통째로 곁소리에 들어가 있었다 — 그동안 정렬기는 무음에 가사를 맞추고 있었다.
+#:
+#: 기준 열한 곡을 두 조건으로 재었다(다른 것은 모두 같게 두고 리드 갈래만 바꿨다). 줄 머리가
+#: 실제 소리 솟는 자리와 50 ms 안에 맞은 비율, 쌩 가사:
+#:
+#:   붉은 노을 41→56 · 파란달팽이 32→44 · 하치와레girl 42→51 · 고스트시티 45→49
+#:   사랑하게 될거야 41→44 · 너와 나 50→52 · NOT SORRY 54→56 · 미안하다는말 52→54
+#:   Trip 61→62 · To. 난간 63→64 · Small girl 57→58
+#:
+#: **열한 곡 모두 좋아지거나 같다.** 0.5초 안도 584→586/622. 「가르기가 손해인 곡」을 가려내는
+#: 문턱을 놓으려 했는데, 손해가 아닌 곡이 없어서 문턱 자체가 필요 없어졌다.
+#:
+#: 대가 하나는 적어 둔다: 진짜 곁소리가 있는 `Small girl` 에서 무너진 줄이 하나 늘었다(1→2).
+#: 가르기가 원래 지키려던 경우다. 두 목소리가 겹치는 곡이 늘면 `MORA_SPLIT=1` 로 되살려 다시 잰다.
+SPLIT_VOICES = os.environ.get("MORA_SPLIT", "0") != "0"
 #: Room left on each side of a sung stretch before the bar comes down (ms).
 VOICE_MASK_EDGE_MS = 700
 #: A character this sure (log-margin against the model's own best guess; 0 is certain) counts as
