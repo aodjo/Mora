@@ -71,6 +71,7 @@ export interface MlRunResult {
 
 export class MlDaemon {
   readonly #process: ChildProcessWithoutNullStreams;
+  #closing = false;
   #id = 0;
   readonly #pending = new Map<number, PendingRequest>();
   readonly #stderrTail: string[] = [];
@@ -110,7 +111,17 @@ export class MlDaemon {
       }
     });
     this.#process.on("error", (error) => this.#rejectAll(error));
-    this.#process.on("exit", (code) => this.#rejectAll(new Error(`ML_DAEMON_EXIT_${code}`)));
+    // 죽은 데몬은 되살아나지 않는다. 그대로 두면 워커는 살아 있는 채로 곡마다 0 초 만에 실패하고,
+    // 그 까닭은 어디에도 남지 않는다 — 신호에 맞아 죽으면 code 가 null 이라 코드조차 PIPELINE_FAILED
+    // 로 뭉개졌다. 이유를 남기고 워커를 끝내, run-worker.sh 가 새로 띄우게 한다.
+    this.#process.on("exit", (code, signal) => {
+      const why = signal === null ? `ML_DAEMON_EXIT_${code}` : `ML_DAEMON_KILLED_${signal}`;
+      this.#rejectAll(new Error(why));
+      if (!this.#closing) {
+        process.stderr.write(`ML 데몬이 멈췄다 (${why}) — 워커를 끝낸다. 지키는 스크립트가 다시 띄운다.\n`);
+        setTimeout(() => process.exit(1), 100);
+      }
+    });
   }
   /** The error, carrying the last of what Python said before it died. */
   #failure(code: string, message?: string): Error {
@@ -165,6 +176,7 @@ export class MlDaemon {
     return this.call("run_job", params);
   }
   close(): void {
+    this.#closing = true;
     this.#process.kill("SIGTERM");
   }
   #rejectAll(error: unknown): void {

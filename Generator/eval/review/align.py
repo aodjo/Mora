@@ -2526,8 +2526,14 @@ def heard_song(path: Path, language: str | None = None, vad: bool = False,
             asked["language"] = language
         if hint:
             asked["hint"] = hint
-        ran = subprocess.run([str(EARS_PY), str(Path(__file__).parent / "hear.py")],
-                             input=json.dumps(asked), capture_output=True, text=True)
+        try:
+            ran = subprocess.run([str(EARS_PY), str(Path(__file__).parent / "hear.py")],
+                                 input=json.dumps(asked), capture_output=True, text=True, timeout=HEAR_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            #: 받아쓰기가 멈춰 선 채로 남으면 그 자리만 잃는 것이 아니다 — spark 에서 hear.py 한 벌이
+            #: 여섯 시간 넘게 15 GB 를 쥔 채 떠 있었고, 그다음 곡의 데몬이 분리 단계에서 죽었다.
+            print(f"[heard_song] whisper 가 {HEAR_TIMEOUT_S}초 안에 못 끝냈다 · {path.name}", file=sys.stderr)
+            return kresnik_song(path)
         if ran.returncode == 0 and ran.stdout.strip():
             said = json.loads(ran.stdout).get("낱말")
             if said:
