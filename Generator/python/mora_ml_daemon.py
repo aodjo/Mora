@@ -175,7 +175,7 @@ def download(job: dict[str, Any], directory: Path, cookie_file: str | None, prox
     """
     urls = [job["source"]["url"], *job["source"].get("alternatives", [])]
     refused: list[str] = []
-    for url in urls:
+    for place, url in enumerate(urls):
         output = directory / "source.%(ext)s"
         # 어느 node 인지까지 대 준다. 이름만 넘기면 PATH 에서 찾는데, 로그인 셸이 아닌 곳에서는
         # 없다고 나오고 그러면 서명 없는 클라이언트로 떨어져 봇 확인 화면을 받는다.
@@ -201,7 +201,13 @@ def download(job: dict[str, Any], directory: Path, cookie_file: str | None, prox
                 # 다른 곡일 수 있고, 그러면 앵커가 하나도 안 잡힌다 — 그것은 화면에 "정렬이
                 # 나빴다" 로만 보이고 무엇이 잘못됐는지는 말해 주지 않는다.
                 apart = wrong_length(existing, job)
-                if apart is None:
+                #: 길이 검사는 **대체 후보에만** 건다. 확정된 음원은 사람이 듣고 고른 것이고,
+                #: 적혀 있는 곡 길이는 그 사람보다 못 미덥다 — 산토리는 길이가 아크라포빅 것(134초)으로
+                #: 적혀 있어서, 사람이 넣은 진짜 산토리(162초)를 「이 곡이 아니다」로 버리고 아크라포빅
+                #: 영상으로 넘어갔다. 그래서 검수 화면의 타이밍이 딴 노래였다.
+                if apart is None or place == 0:
+                    if apart is not None:
+                        print(f"[download] 길이가 {apart:.0f}초 어긋나지만 사람이 확정한 음원이다 — 그대로 쓴다", file=sys.stderr)
                     return existing
                 existing.unlink(missing_ok=True)
                 refused.append(f"{url}: 길이가 {apart:.0f}초 어긋난다 — 이 곡이 아니다")
