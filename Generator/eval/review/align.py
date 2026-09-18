@@ -2119,6 +2119,12 @@ TAIL_MOST_MS = 700
 #: The longest it may hold when the audio says the voice is still going (ms). 산토리의 「같은데」는
 #: 2.8 초를 끈다 — 노래에서 그 정도는 흔하고, 그보다 길게 잡고 있으면 다음 줄이 늦는 편이 낫다.
 TAIL_HOLD_MS = int(os.environ.get("MORA_TAIL_HOLD_MS", "4000"))
+#: 줄 **안**에서도 끄는 음을 끝까지 잡을지. 재 보기 전에는 꺼 둔다(`MORA_HOLD_NOTES=1`).
+HOLD_NOTES = os.environ.get("MORA_HOLD_NOTES", "0") != "0"
+#: 이보다 짧게 잡힌 낱자만 들어 본다(ms). CTC 가 봉우리를 못 세우면 낱자가 이만큼도 못 받는다.
+HOLD_SHORT_MS = int(os.environ.get("MORA_HOLD_SHORT_MS", "500"))
+#: 뒤에 이만큼은 비어 있어야 늘릴 값어치가 있다(ms). 붙어 있으면 늘릴 자리가 없다.
+HOLD_ROOM_MS = int(os.environ.get("MORA_HOLD_ROOM_MS", "300"))
 #: Whether a free transcript may sharpen the invented clock. Read from `MORA_HEARD` so the probes
 #: can measure the blind path with it and without it on the same songs.
 HEARD = os.environ.get("MORA_HEARD", "1") != "0"
@@ -3913,6 +3919,12 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
     #: 쉼을 건넨다. 안 건네면 `settle_turns` 가 일부러 넣은 쉼을 「글자 사이가 빔」으로 되돌려
     #: 부른다 — 열두 곡에서 그렇게 찍힌 구멍 열여덟 중 열일곱이 그것이었다.
     lead_stem = path.with_suffix(".lead.wav")
+    #: 줄 안의 끄는 음을 먼저 잡고(끝만 늘린다), 그다음 줄 끝을 다듬는다. 순서가 중요하다 —
+    #: 줄 끝은 마지막 낱자를 보는데, 그 앞 낱자들이 먼저 제자리를 찾아야 한다.
+    if HOLD_NOTES:
+        held = hold_notes(out, lead_stem if lead_stem.exists() else None)
+        if held:
+            print(f"[hold_notes] {held} syllable(s) held to where the voice stops", file=sys.stderr)
     hush_tails(out, quiet_of(path), rest_ends(lead_stem), lead_stem if lead_stem.exists() else None)
     flag_stuck(lines, out, quiet_of(path))
     return out, lanes
@@ -4941,6 +4953,47 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize,
             one["end"] = own[-1]["end"]
         done += 1
     return done
+
+
+def hold_notes(out: list[list[dict]], lead: Path | None) -> int:
+    """Let a syllable **inside** a line hold until the voice actually stops.
+
+    `loosen_chars` runs a character's end out to the next one only across characters the model
+    never found. Two characters it *did* find keep whatever end CTC gave them, and in a quiet mix
+    that can be almost nothing: 「영원은 그렇듯」 places 「오」 at 0.30 s and 「눈물을」 at 0.50 s,
+    then leaves 0.90 s of nothing before the next word. A person watching said one spot is empty
+    and the next is late. The words are short **on the page**; sung, they are held notes — 오 and
+    난 in a ballad run for a second or more.
+
+    This is `hush_tails`'s rule moved inside the line: measure where the note's own sound drops
+    away (`tail_stop`) and hold the syllable to there, never past the next character's start.
+    **Starts are never moved** — only ends — so nothing this does can make an onset worse.
+
+    @param {list[list[dict]]} out - Per-line word dicts, modified in place.
+    @param {Path | None} lead - The lead vocal stem, for measuring where a note stops.
+    @returns {int} How many syllables were held longer.
+    """
+    if lead is None or not lead.exists():
+        return 0
+    held = 0
+    for words in out:
+        chars = [one for word in words for one in (word.get("chars") or []) if one.get("at") is not None]
+        for now, after in zip(chars, chars[1:]):
+            end = now.get("end") or now["at"]
+            #: 이미 길게 잡혔거나 뒤가 붙어 있으면 볼 것이 없다.
+            if end - now["at"] > HOLD_SHORT_MS or after["at"] - end < HOLD_ROOM_MS:
+                continue
+            stop = tail_stop(lead, now["at"], after["at"])
+            if stop is not None and stop > end:
+                now["end"] = min(stop, after["at"])
+                held += 1
+    #: 낱말의 끝은 그 낱말 낱자들의 끝에서 온다. 낱자를 늘렸으면 낱말도 따라 늘어나야 한다.
+    for words in out:
+        for word in words:
+            got = [one for one in (word.get("chars") or []) if one.get("at") is not None]
+            if got:
+                word["end"] = max(word.get("end") or 0, max((one.get("end") or one["at"]) for one in got))
+    return held
 
 
 def hush_tails(out: list[list[dict]], quiet: list[tuple[int, int]] | None,
