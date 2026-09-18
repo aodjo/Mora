@@ -140,6 +140,9 @@ HEAD_ROOM_MS = 3000
 CLEAREST_EDGE = 0.3
 #: Whether characters are barred from stretches the diarizer says nobody sings in.
 VOICE_MASK = os.environ.get("MORA_VOICE_MASK", "1") != "0"
+#: 목소리를 리드와 곁소리로 가를지. 두 목소리가 겹치는 곡에서만 값어치가 있고, 솔로 곡에서는
+#: 한 목소리를 둘로 흩어 정렬기가 무음에 맞추게 만든다. `MORA_SPLIT=0` 으로 끄고 잰다.
+SPLIT_VOICES = os.environ.get("MORA_SPLIT", "1") != "0"
 #: Room left on each side of a sung stretch before the bar comes down (ms).
 VOICE_MASK_EDGE_MS = 700
 #: A character this sure (log-margin against the model's own best guess; 0 is certain) counts as
@@ -1004,6 +1007,18 @@ def voices_of(path: Path) -> tuple[Path, Path]:
     lead = path.with_suffix(".lead.wav")
     back = path.with_suffix(".back.wav")
     if lead.exists() and back.exists():
+        return lead, back
+    #: 곁소리가 없는 곡에서는 가르기가 한 목소리를 둘로 흩는다. 「영원은 그렇듯」은 노래하는
+    #: 142초 가운데 52초(37%)에서 리드가 비고 곁소리에 목소리가 통째로 들어갔다 — 0:56~1:16 이
+    #: 그중 가장 긴 구간인데, 사람이 바로 그 자리를 듣고 「밀린다」고 했다. 가르는 값어치는
+    #: 두 목소리가 겹칠 때만 생기므로, 끌 수 있어야 그것을 잴 수 있다.
+    if not SPLIT_VOICES:
+        voice = vocals_of(path)
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(voice),
+                        "-c:a", "pcm_s24le", str(lead)], check=True, timeout=600)
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(voice),
+                        "-c:a", "pcm_s24le", str(back)], check=True, timeout=600)
+        print("[voices] 가르지 않는다 — 목소리 전체를 리드로 쓴다", file=sys.stderr)
         return lead, back
 
     import torch
@@ -4983,9 +4998,15 @@ def hold_notes(out: list[list[dict]], lead: Path | None) -> int:
             #: 이미 길게 잡혔거나 뒤가 붙어 있으면 볼 것이 없다.
             if end - now["at"] > HOLD_SHORT_MS or after["at"] - end < HOLD_ROOM_MS:
                 continue
+            #: `tail_stop` 이 **아무것도 못 찾았다**는 것은 「멎는 자리가 없다」이지 「늘릴 수
+            #: 없다」가 아니다. 그 창 안에서 제 어택보다 12dB 아래로 0.25초를 내려간 적이 한
+            #: 번도 없다는 뜻이고, 그러면 목소리는 다음 낱자까지 계속 나고 있는 것이다. 처음에
+            #: 이것을 뒤집어 읽어 열아홉 군데 중 셋만 늘었다 — 「눈물을」의 0.90 초 구멍은 바로
+            #: 이 「없음」 쪽에 있었다.
             stop = tail_stop(lead, now["at"], after["at"])
-            if stop is not None and stop > end:
-                now["end"] = min(stop, after["at"])
+            reach = after["at"] if stop is None else min(stop, after["at"])
+            if reach > end:
+                now["end"] = reach
                 held += 1
     #: 낱말의 끝은 그 낱말 낱자들의 끝에서 온다. 낱자를 늘렸으면 낱말도 따라 늘어나야 한다.
     for words in out:
