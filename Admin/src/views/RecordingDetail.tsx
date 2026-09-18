@@ -149,13 +149,25 @@ function drift(catalogueMs: number, videoMs: number): { label: string; tone: "go
 function Player({ videoId, title, active, onPlay }: { videoId: string; title: string; active: boolean; onPlay: () => void }) {
   if (active)
     return (
-      <iframe
-        className="yt-frame"
-        src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}?autoplay=1&rel=0`}
-        title={title}
-        allow="autoplay; encrypted-media"
-        allowFullScreen
-      />
+      <div className="yt-play">
+        {/*
+          `youtube-nocookie.com` 을 쓰다가 「로그인하여 봇이 아님을 확인하세요」로 막혔다. 그쪽은
+          쿠키를 안 실어 보내므로 유튜브가 사람인지 가릴 방법이 없다. 여기는 우리끼리 쓰는 화면이고
+          보는 사람은 이미 유튜브에 로그인해 있으니, 일반 호스트로 보내 그 로그인을 쓰게 한다.
+        */}
+        <iframe
+          className="yt-frame"
+          src={`https://www.youtube.com/embed/${encodeURIComponent(videoId)}?autoplay=1&rel=0`}
+          title={title}
+          allow="autoplay; encrypted-media"
+          allowFullScreen
+        />
+        {/* 임베드가 또 막혀도 막다른 길이 되지 않게. 새 탭에서는 늘 열린다. */}
+        <a className="yt-open" href={`https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`}
+           target="_blank" rel="noreferrer noopener">
+          유튜브에서 열기
+        </a>
+      </div>
     );
   return (
     <button type="button" className="yt-thumb" onClick={onPlay} aria-label={`${title} 재생`}>

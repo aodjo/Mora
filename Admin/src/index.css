@@ -3146,8 +3146,20 @@ textarea:focus-visible {
   align-items: start;
   row-gap: 10px;
 }
-.source-row.playing > .yt-frame {
+.source-row.playing > .yt-play {
   grid-area: 1 / 1 / span 2 / auto;
+}
+/* 플레이어와 그 아래 「유튜브에서 열기」를 한 칸으로 묶는다 — 임베드가 막혀도 길이 남아야 한다. */
+.yt-play {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.yt-open {
+  font-size: 12px;
+  color: var(--text-muted);
+  align-self: flex-start;
 }
 .source-row.playing .source-row-main {
   grid-area: 1 / 2 / auto / auto;
