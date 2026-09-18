@@ -89,6 +89,10 @@ export class MlDaemon {
     stderrLines.on("line", (line) => {
       this.#stderrTail.push(line);
       if (this.#stderrTail.length > 60) this.#stderrTail.shift();
+      // 파이썬이 대괄호로 표시한 말은 우리가 일부러 남긴 것이다 — 「[review_align] …」,
+      // 「[repeat_fill] …」. 성공한 곡에서는 아무 데도 안 남아, 되살린 줄이 0 인 까닭을
+      // 물을 자리가 없었다. 우리 말만 골라 워커 로그로 넘긴다(라이브러리 잡소리는 뺀다).
+      if (/^\[[a-z_]+\]/u.test(line)) process.stderr.write(`${line}\n`);
     });
     const lines = createInterface({ input: this.#process.stdout });
     lines.on("line", (line) => {
