@@ -2019,9 +2019,12 @@ async function jobAction(env: WorkerEnv, actor: Actor, jobId: string, action: st
       .bind(now, jobId)
       .run();
   else if (action === "retry") {
-    const row = await env.ADMIN_DB.prepare("SELECT input_revision_id,state,updated_at FROM jobs WHERE id=?1")
+    const row = await env.ADMIN_DB.prepare(
+      `SELECT j.input_revision_id,j.state,j.updated_at,i.recording_id,i.source_id
+       FROM jobs j JOIN input_revisions i ON i.id=j.input_revision_id WHERE j.id=?1`,
+    )
       .bind(jobId)
-      .first<{ input_revision_id: string; state: string; updated_at: number }>();
+      .first<{ input_revision_id: string; state: string; updated_at: number; recording_id: string; source_id: string | null }>();
     if (row === null) throw new ServiceError(404, "NOT_FOUND");
     // 끝난 작업뿐 아니라 조용해진 작업도. 살아 있는 워커는 단계마다 updated_at 을 만지므로,
     // 몇 분째 조용한 running 은 죽은 워커가 두고 간 것이다 — 큐의 자동 구조는 30분을 기다리고
@@ -2038,6 +2041,9 @@ async function jobAction(env: WorkerEnv, actor: Actor, jobId: string, action: st
     await env.ADMIN_DB.prepare(`DELETE FROM alignment_candidates WHERE id IN (${doomed}) AND id NOT IN (SELECT candidate_id FROM releases)`)
       .bind(jobId)
       .run();
+    // 이 곡의 타이밍을 다시 만드는 것이니, 다른 회차에 남아 있던 타이밍도 함께 치운다 — 음원을
+    // 바꾸기 전 회차의 후보가 목록에 남으면 사람이 그것을 열고 옛 노래를 듣는다.
+    if (row.source_id !== null) await dropStaleCandidates(env.ADMIN_DB, row.recording_id, row.source_id);
     // 사람이 누른 재시작이다. 자동 재시도 한도는 실패가 반복되는 것을 막으려는 것이지,
     // 코드를 고친 뒤 다시 만드는 일을 막으려는 것이 아니다.
     await env.ADMIN_DB.prepare(
