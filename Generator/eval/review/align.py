@@ -2123,6 +2123,9 @@ HEARD = os.environ.get("MORA_HEARD", "1") != "0"
 #: reason `~/dia` and `~/qwen` do — one venv repinning another's versions has broken all three.
 #: Missing, `heard_song` falls back to kresnik, which is much worse but always there.
 EARS_PY = Path(os.environ.get("MORA_EARS_PYTHON") or Path.home() / "ears/bin/python")
+#: 받아쓰기 한 벌에 줄 시간(초). 넘으면 버리고 물러선다 — spark 에서 멈춰 선 판 하나가 여섯 시간 넘게
+#: 15 GB 를 쥔 채 남았고, 그다음 곡의 데몬이 분리 단계에서 죽었다.
+HEAR_TIMEOUT_S = int(os.environ.get("MORA_HEAR_TIMEOUT_S", "900"))
 #: A pin from the transcript must sit on voice: an onset within this many ms of it. **Off by
 #: default (0) — measured and it loses.** It was built for 야해, where whisper wrote `작은 손목에`
 #: at 43.1 s beside a 4.6 s stretch holding four onsets; but that pin sat on one of the four and
