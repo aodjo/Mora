@@ -16,7 +16,12 @@ Mora 타이밍이 실제로 어떤지 **눈으로 보는 자리**. 노래를 틀
 ```bash
 pip install git+https://github.com/aodjo/mora-python
 
-python play.py 노래.m4a 가사.txt --artist "리도어(Redoor)" --title "영원은 그렇듯"
+python play.py 노래.m4a --artist "리도어(Redoor)" --title "영원은 그렇듯"
+```
+
+**가사 파일은 없어도 됩니다.** 안 주면 제공처(bugs·flo·genie·melon·vibe)에서 받아 옵니다 — 그러려면 `--title` 이 있어야 합니다. 가진 파일을 쓰려면 음원 뒤에 붙이면 됩니다:
+
+```bash
 python play.py 노래.m4a 가사.txt --isrc KRA401200001
 ```
 
@@ -57,6 +62,7 @@ pip install sounddevice soundfile
 - 이 곡의 타이밍이 Mora 에 **공개돼 있어야** 합니다. 없으면 「쓸 수 있는 타이밍이 없다」로 끝납니다.
 - `Ctrl-C` 로 멈춥니다.
 - 음원은 직접 준비하세요. 이 폴더에는 넣지 않습니다.
+- 가사를 받아 오는 쪽은 저쪽 화면이 바뀌면 깨집니다. 한 곳이 막혀도 나머지로 갑니다.
 
 ## 만든 것
 

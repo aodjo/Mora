@@ -4,8 +4,11 @@
 낱말마다 시각이 있으므로 낱말 **안에서도** 칠할 수 있다: 「흘려보내요」가 2.6초 동안 불린다면
 그 2.6초에 걸쳐 다섯 글자가 차례로 진해진다. 줄만 칠하는 자막과 다른 점이 그것이다.
 
-    python play.py 노래.m4a 가사.txt --artist "리도어(Redoor)" --title "영원은 그렇듯"
+    python play.py 노래.m4a --artist "리도어(Redoor)" --title "영원은 그렇듯"
     python play.py 노래.m4a 가사.txt --isrc KRA401200001
+
+가사 파일을 안 주면 제공처(bugs·flo·genie·melon·vibe)에서 받아 온다 — 그러려면 `--artist`
+와 `--title` 이 있어야 한다.
 
 소리를 내는 길이 둘이다. `sounddevice` 와 `soundfile` 이 있으면 **표본을 세어** 자리를 안다 —
 시계가 밀리지 않는다. 없으면 `ffplay` 를 띄우고 시계로 센다. 그쪽은 재생기가 뜨는 만큼 조금
@@ -241,7 +244,8 @@ def main() -> int:
     """
     ask = argparse.ArgumentParser(description="노래를 틀면서 가사를 글자마다 칠한다")
     ask.add_argument("audio", type=Path, help="음원 파일")
-    ask.add_argument("lyrics", type=Path, help="가사 글 (줄바꿈 그대로)")
+    ask.add_argument("lyrics", type=Path, nargs="?", default=None,
+                     help="가사 글 (줄바꿈 그대로). 안 주면 제공처에서 받아 온다")
     ask.add_argument("--artist")
     ask.add_argument("--title")
     ask.add_argument("--isrc")
@@ -253,11 +257,22 @@ def main() -> int:
     args = ask.parse_args()
 
     try:
-        from mora_lyrics import Mora, NotAligned, Playhead
+        from mora_lyrics import Mora, NotAligned, Playhead, fetch_lyrics
     except ImportError:
         sys.exit("mora-lyrics 가 없다:  pip install git+https://github.com/aodjo/mora-python")
 
-    text = args.lyrics.read_text(encoding="utf-8")
+    if args.lyrics is not None:
+        text = args.lyrics.read_text(encoding="utf-8")
+    else:
+        #: Mora 는 타이밍만 준다. 가사 파일을 안 줬으면 제공처에서 받아 온다.
+        if not args.title:
+            sys.exit("가사 파일이 없으면 --title 로 곡을 알려 줘야 받아 올 수 있다")
+        sys.stderr.write("가사를 찾는 중…\n")
+        found = fetch_lyrics(args.title, args.artist, first=True)
+        if not found:
+            sys.exit("어느 제공처에도 가사가 없다. 파일로 주세요.")
+        text = found[0].lyrics
+        sys.stderr.write(f"{found[0].provider} 에서 {len(text.splitlines())}줄\n")
     duration_ms = round(seconds_of(args.audio) * 1000)
     mora = Mora(args.base_url)
     try:
