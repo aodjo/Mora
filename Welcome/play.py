@@ -350,7 +350,7 @@ def main() -> int:
     args = ask.parse_args()
 
     try:
-        from mora_lyrics import Mora, NotAligned, Playhead, fetch_lyrics
+        from mora_lyrics import Mora, NotAligned, Playhead, fetch_lyrics, suggest
     except ImportError:
         sys.exit("mora-lyrics 가 없다:  pip install git+https://github.com/aodjo/mora-python")
 
@@ -364,6 +364,14 @@ def main() -> int:
         sys.stderr.write("가사를 찾는 중…\n")
         found = fetch_lyrics(args.title, args.artist, first=True)
         if not found:
+            #: 「없다」고만 하면 무엇을 고쳐야 할지 알 수 없다. 철자 하나가 틀린 것뿐일 때가 많다 —
+            #: 「offically missing you」로는 어느 곳도 못 찾지만 가수로 물으면 맨 위에 그 곡이 있다.
+            near = suggest(args.title, args.artist, most=6)
+            if near:
+                sys.stderr.write("어느 제공처에도 그 제목은 없다. 이런 곡들이 있다:\n")
+                for name, singer in near:
+                    sys.stderr.write(f"    {name}  —  {singer}\n")
+                sys.exit("--title 을 위 이름 그대로 주거나, 가사를 파일로 주세요.")
             sys.exit("어느 제공처에도 가사가 없다. 파일로 주세요.")
         text = found[0].lyrics
         #: 옛 판 라이브러리에는 이 칸이 없다. 없으면 길이를 모르는 채로 가고, 그러면 영상을
