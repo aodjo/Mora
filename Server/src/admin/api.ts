@@ -17,6 +17,7 @@ import { bootstrapOptions, bootstrapVerify, credentialOptions, credentialVerify,
 import { serveArtifact } from "./artifacts.js";
 import { completeModelUpload, serveModel, startModelUpload, uploadModelPart } from "./models.js";
 import { STAGE_JOB_UPDATE } from "./stage-state.js";
+import { filledLines, sungVariant } from "./sung-variant.js";
 import { approveCollectorPairing, pollCollectorPairing, startCollectorPairing } from "./collector-pairing.js";
 import { approveGeneratorPairing, pollGeneratorPairing, startGeneratorPairing } from "./generator-pairing.js";
 import {
@@ -321,7 +322,7 @@ async function recordingDetail(env: WorkerEnv, actor: Actor, recordingId: string
     env.ADMIN_DB,
     `SELECT c.id,c.job_id,c.input_revision_id,c.status,c.tokenizer,c.quality,c.quality_score,c.created_at,
        (SELECT group_concat(s.provider) FROM lyric_sources s WHERE s.text_id=l.id) provider,
-       l.language
+       l.language,l.preprocessor
      FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id
      JOIN lyric_texts l ON l.id=c.variant_id
      WHERE i.recording_id=?1 ORDER BY c.quality_score DESC,c.created_at DESC`,
@@ -1595,6 +1596,21 @@ function qualityScore(quality: Record<string, number>): number {
   return keys.reduce((sum, key) => sum + Math.max(0, Math.min(1, quality[key] ?? 0)), 0) / keys.length;
 }
 
+/**
+ * Where a candidate's lines live when the Generator put shortened repeats back.
+ *
+ * Providers write an immediately repeated chorus once — 아크라포빅's 「난 너랑 결혼했을걸」 is sung
+ * three times and written once — and the timing for the lines nobody wrote had nowhere to go. The
+ * Generator restores them from the transcript, so the candidate is aligned to a **longer text than
+ * the provider's**, and pointing it at the provider's variant would put its line count out of step
+ * with the lyric a reviewer sees. The restored text is kept as its own row instead, under the same
+ * input revision, marked by its preprocessor; the provider's text is left untouched.
+ *
+ * @param {WorkerEnv} env - Worker bindings.
+ * @param {string} inputId - The input revision this job was handed.
+ * @param {AlignmentCandidate} candidate - One submitted alignment.
+ * @returns {Promise<string>} The lyric text id the candidate belongs to.
+ */
 async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<string, unknown>): Promise<Response> {
   requirePermission(actor, "generator.candidates.write");
   const submission = value as unknown as GeneratorCandidateSubmission;
@@ -1611,6 +1627,7 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
   const scores: Array<{ id: string; score: number; language: number; density: number; reach: number; breath: number }> = [];
   for (const candidate of submission.alignments) {
     const id = crypto.randomUUID();
+    const variantId = await sungVariant(env.ADMIN_DB, submission.input_revision_id, candidate);
     ids.push(id);
     const score = qualityScore(candidate.quality);
     scores.push({
@@ -1632,7 +1649,7 @@ async function submitCandidates(env: WorkerEnv, actor: Actor, value: Record<stri
         id,
         submission.job_id,
         submission.input_revision_id,
-        candidate.variant_id,
+        variantId,
         candidate.tokenizer,
         candidate.text_hash,
         encode(candidate.fingerprint.lens),
@@ -1784,7 +1801,7 @@ async function withdrawRelease(env: WorkerEnv, actor: Actor, releaseId: string):
 async function candidateDetail(env: WorkerEnv, actor: Actor, candidateId: string): Promise<Response> {
   requirePermission(actor, "candidates.read");
   const candidate = await env.ADMIN_DB.prepare(
-    `SELECT c.*,l.text lyric_text,l.language lyric_language,(SELECT group_concat(s.provider) FROM lyric_sources s WHERE s.text_id=l.id) lyric_provider,l.layer lyric_layer,r.artist recording_artist,r.title recording_title FROM alignment_candidates c JOIN lyric_texts l ON l.id=c.variant_id JOIN input_revisions i ON i.id=c.input_revision_id JOIN recordings r ON r.id=i.recording_id WHERE c.id=?1`,
+    `SELECT c.*,l.text lyric_text,l.language lyric_language,(SELECT group_concat(s.provider) FROM lyric_sources s WHERE s.text_id=l.id) lyric_provider,l.layer lyric_layer,l.preprocessor lyric_preprocessor,l.rules lyric_rules,r.artist recording_artist,r.title recording_title FROM alignment_candidates c JOIN lyric_texts l ON l.id=c.variant_id JOIN input_revisions i ON i.id=c.input_revision_id JOIN recordings r ON r.id=i.recording_id WHERE c.id=?1`,
   )
     .bind(candidateId)
     .first<Record<string, unknown>>();
@@ -1804,7 +1821,14 @@ async function candidateDetail(env: WorkerEnv, actor: Actor, candidateId: string
     id: candidate.id,
     job_id: candidate.job_id,
     recording: { artist: candidate.recording_artist, title: candidate.recording_title },
-    variant: { provider: candidate.lyric_provider, language: candidate.lyric_language, layer: candidate.lyric_layer },
+    variant: {
+      provider: candidate.lyric_provider,
+      language: candidate.lyric_language,
+      layer: candidate.lyric_layer,
+      preprocessor: candidate.lyric_preprocessor,
+      //: 반복을 되살린 가사라면 어느 줄을 끼워 넣었는지. 검수하는 사람이 그 줄부터 듣는다.
+      filled: filledLines(candidate.lyric_rules),
+    },
     lyric_text: lyricText,
     ...review,
     line_spans: decode(candidate.line_spans as ArrayBuffer),

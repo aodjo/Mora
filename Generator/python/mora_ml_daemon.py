@@ -2331,6 +2331,28 @@ def run_review_aligner(mixture: Path, vocals: Path, text_lines: list[str], title
     return lines
 
 
+def sung_order(text_lines: list[str], asr: dict[str, Any]) -> list[int]:
+    """The order the lines were sung in, with immediate repeats the provider shortened put back.
+
+    멜론·벅스·지니·플로는 이어서 되풀이되는 후렴을 한 번만 적는다. 아크라포빅의 「난 너랑 결혼했을걸」은
+    세 번 불리는데 가사에는 한 줄이라, 나머지 두 번과 끝 후렴 묶음이 통째로 빈 채 나갔다. 받아쓰기가
+    그 되풀이를 적어 두었으면 되살린다 — 열다섯 곡에서 줄여 적힌 121 줄 가운데 63 줄이 돌아왔고, 없는
+    반복을 넣은 것은 8 줄이었다(`Generator/eval/review/repeat_fill.py`).
+
+    @param {list[str]} text_lines - The variant's lines as the provider wrote them.
+    @param {dict[str, Any]} asr - The worker's transcript.
+    @returns {list[int]} Line indices in sung order; `range(len(text_lines))` when nothing repeats.
+    """
+    try:
+        sys.path.insert(0, str(REVIEW_RUNNER.parent))
+        from repeat_fill import expand
+        heard = [(str(word["text"]), int(float(word["start"]) * 1000)) for word in asr_words(asr)]
+        return expand(text_lines, heard) if heard else list(range(len(text_lines)))
+    except Exception as trouble:
+        print(f"[repeat_fill] 건너뜀: {type(trouble).__name__}: {str(trouble)[:160]}", file=sys.stderr)
+        return list(range(len(text_lines)))
+
+
 def review_variant(
     mixture: Path,
     vocals: Path,
@@ -2360,6 +2382,14 @@ def review_variant(
     @returns {dict[str, Any]} `{variant_id, line_spans, word_spans, quality}`.
     """
     text_lines, line_words, line_spans_at = variant_lines(variant)
+    order = sung_order(text_lines, asr)
+    filled = [place for place, line in enumerate(order) if order.index(line) != place]
+    if filled:
+        text_lines = [text_lines[line] for line in order]
+        line_words = [line_words[line] for line in order]
+        line_spans_at = [line_spans_at[line] for line in order]
+        print(f"[repeat_fill] {len(filled)} line(s) put back: {', '.join(text_lines[place][:14] for place in filled[:4])}",
+              file=sys.stderr)
     review_lines = run_review_aligner(mixture, vocals, text_lines, title, weights, directory)
     result_words, line_windows, measured = review_word_spans(text_lines, line_words, line_spans_at, review_lines)
     lyric_words = [comparable(word) for words in line_words for word in words if comparable(word)]
@@ -2379,7 +2409,8 @@ def review_variant(
     quality = measure(result_words, line_windows, coverage, duration_ms, anchored, declared, detected,
                       anchors=len(anchors), lyric_words=len(lyric_words), widest_gap=widest_gap, breathing=breathing)
     print(f"[review_align] {measured}/{len(result_words)} token(s) timed · breath {breathing:.0%} of {gaps_seen}", file=sys.stderr)
-    return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality}
+    return {"variant_id": variant["id"], "line_spans": line_windows, "word_spans": result_words, "quality": quality,
+            **({"text": "\n".join(text_lines), "filled": filled} if filled else {})}
 
 
 def align_variant(

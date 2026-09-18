@@ -30,7 +30,7 @@ interface Detail {
   id: string;
   job_id: string;
   recording: { artist: string; title: string };
-  variant: { provider: string; language: string; layer: string };
+  variant: { provider: string; language: string; layer: string; preprocessor?: string; filled?: number[] };
   lyric_text: string;
   tokens: ReviewToken[];
   lines: ReviewLine[];
@@ -200,6 +200,8 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
     [detail, mediaDuration],
   );
   const spans = useMemo(() => new Map(detail?.word_spans.map((span) => [span[0], span]) ?? []), [detail]);
+  //: 제공처가 줄여 적은 반복을 Generator 가 되살린 줄. 사람이 먼저 들어 봐야 하는 줄이다.
+  const restored = useMemo(() => new Set(detail?.variant.filled ?? []), [detail]);
   const tokens = useMemo(() => new Map(detail?.tokens.map((token) => [token.index, token]) ?? []), [detail]);
   // 정렬기가 자리를 못 준 낱말. 타임라인에 그릴 시각이 없어 여태 화면 어디에도 없었다.
   const unplaced = useMemo(() => (detail?.tokens ?? []).filter((token) => !spans.has(token.index)), [detail, spans]);
@@ -330,7 +332,10 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
           <div>
             <h2>{detail.recording.title}</h2>
             <p>
-              {detail.recording.artist} · {detail.variant.provider} · {detail.variant.language.toUpperCase()}
+              {detail.recording.artist} · {detail.variant.provider || "되살린 가사"} · {detail.variant.language.toUpperCase()}
+              {(detail.variant.filled?.length ?? 0) > 0 && (
+                <em className="restored-note"> · 제공처가 줄여 적은 반복 {detail.variant.filled?.length}줄을 되살림</em>
+              )}
             </p>
           </div>
           <span className="save-state">{message}</span>
@@ -483,13 +488,16 @@ export function Editor({ candidateId, onPublished }: { candidateId: string; onPu
                   if (element === null) lineRefs.current.delete(line.index);
                   else lineRefs.current.set(line.index, element);
                 }}
-                className={`lyric-line${activeLine === line.index ? " active" : ""}`}
+                className={`lyric-line${activeLine === line.index ? " active" : ""}${restored.has(line.index) ? " restored" : ""}`}
               >
                 <button className="line-time" disabled={!Number.isFinite(start)} onClick={() => seek(start)}>
                   {Number.isFinite(start) ? formatTime(start) : "--:--"}
                 </button>
                 <div>
-                  <p>{line.text}</p>
+                  <p>
+                    {line.text}
+                    {restored.has(line.index) && <span className="restored-badge">되살림</span>}
+                  </p>
                   <div className="lyric-tokens">
                     {line.token_indices.map((index) => {
                       const token = tokens.get(index);

@@ -80,6 +80,13 @@ export interface AlignmentCandidate {
   word_speakers: SpeakerIndex[];
   line_speakers: SpeakerIndex[];
   quality: Record<string, number>;
+  /**
+   * 제공처가 줄여 적은 반복을 되살린 가사. 오면 이 후보는 이 글에 맞춰진 것이고, 서버가 그것을
+   * 따로 한 벌의 가사로 저장해 후보를 그쪽에 건다 — 원문 가사는 그대로 둔다.
+   */
+  text?: string;
+  /** 되살린 가사에서 새로 끼워 넣은 줄의 자리. 검수 화면이 그 줄을 표시한다. */
+  filled?: number[];
 }
 
 export interface GeneratorCandidateSubmission {

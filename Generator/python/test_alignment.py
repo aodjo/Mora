@@ -873,6 +873,19 @@ check("한 낱말도 못 놓은 줄은 앞뒤 줄 사이 틈에 편다", empty_w
 check("가르는 자리를 안 보낸 옛 워커도 글자로 찾아 붙인다", empty_windows[2] == [5000, 5400], str(empty_windows))
 check("확신도는 0.4~0.99", daemon.review_confidence(0.0) == 0.99 and 0.4 <= daemon.review_confidence(-30.0) < 0.45)
 
+#: 제공처가 줄여 적은 반복을 받아쓰기로 되살린다(repeat_fill). 데몬은 그 차례대로 줄을 다시 세운다.
+REPEAT_LINES = ["니가 페니드를 덜 먹었다면", "난 너랑 결혼했을걸", "난 너랑 결혼했을 거야"]
+REPEAT_ASR = {"segments": [{"words": [{"word": word, "start": index * 1.0, "end": index * 1.0 + 0.5}
+                                      for index, word in enumerate(("니가 페니드를 덜 먹었다면 난 너랑 결혼했을걸 난 너랑 결혼했을걸 "
+                                                                    "난 너랑 결혼했을걸 난 너랑 결혼했을 거야").split())]}]}
+order = daemon.sung_order(REPEAT_LINES, REPEAT_ASR)
+check("세 번 부른 줄을 세 번으로 되살린다", order.count(1) == 3 and order[-1] == 2, str(order))
+check("되살린 차례는 오르내리지 않는다", order[0] == 0 and order.index(2) == len(order) - 1, str(order))
+same = daemon.sung_order(REPEAT_LINES, {"segments": [{"words": [{"word": word, "start": index * 1.0, "end": index * 1.0 + 0.5}
+                                                                for index, word in enumerate(" ".join(REPEAT_LINES).split())]}]})
+check("되풀이가 없으면 가사 그대로", same == [0, 1, 2], str(same))
+check("받아쓰기가 없으면 가사 그대로", daemon.sung_order(REPEAT_LINES, {"segments": []}) == [0, 1, 2])
+
 print()
 if failures:
     print(f"실패 {len(failures)}건: {', '.join(failures)}")

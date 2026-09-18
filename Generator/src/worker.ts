@@ -212,13 +212,16 @@ export class GeneratorWorker {
       const alignments: AlignmentCandidate[] = input.lyrics.flatMap((variant) => {
         const timed = byVariant.get(variant.id);
         if (timed === undefined) return [];
-        const tokens = tokenizeV2(variant.text, variant.language);
+        // 반복을 되살렸으면 그 가사가 이 후보의 가사다 — 줄이 늘었으므로 지문도 그것으로 다시 짓는다.
+        const sung = timed.text ?? variant.text;
+        const tokens = tokenizeV2(sung, variant.language);
         return [
           {
             variant_id: variant.id,
             tokenizer: "unilab-v2",
             text_hash: textHash(tokens.canonical),
             fingerprint: fingerprint(tokens),
+            ...(timed.text === undefined ? {} : { text: timed.text, filled: timed.filled ?? [] }),
             line_spans: timed.line_spans,
             word_spans: timed.word_spans,
             speaker_turns: result.speaker_turns,

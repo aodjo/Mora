@@ -29,8 +29,11 @@ import re
 EXTRA = float(os.environ.get("MORA_REPEAT_EXTRA", "0.6"))
 #: 가사에만 있는 음절 하나(받아쓰기가 흘린 말)의 값. whisper 는 흘리는 쪽이 잦아 조금 무겁게.
 MISSED = float(os.environ.get("MORA_REPEAT_MISSED", "0.8"))
-#: 되돌아가 한 묶음을 다시 부르는 값.
-REPEAT = float(os.environ.get("MORA_REPEAT_COST", "2.5"))
+#: 되돌아가 한 묶음을 다시 부르는 값. 서른한 곡에서 0.8~2.0 은 되살림 63 으로 같고 2.5 는 58 로 떨어진다.
+#: 지어냄은 0.8~1.2 에서 9, 1.6~2.5 에서 8 이다. 1.2 를 쓰는 까닭은 한 줄 차이보다 아크라포빅 꼴이다 —
+#: 「난 너랑 결혼했을걸」 ×3 + 「…거야」는 끝 음절만 다르므로, 되돌아가는 값이 1.3 을 넘으면 두 줄을
+#: 번갈아 부른 것으로 읽는 편이 싸진다. 세 번 부른 줄은 세 번으로 되살아나야 한다.
+REPEAT = float(os.environ.get("MORA_REPEAT_COST", "1.2"))
 #: 되돌아갈 수 있는 묶음의 줄 수.
 BLOCK = int(os.environ.get("MORA_REPEAT_BLOCK", "4"))
 #: 곡 앞뒤의 받아쓰기(인사·말소리)는 싸게 버린다. 끝 후렴의 되풀이도 그 꼬리에 함께 버려지지만,

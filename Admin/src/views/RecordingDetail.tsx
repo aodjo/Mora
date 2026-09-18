@@ -480,7 +480,8 @@ export function RecordingDetail({
                 <span className="timing-score">{Math.round(score * 100)}</span>
                 <span className="timing-main">
                   <strong>
-                    {text(candidate.provider)} 가사 · {text(candidate.language).toUpperCase()}
+                    {text(candidate.provider) || "되살린"} 가사 · {text(candidate.language).toUpperCase()}
+                    {text(candidate.preprocessor) === "repeat-fill-v1" && <em className="restored-note"> · 반복 되살림</em>}
                   </strong>
                   <span className="timing-metrics">
                     {metrics.map(([key, value]) => (

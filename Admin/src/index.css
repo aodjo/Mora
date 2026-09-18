@@ -3936,3 +3936,21 @@ textarea:focus-visible {
   width: 100%;
   color: var(--text);
 }
+
+/* 제공처가 줄여 적은 반복을 Generator 가 되살린 줄 — 검수에서 먼저 들어 봐야 한다. */
+.lyric-line.restored > div > p {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.restored-badge {
+  border: 1px solid var(--accent, #6366f1);
+  border-radius: 999px;
+  color: var(--accent, #6366f1);
+  font-size: 0.7rem;
+  padding: 0 0.4rem;
+}
+.restored-note {
+  font-style: normal;
+  opacity: 0.8;
+}

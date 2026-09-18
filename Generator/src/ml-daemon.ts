@@ -51,6 +51,10 @@ export interface MlVariantResult {
   line_spans: Array<[number, number]>;
   word_spans: Array<[number, number, number, number]>;
   quality: Record<string, number>;
+  /** 제공처가 줄여 적은 반복을 되살린 가사. 되살린 줄이 없으면 오지 않는다. */
+  text?: string;
+  /** 되살린 가사에서 새로 끼워 넣은 줄의 자리. */
+  filled?: number[];
 }
 export interface MlRunResult {
   backend: string;
