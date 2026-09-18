@@ -268,6 +268,12 @@ export function AddSongsView() {
 
   const held = basket.filter((row) => row.state === "held").length;
   const kept = new Set(basket.map((row) => `${row.artist}\0${row.title}`));
+  //: 장바구니는 「내가 아직 보낼 것」이다. 넘긴 곡까지 줄로 남아 있으면 스무 곡을 담은 다음
+  //: 새로 담은 한 곡이 그 사이에 묻힌다. 넘긴 것은 한 줄로 줄이되 감추지는 않는다 — 수집기가
+  //: 안 돌고 있으면 그 줄이 쌓이는 것으로 보여야 한다.
+  const mine = basket.filter((row) => row.state === "held" || row.state === "failed");
+  const sent = basket.filter((row) => row.state === "released").length;
+  const taking = basket.filter((row) => row.state === "claimed").length;
 
   return (
     <div className="add-songs">
@@ -356,7 +362,7 @@ export function AddSongsView() {
       <section className="detail-section basket">
         <h3>
           <ShoppingBasket size={15} />
-          장바구니 <b>{basket.length}</b>
+          장바구니 <b>{mine.length}</b>
         </h3>
         {/*
           한 곡씩 검색해 담는 것과 같은 자리에 둔다. 차트는 인기순으로 줄 뿐이지만 플레이리스트는
@@ -382,12 +388,17 @@ export function AddSongsView() {
             스포티파이 연결
           </button>
         </div>
-        {basket.length === 0 ? (
+        {sent + taking > 0 && (
+          <p className="basket-sent">
+            넘긴 {sent + taking}곡이 수집을 기다립니다{taking > 0 && ` · ${taking}곡 수집 중`}. 끝나면 저절로 빠집니다.
+          </p>
+        )}
+        {mine.length === 0 ? (
           <p className="filter-empty">담은 곡이 없습니다. 검색해서 추가하세요.</p>
         ) : (
           <>
             <div className="hit-list">
-              {basket.map((row) => (
+              {mine.map((row) => (
                 <div key={row.id} className={`hit-row ${row.state}`}>
                   <div className="hit-main">
                     <strong>{row.title}</strong>

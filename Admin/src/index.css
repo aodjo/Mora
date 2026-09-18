@@ -3422,6 +3422,12 @@ textarea:focus-visible {
   color: var(--text-muted);
   font-size: 12px;
 }
+/** 넘긴 곡은 줄로 두지 않고 이 한 줄로만 센다 — 알림이지 경고가 아니다. */
+.basket-sent {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 0 0 10px;
+}
 .basket .icon-button {
   border: 0;
   background: none;
