@@ -144,26 +144,30 @@ test("bugs picks the matching row before scraping the track page", async () => {
   assert.equal(result?.title, "그대이길");
 });
 
-test("melon rejects a search whose rows are all different songs", async () => {
+test("melon rejects a search whose candidates are all different songs", async () => {
+  // 검색 화면이 `<li>` 로 바뀌면서 제목이 거기 없다. 곡 번호만 뽑고 상세 페이지에서 확인한다.
   const routes = {
-    "https://www.melon.com/search/total/index.htm": `<table><tbody><tr>
-      <td><a href="javascript:melon.link.goSongDetail('42');" class="btn"><span>다른 곡 상세정보 페이지 이동</span></a>
-      <a href="javascript:melon.play.playSong('x',42);" title="다른 곡">다른 곡</a></td>
-      <td><div class="wrapArtistName"><a>남</a></div></td>
-    </tr></tbody></table>`,
+    "https://www.melon.com/search/total/index.htm": `<ul><li>
+      <a href="javascript:melon.link.goSongDetail('42');" title="곡정보 보기"><span>보기</span></a>
+    </li></ul>`,
+    "https://www.melon.com/song/detail.htm?songId=42": `<div class="song_name"><strong>곡명</strong>다른 곡</div>
+      <div id="d_video_summary">남의 가사</div>`,
   };
   assert.equal(await melon.fetch({ title: "The Wolf Is Coming", artist: "HOYO-MiX" }, ctx(routes)), null);
 });
 
-test("melon picks the row whose title matches", async () => {
+test("melon passes over a candidate whose own page says another title", async () => {
+  // 검색 순서를 믿으면 안 된다 — 첫 후보를 검증 없이 집던 시절 라틴어 가사 하나가 88곡에 붙었다.
   const routes = {
-    "https://www.melon.com/search/total/index.htm": `<table><tbody>
-      <tr><td><a href="javascript:melon.link.goSongDetail('42');"><span>x</span></a><a href="javascript:melon.play.playSong('a',42);" title="다른 곡">다른 곡</a></td><td><div class="wrapArtistName"><a>남</a></div></td></tr>
-      <tr><td><a href="javascript:melon.link.goSongDetail('602665433');"><span>x</span></a><a href="javascript:melon.play.playSong('b',602665433);" title="그대이길">그대이길</a></td><td><div class="wrapArtistName"><a>송하예</a></div></td></tr>
-    </tbody></table>`,
-    "https://www.melon.com/song/detail.htm": `<div class="song_name">그대이길</div>
+    "https://www.melon.com/song/detail.htm?songId=42": `<div class="song_name"><strong>곡명</strong>다른 곡</div>
+      <div id="d_video_summary">남의 가사</div>`,
+    "https://www.melon.com/song/detail.htm?songId=602665433": `<div class="song_name"><strong>곡명</strong>그대이길</div>
       <div class="artist"><a title="송하예 - 페이지 이동">송하예</a></div>
       <div id="d_video_summary">꼭 감은 그대 눈 위에<br>나의 입을 맞추며</div>`,
+    "https://www.melon.com/search/total/index.htm": `<ul>
+      <li><a href="javascript:melon.link.goSongDetail('42');">보기</a></li>
+      <li><a href="javascript:melon.link.goSongDetail('602665433');">보기</a></li>
+    </ul>`,
   };
   const result = await melon.fetch({ title: "그대이길", artist: "송하예" }, ctx(routes));
   assert.equal(result?.trackId, "602665433");
