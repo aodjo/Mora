@@ -2984,6 +2984,59 @@ TAIL_STRETCH_MS = 1000
 
 _holes: dict[str, list[tuple[int, int]]] = {}
 _rests: dict[str, list[tuple[int, int]]] = {}
+_levels: dict[str, list[float]] = {}
+
+#: 끌고 있는 음이 **제 봉우리보다** 이만큼(dB) 아래로 이 길이(ms) 넘게 내려가면 거기서 멎은 것이다.
+#: 곡 전체 평균으로 재면 눌러 놓은 믹스에서는 아무것도 쉼이 아니게 된다 — 산토리의 리드는 노래가
+#: −15 dB, 사이가 −25 dB 인데 곡 평균 기준으로는 둘 다 시끄럽다.
+TAIL_DROP_DB = float(os.environ.get("MORA_TAIL_DROP_DB", "12"))
+TAIL_QUIET_MS = int(os.environ.get("MORA_TAIL_QUIET_MS", "250"))
+
+
+def levels_of(stem: Path) -> list[float]:
+    """The stem's loudness in dB, one value every `HOP_MS`, read once and kept.
+
+    @param {Path} stem - The audio to read.
+    @returns {list[float]} dB per hop; empty when the audio cannot be read.
+    """
+    key = str(stem)
+    if key not in _levels:
+        try:
+            import math
+            import torch
+            wave = read_audio(stem, 16_000, 1)[0]
+            hop = 16_000 * HOP_MS // 1000
+            pad = torch.nn.functional.pad(wave.unsqueeze(0).unsqueeze(0), (hop, hop))
+            loud = torch.nn.functional.avg_pool1d(pad.pow(2), kernel_size=hop * 2, stride=hop)[0, 0].sqrt()
+            _levels[key] = [20.0 * math.log10(max(1e-6, one)) for one in loud.tolist()]
+        except Exception as trouble:
+            print(f"  [tail] 소리 크기를 못 읽었다: {type(trouble).__name__}: {str(trouble)[:120]}", file=sys.stderr)
+            _levels[key] = []
+    return _levels[key]
+
+
+def tail_stop(stem: Path, since: int, until: int) -> int | None:
+    """Where a held note stops sounding, measured against its own loudness.
+
+    @param {Path} stem - The lead stem.
+    @param {int} since - Where the note starts, in ms.
+    @param {int} until - Where the search ends — the next line, in ms.
+    @returns {int | None} The ms it falls quiet at, or None when it never does.
+    """
+    levels = levels_of(stem)
+    first, last = since // HOP_MS, min(len(levels), until // HOP_MS)
+    if not levels or last - first < 2:
+        return None
+    peak = max(levels[first:min(last, first + 300 // HOP_MS)] or [0.0])
+    floor, need, run = peak - TAIL_DROP_DB, TAIL_QUIET_MS // HOP_MS, 0
+    for at in range(first, last):
+        if levels[at] < floor:
+            run += 1
+            if run >= need:
+                return (at - run + 1) * HOP_MS
+        else:
+            run = 0
+    return None
 
 
 def rest_ends(stem: Path) -> list[tuple[int, int]]:
@@ -3854,7 +3907,8 @@ def align_voices(path: Path, lines: list[dict], tokenize, title: str = ""):
             word.pop("stuck", None)
     #: 쉼을 건넨다. 안 건네면 `settle_turns` 가 일부러 넣은 쉼을 「글자 사이가 빔」으로 되돌려
     #: 부른다 — 열두 곡에서 그렇게 찍힌 구멍 열여덟 중 열일곱이 그것이었다.
-    hush_tails(out, quiet_of(path), rest_ends(path.with_suffix(".lead.wav")))
+    lead_stem = path.with_suffix(".lead.wav")
+    hush_tails(out, quiet_of(path), rest_ends(lead_stem), lead_stem if lead_stem.exists() else None)
     flag_stuck(lines, out, quiet_of(path))
     return out, lanes
 
@@ -4885,7 +4939,7 @@ def settle_heard(path: Path, lines: list[dict], out: list[list[dict]], tokenize,
 
 
 def hush_tails(out: list[list[dict]], quiet: list[tuple[int, int]] | None,
-               breaths: list[tuple[int, int]] | None = None) -> None:
+               breaths: list[tuple[int, int]] | None = None, lead: Path | None = None) -> None:
     """Stop a line's last syllable when the voice stops, not when the next line starts.
 
     `loosen_chars` runs every character's end out to the next character's start, so that a
@@ -4902,6 +4956,7 @@ def hush_tails(out: list[list[dict]], quiet: list[tuple[int, int]] | None,
     @param {list[list[dict]]} out - Per-line word dicts, modified in place.
     @param {list[tuple[int, int]] | None} quiet - Stretches nobody sings in, in ms.
     @param {list[tuple[int, int]] | None} [breaths=None] - The lead stem's own quiet spells, in ms.
+    @param {Path | None} [lead=None] - The lead stem, for measuring where a held note stops.
     @returns {None}
     """
     #: 줄마다 「그다음 줄이 시작하는 자리」. 장음은 거기까지만 끌 수 있다.
@@ -4915,11 +4970,14 @@ def hush_tails(out: list[list[dict]], quiet: list[tuple[int, int]] | None,
         last = chars[-1]
         #: 목소리가 어디서 멎는지: 화자 토막 사이의 쉼, 리드 갈래의 숨, 그리고 다음 줄의 첫 낱자.
         #: 셋 가운데 가장 이른 것이 이 줄의 끝이다.
-        #: 소리를 먼저 믿는다. 화자 가르기는 길게 끄는 한 음을 「말이 끝났다」로 자르기도 한다 —
-        #: 산토리 「같은데」에서 그랬고, 리드는 그 뒤로도 2 초 가까이 −15 dB 로 울렸다. 그래서 숨(소리가
-        #: 정말 잦아든 자리)과 다음 줄만 본다. 숨을 못 재면 그때만 화자 토막 사이의 쉼으로 물러선다.
-        edges = [since for since, _ in (breaths or []) if since >= last["at"] + LEAST_MS]
-        if not breaths:
+        #: 소리를 먼저 믿는다. 화자 가르기는 길게 끄는 한 음을 「말이 끝났다」로 자르기도 한다 — 산토리
+        #: 「같은데」에서 그랬고, 리드는 그 뒤로도 2 초 가까이 −15 dB 로 울렸다. 그래서 그 음이 **제
+        #: 봉우리보다** 얼마나 내려갔는지로 잰다(`tail_stop`). 곡 전체 평균으로 재는 숨은 눌러 놓은
+        #: 믹스에서 하나도 안 잡히고, 그러면 모든 줄이 다음 줄 시작까지 켜져 있게 된다.
+        room = heads[index] if heads[index] is not None and heads[index] > last["at"] else last["at"] + TAIL_HOLD_MS
+        edges = [one for one in [None if lead is None else tail_stop(lead, last["at"], room)] if one is not None]
+        edges += [since for since, _ in (breaths or []) if since >= last["at"] + LEAST_MS]
+        if not edges:
             edges = [since for since, _ in (quiet or []) if since >= last["at"]]
         edges += [one for one in [heads[index]] if one is not None and one > last["at"]]
         held = last.get("end") or last["at"]
