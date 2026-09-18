@@ -182,7 +182,9 @@ export function AddSongsView() {
 
   async function keep(hit: Hit): Promise<void> {
     try {
-      await api("/basket", { method: "POST", body: JSON.stringify(hit) });
+      const answer = await api<{ known?: boolean }>("/basket", { method: "POST", body: JSON.stringify(hit) });
+      // 이미 가진 곡은 담지 않는다. 아무 말 없이 안 담기면 사람이 장바구니에서 그 곡을 찾는다.
+      if (answer.known === true) showToast(`${hit.title}은(는) 이미 Mora에 있습니다.`);
       await loadBasket();
     } catch (reason) {
       showToast(reason instanceof Error ? reason.message : "담기에 실패했습니다", { variant: "error" });
@@ -232,12 +234,17 @@ export function AddSongsView() {
     if (url.length === 0) return;
     setImporting(true);
     try {
-      const result = await api<{ kept: number; total: number; name: string | null; skipped: number; capped?: boolean }>("/basket/import", {
-        method: "POST",
-        body: JSON.stringify({ url }),
-      });
+      const result = await api<{ kept: number; known?: number; total: number; name: string | null; skipped: number; capped?: boolean }>(
+        "/basket/import",
+        { method: "POST", body: JSON.stringify({ url }) },
+      );
       // 지나친 곡이 있으면 말해 준다 — 팟캐스트나 올린 파일은 맞출 가사가 없다.
-      const passed = result.skipped > 0 ? ` (${result.skipped}곡은 타이밍을 만들 수 없어 지나침)` : "";
+      // 이미 가진 곡은 그것과 따로 센다: 못 하는 것과 이미 한 것은 다른 말이다.
+      const parts = [
+        result.skipped > 0 ? `${result.skipped}곡은 타이밍을 만들 수 없어 지나침` : "",
+        (result.known ?? 0) > 0 ? `${result.known}곡은 이미 Mora에 있음` : "",
+      ].filter((one) => one.length > 0);
+      const passed = parts.length > 0 ? ` (${parts.join(" · ")})` : "";
       // 공개 목록은 앞 100곡까지만 읽힌다. 말 안 하면 나머지를 담은 줄 안다.
       const rest = result.capped === true ? " 앞 100곡까지만 읽힙니다 — 더 있으면 나눠서 담아 주세요." : "";
       showToast(`${result.name ?? "플레이리스트"}에서 ${result.kept}곡을 담았습니다${passed}.${rest}`);
@@ -272,6 +279,9 @@ export function AddSongsView() {
   //: 새로 담은 한 곡이 그 사이에 묻힌다. 넘긴 것은 한 줄로 줄이되 감추지는 않는다 — 수집기가
   //: 안 돌고 있으면 그 줄이 쌓이는 것으로 보여야 한다.
   const mine = basket.filter((row) => row.state === "held" || row.state === "failed");
+  //: 실패한 곡도 「처리」가 다시 보낸다(서버가 held·failed 를 함께 푼다). 그런데 단추는 담긴
+  //: 곡만 세고 있어서, 여섯 곡이 yt-dlp 를 못 찾아 실패했을 때 다시 보낼 방법이 화면에 없었다.
+  const broke = basket.filter((row) => row.state === "failed").length;
   const sent = basket.filter((row) => row.state === "released").length;
   const taking = basket.filter((row) => row.state === "claimed").length;
 
@@ -426,9 +436,9 @@ export function AddSongsView() {
               ))}
             </div>
             <div className="basket-actions">
-              <button className="primary-button" onClick={() => void process()} disabled={releasing || held === 0}>
+              <button className="primary-button" onClick={() => void process()} disabled={releasing || held + broke === 0}>
                 {releasing ? <Loader2 size={14} className="spin" /> : <Check size={14} />}
-                {held === 0 ? "넘길 곡 없음" : `${held}곡 처리`}
+                {held + broke === 0 ? "넘길 곡 없음" : held === 0 ? `실패한 ${broke}곡 다시 보내기` : `${held}곡 처리`}
               </button>
               <span className="basket-hint">누르기 전까지는 담아둔 것뿐입니다. 누르면 Collector가 순서대로 가져갑니다.</span>
             </div>

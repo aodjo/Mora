@@ -2,6 +2,7 @@ import { preprocessLyrics } from "../../../packages/preprocess/src/index.js";
 import { sheetHash } from "../../../packages/core/src/tokenization/fingerprint.js";
 import { tokenizeV2 } from "../../../packages/core/src/tokenization/tokenizer-v2.js";
 import { ServiceError } from "../../../packages/core/src/shared/errors.js";
+import { alreadyCollected, songKey } from "./basket.js";
 import { playlistId, playlistTracks, publicPlaylist, spotifyAuthorizeUrl, spotifyToken, type SpotifyTrack } from "./spotify.js";
 import { ANCHOR_DENSITY_FLOOR, ANCHOR_REACH_FLOOR, BREATH_FLOOR, passesQualityGate } from "./quality-gate.js";
 import type {
@@ -370,7 +371,7 @@ async function addToBasket(env: WorkerEnv, actor: Actor, value: Record<string, u
     : [];
   const optional = (key: string, limit: number): string | undefined =>
     typeof value[key] === "string" && (value[key] as string).length > 0 ? (value[key] as string).slice(0, limit) : undefined;
-  await keepInBasket(env, actor, [
+  const { known } = await keepInBasket(env, actor, [
     {
       artist,
       title,
@@ -381,7 +382,8 @@ async function addToBasket(env: WorkerEnv, actor: Actor, value: Record<string, u
       providers,
     },
   ]);
-  return json({ accepted: true }, 202);
+  // 담기지 않았는데 「담았습니다」라고 하면 사람이 장바구니에서 그 곡을 찾는다.
+  return json({ accepted: true, known: known > 0 }, 202);
 }
 
 interface BasketSong {
@@ -399,10 +401,13 @@ interface BasketSong {
  *
  * 한 곡을 손으로 담는 것과 플레이리스트를 통째로 가져오는 것은 같은 일이므로, 담는 규칙도
  * 하나여야 한다 — 같은 곡을 다시 담는 것은 같은 뜻이니 덮어쓰고, 비어 있던 자리만 채운다.
+ * 이미 Mora 가 가진 곡은 아예 담지 않는다.
  */
-async function keepInBasket(env: WorkerEnv, actor: Actor, songs: BasketSong[]): Promise<number> {
+async function keepInBasket(env: WorkerEnv, actor: Actor, songs: BasketSong[]): Promise<{ kept: number; known: number }> {
   const now = Date.now();
-  const statements = songs.map((song) =>
+  const known = await alreadyCollected(env.ADMIN_DB, songs);
+  const fresh = songs.filter((song) => !known.has(songKey(song.artist, song.title)));
+  const statements = fresh.map((song) =>
     env.ADMIN_DB.prepare(
       `INSERT INTO song_basket (id,artist,title,album,duration_ms,isrc,artwork,providers,state,added_by,added_at)
        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'held',?9,?10)
@@ -427,7 +432,7 @@ async function keepInBasket(env: WorkerEnv, actor: Actor, songs: BasketSong[]): 
   for (let start = 0; start < statements.length; start += 100) {
     await env.ADMIN_DB.batch(statements.slice(start, start + 100));
   }
-  return songs.length;
+  return { kept: fresh.length, known: songs.length - fresh.length };
 }
 
 /**
@@ -592,13 +597,24 @@ async function importPlaylist(env: WorkerEnv, actor: Actor, value: Record<string
       throw new ServiceError(502, "PLAYLIST_UNAVAILABLE");
     }
   }
-  const kept = await keepInBasket(
+  const { kept, known } = await keepInBasket(
     env,
     actor,
     found.tracks.map((track) => ({ ...track, providers: ["spotify"] })),
   );
-  await audit(env, actor, "basket.import", "song_basket", playlist, { kept, total: found.total, name: found.name ?? null });
-  return json({ kept, total: found.total, name: found.name ?? null, skipped: found.total - kept, capped: found.capped === true }, 201);
+  await audit(env, actor, "basket.import", "song_basket", playlist, { kept, known, total: found.total, name: found.name ?? null });
+  return json(
+    {
+      kept,
+      known,
+      total: found.total,
+      name: found.name ?? null,
+      // 이미 가진 곡은 「지나침」이 아니다 — 못 다루는 것과 이미 한 것은 다른 말이다.
+      skipped: found.total - kept - known,
+      capped: found.capped === true,
+    },
+    201,
+  );
 }
 
 async function readBasket(env: WorkerEnv, actor: Actor): Promise<Response> {
@@ -1073,11 +1089,6 @@ async function collectorSkipped(env: WorkerEnv, actor: Actor, value: Record<stri
     .bind(songKey(artist, title), artist, title, reason, retryAfter === null ? null : now + retryAfter, now)
     .run();
   return json({ accepted: true }, 202);
-}
-
-/** Must fold the same way the Collector folds it, or the two sides disagree about a song. */
-function songKey(artist: string, title: string): string {
-  return `${artist.normalize("NFKC").toLowerCase()}\0${title.normalize("NFKC").toLowerCase()}`;
 }
 
 const SOURCE_TYPES = new Set(["song", "topic", "unofficial"]);
