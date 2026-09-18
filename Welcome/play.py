@@ -387,12 +387,14 @@ def main() -> int:
 
     head = Playhead(alignment)
     columns = shutil.get_terminal_size((80, 24)).columns
+    #: 머리에는 곡 이름만 둔다. 재는 값과 경고는 시작할 때 한 번만 말하고 화면에서 비킨다 —
+    #: 노래 내내 붙어 있으면 읽을 것이 아니라 얼룩이 된다.
     title = f"{args.artist or args.isrc or ''} {args.title or ''}".strip() or audio.stem
-    title = f"{title}   ·   {alignment.tier} {alignment.confidence:.2f}"
+    sys.stderr.write(f"맞춤: {alignment.tier} {alignment.confidence:.2f} · 줄 {len(alignment.lines)}\n")
 
     sound = Sound(audio, args.offset)
     if not sound.exact:
-        title += "   ·   시계로 셈 (--offset 으로 맞추세요)"
+        sys.stderr.write("소리 자리를 시계로 센다 — 가사가 일정하게 밀리면 --offset 으로 맞추세요\n")
     sys.stdout.write("\033[?25l")           # 커서를 숨긴다
     try:
         while True:
