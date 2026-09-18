@@ -104,12 +104,15 @@ export function AddSongsView() {
     return liveEvents(() => void loadBasket());
   }, [loadBasket]);
 
-  //: 스포티파이에서 돌아온 자리. 주소에 남은 표는 한 번 말해 주고 지운다.
+  //: 스포티파이에서 돌아온 자리. 주소에 실려 온 결과를 한 번 말해 주고 지운다 — 잘됐는지 못 됐는지,
+  //: 못 됐으면 무엇 때문인지. 이것이 없어서 「돌아왔는데 아무 말도 없다」였다.
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("spotify") !== "connected") return;
-    showToast("스포티파이를 연결했습니다. 플레이리스트 주소를 넣고 가져오기를 누르세요.");
+    const said = new URLSearchParams(window.location.search).get("spotify");
+    if (said === null) return;
+    if (said === "connected") showToast("스포티파이를 연결했습니다. 플레이리스트 주소를 넣고 가져오기를 누르세요.");
+    else showToast(`스포티파이 연결 실패 — ${said}`, { variant: "error" });
     window.history.replaceState(null, "", window.location.pathname + window.location.hash);
-  }, []);
+  }, [showToast]);
 
   const runSearch = useCallback(async function runSearch(text: string, providers: ProviderId[]): Promise<void> {
     const wanted = text.trim();

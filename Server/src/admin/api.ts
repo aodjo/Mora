@@ -501,10 +501,21 @@ async function spotifyCallback(env: WorkerEnv, actor: Actor, request: Request): 
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   const kept = await env.ADMIN_DB.prepare("SELECT value FROM settings WHERE key='spotify.state'").first<{ value: string }>();
+  //: 무엇이 잘못됐는지는 화면이 말해 줘야 한다. 오류를 그대로 던지면 사람은 빈 페이지만 보고
+  //: 「돌아왔는데 아무 말도 없다」가 된다. 까닭을 주소에 실어 화면으로 돌려보낸다.
+  const failed = (why: string): Response => Response.redirect(`${url.origin}/?spotify=${encodeURIComponent(why)}`, 302);
+  const refused = url.searchParams.get("error");
+  if (refused !== null) return failed(`거절됨 ${refused}`);
   // 돌아온 것이 우리가 보낸 것인지. 아니면 남이 우리 이름으로 붙이려는 것이다.
-  if (code === null || state === null || kept === null || kept.value !== state) throw new ServiceError(400, "SPOTIFY_STATE_MISMATCH");
-  const answer = await spotifyToken({ grant_type: "authorization_code", code, redirect_uri: spotifyRedirect(request) }, keys);
-  if (typeof answer.refresh_token !== "string") throw new ServiceError(502, "SPOTIFY_NO_REFRESH_TOKEN");
+  if (code === null || state === null) return failed("코드 없음");
+  if (kept === null || kept.value !== state) return failed("표가 어긋남 — 연결을 다시 누르세요");
+  let answer;
+  try {
+    answer = await spotifyToken({ grant_type: "authorization_code", code, redirect_uri: spotifyRedirect(request) }, keys);
+  } catch (error) {
+    return failed(error instanceof Error ? error.message : "토큰 실패");
+  }
+  if (typeof answer.refresh_token !== "string") return failed("갱신 토큰을 안 줌");
   const now = Date.now();
   await env.ADMIN_DB.batch([
     env.ADMIN_DB.prepare(
