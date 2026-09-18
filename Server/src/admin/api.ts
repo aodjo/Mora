@@ -1371,6 +1371,14 @@ async function selectSourceReview(env: WorkerEnv, actor: Actor, inputId: string,
   const jobId = crypto.randomUUID();
   const now = Date.now();
   await env.ADMIN_DB.batch([
+    // 이 곡은 이제 이 음원으로 간다. 아직 끝나지 않은 옛 작업은 다른 음원이거나 같은 음원의 옛
+    // 시도이고, 둘 다 여기서부터는 볼 일이 없다 — 큐에 남겨 두면 나중에 하나가 깨어나 방금 만든
+    // 것을 덮어쓴다. 작업 큐 화면에도 같은 곡이 줄줄이 쌓였다.
+    env.ADMIN_DB.prepare(
+      `UPDATE jobs SET state='cancelled',cancel_requested=1,updated_at=?1
+       WHERE state IN ('queued','claimed','running')
+         AND input_revision_id IN (SELECT id FROM input_revisions WHERE recording_id=?2)`,
+    ).bind(now, input.recording_id),
     env.ADMIN_DB.prepare("UPDATE media_sources SET selected=CASE WHEN id=?1 THEN 1 ELSE 0 END WHERE recording_id=?2").bind(
       sourceId,
       input.recording_id,

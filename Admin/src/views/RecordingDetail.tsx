@@ -263,6 +263,10 @@ export function RecordingDetail({
     return quiet === undefined ? null : { jobId: text(quiet.job_id), stalled: true };
   })();
   const runningJob = detail.revisions.find((item) => ["claimed", "running", "queued"].includes(text(item.job_state)));
+  // 다시 만드는 중에는 옛 타이밍을 보여 주지 않는다 — 목록에 남아 있으면 다 된 것처럼 보이고,
+  // 열면 옛 음원을 듣게 된다. 서버도 새 작업을 만들 때 그것을 지우므로, 여기 남는 것은 그 전에
+  // 만들어진 작업이 돌고 있는 동안뿐이다.
+  const shown = runningJob === undefined ? detail.candidates : [];
 
   async function rebuild(jobId: string): Promise<void> {
     setBusy(true);
@@ -491,7 +495,7 @@ export function RecordingDetail({
 
       <section className="detail-section">
         <div className="detail-section-head">
-          <h3>타이밍 후보 {detail.candidates.length > 0 && <b>{detail.candidates.length}</b>}</h3>
+          <h3>타이밍 후보 {shown.length > 0 && <b>{shown.length}</b>}</h3>
           {/*
             정렬을 고친 뒤 이 곡만 다시 만들고 싶을 때, 작업 큐를 찾아가 그 행을 고르게 하는 것은
             먼 길이다. 결과를 보고 있는 자리에서 다시 만들 수 있어야 한다.
@@ -521,7 +525,7 @@ export function RecordingDetail({
                 : "Generator가 정렬을 마치면 품질 지표와 함께 표시됩니다."}
           </p>
         ) : (
-          detail.candidates.map((candidate) => {
+          shown.map((candidate) => {
             const score = Math.max(0, Math.min(1, number(candidate.quality_score)));
             const metrics = Object.entries(parseObject(candidate.quality))
               .filter(([key, value]) => key in qualityNames && typeof value === "number")
