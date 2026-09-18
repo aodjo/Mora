@@ -184,8 +184,12 @@ def find_audio(title: str, artist: str | None, duration_ms: int | None, into: Pa
     @returns {Path} The downloaded audio.
     @throws {SystemExit} When yt-dlp is missing or nothing fits.
     """
+    #: 곡 이름을 견주는 방식은 가사 제공처를 고를 때 쓰는 것과 같아야 한다. 맨 위에서
+    #: 불러오면 라이브러리가 없을 때의 안내가 먼저 깨진다.
+    from mora_lyrics.sources import comparable
+
     if shutil.which("yt-dlp") is None:
-        sys.exit("yt-dlp 가 없다:  pip install yt-dlp")
+        sys.exit("yt-dlp 가 없다:  pip install yt-dlp yt-dlp-ejs")
     #: 유튜브는 미디어 주소에 JS 로 푸는 서명을 건다. 노드가 없으면 403 만 받아 온다.
     runtime = ["--js-runtimes", "node"] if shutil.which("node") else []
     #: 유튜브는 로그인 없는 요청에 「사람인지 확인하라」고 한다. 브라우저에 있는 로그인을
@@ -197,10 +201,16 @@ def find_audio(title: str, artist: str | None, duration_ms: int | None, into: Pa
     if ran.returncode != 0 or not ran.stdout.strip():
         sys.exit(f"유튜브 검색이 안 됐다: {(ran.stderr or '')[-160:]}")
 
+    #: **제목이 먼저다.** 길이만 보면 아무 곡이나 걸린다 — 실제로 237초짜리 「영원은 그렇듯」을
+    #: 찾다가 238초짜리 「Forever Has Always Been」을 집었다. 길이는 같은 제목이 여럿일 때
+    #: 고르는 잣대이지, 그 곡인지 가리는 잣대가 아니다.
+    want = comparable(title)
     picked = None
     for entry in json.loads(ran.stdout).get("entries") or []:
         name = entry.get("title") or ""
         if not entry.get("id") or entry.get("live_status") == "is_live" or NOT_THE_SONG.search(name):
+            continue
+        if want and want not in comparable(name):
             continue
         seconds = entry.get("duration") or 0
         if duration_ms is not None and abs(seconds * 1000 - duration_ms) > LENGTH_SLACK * 1000:
@@ -208,7 +218,7 @@ def find_audio(title: str, artist: str | None, duration_ms: int | None, into: Pa
         picked = entry
         break
     if picked is None:
-        sys.exit("길이가 맞는 영상을 못 찾았다. 음원 파일을 직접 주세요.")
+        sys.exit("제목과 길이가 맞는 영상을 못 찾았다. 음원 파일을 직접 주세요.")
 
     sys.stderr.write(f"영상: {picked['title'][:52]} ({picked.get('duration', 0)}초)\n")
     into.mkdir(parents=True, exist_ok=True)
@@ -226,6 +236,11 @@ def find_audio(title: str, artist: str | None, duration_ms: int | None, into: Pa
             sys.exit("유튜브가 로그인을 요구한다. 브라우저에 있는 로그인을 빌려 쓰세요:\n"
                      "    python play.py --title … --artist … --browser chrome\n"
                      "  (chrome · safari · firefox · edge · brave 중 늘 쓰는 것)")
+        #: 유튜브는 미디어 주소에 JS 로 푸는 서명을 건다. 그것을 풀 물건이 없으면 주소를 못 얻는다.
+        if "reloaded" in why or "EJS" in why or "js_runtime" in why or "nsig" in why:
+            sys.exit("유튜브 서명을 못 풀었다. 푸는 물건을 깔아야 한다:\n"
+                     "    pip install -U yt-dlp yt-dlp-ejs\n"
+                     "  (노드도 있어야 한다: node --version)")
         sys.exit(f"내려받기가 안 됐다: {why[-200:]}")
     return out
 
