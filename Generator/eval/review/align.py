@@ -4915,8 +4915,12 @@ def hush_tails(out: list[list[dict]], quiet: list[tuple[int, int]] | None,
         last = chars[-1]
         #: 목소리가 어디서 멎는지: 화자 토막 사이의 쉼, 리드 갈래의 숨, 그리고 다음 줄의 첫 낱자.
         #: 셋 가운데 가장 이른 것이 이 줄의 끝이다.
-        edges = [since for since, _ in (quiet or []) if since >= last["at"]]
-        edges += [since for since, _ in (breaths or []) if since >= last["at"] + LEAST_MS]
+        #: 소리를 먼저 믿는다. 화자 가르기는 길게 끄는 한 음을 「말이 끝났다」로 자르기도 한다 —
+        #: 산토리 「같은데」에서 그랬고, 리드는 그 뒤로도 2 초 가까이 −15 dB 로 울렸다. 그래서 숨(소리가
+        #: 정말 잦아든 자리)과 다음 줄만 본다. 숨을 못 재면 그때만 화자 토막 사이의 쉼으로 물러선다.
+        edges = [since for since, _ in (breaths or []) if since >= last["at"] + LEAST_MS]
+        if not breaths:
+            edges = [since for since, _ in (quiet or []) if since >= last["at"]]
         edges += [one for one in [heads[index]] if one is not None and one > last["at"]]
         held = last.get("end") or last["at"]
         #: 멎는 자리를 하나도 못 찾으면 예전처럼 짧게 끊는다. 찾았으면 **거기까지 잡고 있는다** —
