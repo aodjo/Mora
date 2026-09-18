@@ -185,6 +185,7 @@ export function RecordingDetail({
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [pasted, setPasted] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
@@ -237,6 +238,9 @@ export function RecordingDetail({
   // 확정한 음원이 틀렸다는 것은 대개 들어 본 뒤에 안다. 그때 가사를 그대로 옮긴 새 회차를 열어
   // 다시 고르게 한다 — 옛 회차와 그 후보는 그대로 남는다.
   const canReselect = draftId === null && detail.sources.some((source) => source.selected === 1);
+  // 음원을 다시 고르는 중 — 새 회차는 열렸고 아직 음원을 안 골랐다. 화면이 평소와 똑같아 보이면
+  // 버튼이 동작하지 않은 줄 안다. 지금 무엇을 하는 중인지 말하고, 고를 자리를 모두 열어 준다.
+  const picking = canSelect && detail.sources.some((source) => source.selected === 1);
   const blockedReason = canReselect
     ? "이미 작업이 만들어져 이 회차의 음원은 바꿀 수 없습니다. 아래 「음원 다시 지정」을 누르면 같은 가사로 새 회차를 열어 다른 음원을 고를 수 있습니다."
     : draftId === null
@@ -448,19 +452,26 @@ export function RecordingDetail({
       )}
 
       <section className="detail-section">
-        <h3>확정된 음원</h3>
+        <h3>{picking ? "음원 고르는 중" : "확정된 음원"}</h3>
+        {picking && (
+          <p className="detail-note">
+            <TriangleAlert size={13} />새 회차를 열었습니다. 아래 후보에서 고르거나 주소를 넣으면 그 음원으로 새 타이밍을 만듭니다. 지금
+            음원을 그대로 쓰려면 아래 「이 음원 그대로」를 누르세요.
+          </p>
+        )}
         {selected === undefined ? (
           <p className="detail-empty">아직 확정된 음원이 없습니다. 아래 후보에서 고르거나 직접 검색해 지정하세요.</p>
         ) : (
           <SourceRow
             source={selected}
             catalogueMs={catalogueMs}
-            canSelect={false}
+            canSelect={picking && !busy}
             busy={busy}
             onChoose={choose}
             playing={playing}
             onPlay={setPlaying}
-            confirmed
+            confirmed={!picking}
+            label="이 음원 그대로"
           />
         )}
       </section>
@@ -543,6 +554,30 @@ export function RecordingDetail({
         )}
       </section>
 
+      {canSelect && (
+        <section className="detail-section">
+          <h3>주소로 지정</h3>
+          <div className="yt-search">
+            <input
+              className="form-control"
+              value={pasted}
+              onChange={(event) => setPasted(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && pasted.trim().length > 0) void choose({ url: pasted.trim() });
+              }}
+              placeholder="https://music.youtube.com/watch?v=…"
+            />
+            <button
+              className="primary-button"
+              disabled={busy || pasted.trim().length === 0}
+              onClick={() => void choose({ url: pasted.trim() })}
+            >
+              <Check size={13} />이 주소로
+            </button>
+          </div>
+        </section>
+      )}
+
       <section className="detail-section">
         <h3>YouTube에서 직접 찾기</h3>
         <div className="yt-search">
@@ -622,6 +657,7 @@ function SourceRow({
   playing,
   onPlay,
   confirmed = false,
+  label = "이 음원으로",
 }: {
   source: AdminItem;
   catalogueMs: number;
@@ -631,6 +667,7 @@ function SourceRow({
   playing: string | null;
   onPlay: (rowId: string) => void;
   confirmed?: boolean;
+  label?: string;
 }) {
   const metadata = parseObject(source.metadata);
   const videoId = text(source.video_id);
@@ -660,7 +697,8 @@ function SourceRow({
         <span className="state-badge good">확정됨</span>
       ) : (
         <button className="primary-button" disabled={!canSelect || busy} onClick={() => onChoose({ source_id: text(source.id) })}>
-          <Check size={13} />이 음원으로
+          <Check size={13} />
+          {label}
         </button>
       )}
     </div>
