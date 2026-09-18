@@ -105,6 +105,7 @@ function initialTheme(): Theme {
 }
 
 export default function App() {
+  const { showToast } = useToast();
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [authError, setAuthError] = useState("");
   const [route, setRoute] = useState<Route>(() => parseUrl(window.location.pathname));
@@ -122,6 +123,16 @@ export default function App() {
     setRoute({ page, selected, child });
     if (selected === null) setSongLabel(null);
   }, []);
+  //: 스포티파이에서 돌아온 자리. 주소를 정리하기 **전에** 읽어야 한다 — 아래에서 표준 주소로 바꾸며
+  //: 물음표 뒤를 통째로 버리기 때문에, 곡 추가 화면까지 가지 못하고 사라졌다. 그래서 「돌아왔는데
+  //: 아무 말도 없다」였다.
+  useEffect(() => {
+    const said = new URLSearchParams(window.location.search).get("spotify");
+    if (said === null) return;
+    if (said === "connected") showToast("스포티파이를 연결했습니다. 곡 추가 화면에서 플레이리스트 주소를 넣으세요.");
+    else showToast(`스포티파이 연결 실패 — ${said}`, { variant: "error" });
+  }, [showToast]);
+
   useEffect(() => {
     // Rewrite /admin, /admin/nope and the like to the address the app actually landed on.
     const canonical = urlFor(parseUrl(window.location.pathname));
