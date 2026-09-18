@@ -503,6 +503,9 @@ export function RecordingDetail({
                   <strong>
                     {text(candidate.provider) || "되살린"} 가사 · {text(candidate.language).toUpperCase()}
                     {text(candidate.preprocessor) === "repeat-fill-v1" && <em className="restored-note"> · 반복 되살림</em>}
+                    {number(candidate.source_selected) !== 1 && (
+                      <em className="restored-note"> · 옛 음원 {text(candidate.video_id).slice(0, 6)}</em>
+                    )}
                   </strong>
                   <span className="timing-metrics">
                     {metrics.map(([key, value]) => (

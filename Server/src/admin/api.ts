@@ -323,10 +323,14 @@ async function recordingDetail(env: WorkerEnv, actor: Actor, recordingId: string
     env.ADMIN_DB,
     `SELECT c.id,c.job_id,c.input_revision_id,c.status,c.tokenizer,c.quality,c.quality_score,c.created_at,
        (SELECT group_concat(s.provider) FROM lyric_sources s WHERE s.text_id=l.id) provider,
-       l.language,l.preprocessor
+       l.language,l.preprocessor,m.video_id,m.selected source_selected
      FROM alignment_candidates c JOIN input_revisions i ON i.id=c.input_revision_id
      JOIN lyric_texts l ON l.id=c.variant_id
-     WHERE i.recording_id=?1 ORDER BY c.quality_score DESC,c.created_at DESC`,
+     LEFT JOIN media_sources m ON m.id=i.source_id
+     WHERE i.recording_id=?1
+     -- 음원을 다시 지정하면 옛 음원으로 만든 후보가 그대로 남는다. 점수만으로 줄 세우면 그것이
+     -- 위에 올라와, 편집기에서 옛 노래를 들으며 새 타이밍을 고치는 일이 생긴다. 지금 음원 것이 먼저다.
+     ORDER BY COALESCE(m.selected,0) DESC,c.quality_score DESC,c.created_at DESC`,
     [recordingId],
   );
   // 받아쓰기가 있으면 함께 준다 — 정렬이 이상할 때 가장 먼저 물어야 할 것이 "무엇을 들었나"다.
